@@ -13,6 +13,7 @@
     "db:seed": "cd api && npx wrangler d1 execute oppc-crm-db --file=src/db/seed.sql"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "concurrently": "^9.1.0",
     "wrangler": "^3.99.0"
   }

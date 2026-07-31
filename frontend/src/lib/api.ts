@@ -32,30 +32,41 @@ export async function api(path: string, options: ApiOptions = {}) {
   const headers = getHeaders(options.headers);
   const base = options.baseUrl || API_BASE;
 
-  const res = await fetch(`${base}${path}`, {
-    method: options.method || 'GET',
-    headers,
-    credentials: 'include',
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000); // 60s timeout prevents infinite hangs
 
-  if (res.status === 401) {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
-  }
+  try {
+    const res = await fetch(`${base}${path}`, {
+      method: options.method || 'GET',
+      headers,
+      credentials: 'include',
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || 'Request failed');
-  }
+    if (res.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+      throw new Error('Unauthorized');
+    }
 
-  const contentType = res.headers.get('content-type');
-  if (contentType?.includes('text/csv')) {
-    return res.text();
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Request failed');
+    }
+
+    const contentType = res.headers.get('content-type');
+    if (contentType?.includes('text/csv')) {
+      return res.text();
+    }
+    return res.json();
+  } catch (e: any) {
+    if (e?.name === 'AbortError') throw new Error('Request timed out after 60 seconds');
+    throw e;
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json();
 }
 
 // Streaming chat: returns body reader + session_id

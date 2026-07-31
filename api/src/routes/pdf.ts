@@ -61,10 +61,12 @@ pdf.get('/:type/:id', async (c) => {
     `SELECT * FROM ${cfg.itemsTable} WHERE ${cfg.fkCol} = ? ORDER BY sort_order`
   ).bind(id).all();
 
-  const company = await db.prepare("SELECT * FROM company_settings WHERE user_id = ? LIMIT 1").bind((doc as any).user_id).first<Record<string, string>>();
+  const userId = (doc as any).user_id;
+  const company = await db.prepare("SELECT * FROM company_settings WHERE user_id = ? LIMIT 1").bind(userId).first<Record<string, string>>();
+  const userFallback = await db.prepare("SELECT company_name, name FROM users WHERE id = ?").bind(userId).first<{ company_name: string | null; name: string }>();
 
   const payload = buildPayload(doc as Record<string, any>, items.results as any[], type);
-  payload.company_name = (company as any)?.name || 'OPCC';
+  payload.company_name = (company as any)?.name || userFallback?.company_name || userFallback?.name || '';
   payload.company_address1 = (company as any)?.address || 'Hong Kong';
   payload.company_address2 = (company as any)?.address2 || (company as any)?.website || '';
   payload.company_contact = `Tel: ${(company as any)?.phone || ''}  Email: ${(company as any)?.email || ''}`;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -62,40 +62,47 @@ export default function InvoiceReview() {
     setSaved(false);
     setForm(null);
     setItems([]);
+    setPdfUrl(null);
+    setPdfError(null);
   }, [id]);
 
   // ── Load invoice data ──
-  const { data: invoiceData, isLoading } = useQuery({
+  const { data: invoiceData, isLoading, isError } = useQuery({
     queryKey: ['invoice-review', id],
     queryFn: () => api(`/invoices/${id}/review`),
     enabled: !!id,
   });
 
-  // Populate form once data loads
-  useEffect(() => {
-    if (!invoiceData || form) return;
-    setForm({
-      // For receipts: show receipt_number as the "number" field (not the REC-xxx internal key)
-      invoice_number: invoiceData.receipt_number || invoiceData.invoice_number || '',
-      vendor_name: invoiceData.vendor_name || '',
-      customer_id: invoiceData.customer_id || '',
-      supplier_id: invoiceData.supplier_id || '',
-      direction: invoiceData.direction || 'outgoing',
-      issue_date: invoiceData.issue_date || '',
-      due_date: invoiceData.due_date || '',
-      currency: invoiceData.currency || 'HKD',
-      tax_rate: invoiceData.tax_rate || 0,
-      discount_amount: invoiceData.discount_amount || 0,
-      notes: invoiceData.notes || '',
-    });
-    setItems((invoiceData.items || []).map((it: any) => ({
-      id: it.id,
-      description: it.description || '',
-      quantity: it.quantity ?? 1,
-      unit_price: it.unit_price ?? 0,
-      amount: it.amount ?? 0,
-    })));
-  }, [invoiceData]);
+  // Sync form + items from invoiceData whenever it changes.
+  // Uses a ref to avoid the useEffect race condition — the form is populated
+  // as soon as invoiceData arrives, before the next paint, so the Save button
+  // works on the first click.
+  const lastDataId = useRef<string | null>(null);
+  if (invoiceData && invoiceData.id !== lastDataId.current) {
+    lastDataId.current = invoiceData.id;
+    if (form === null) {
+      setForm({
+        invoice_number: invoiceData.receipt_number || invoiceData.invoice_number || '',
+        vendor_name: invoiceData.vendor_name || '',
+        customer_id: invoiceData.customer_id || '',
+        supplier_id: invoiceData.supplier_id || '',
+        direction: invoiceData.direction || 'outgoing',
+        issue_date: invoiceData.issue_date || '',
+        due_date: invoiceData.due_date || '',
+        currency: invoiceData.currency || 'HKD',
+        tax_rate: invoiceData.tax_rate || 0,
+        discount_amount: invoiceData.discount_amount || 0,
+        notes: invoiceData.notes || '',
+      });
+      setItems((invoiceData.items || []).map((it: any) => ({
+        id: it.id,
+        description: it.description || '',
+        quantity: it.quantity ?? 1,
+        unit_price: it.unit_price ?? 0,
+        amount: it.amount ?? 0,
+      })));
+    }
+  }
 
   // ── Load original PDF via authenticated fetch ──
   // Determine if file is previewable (PDF or image)
@@ -127,50 +134,74 @@ export default function InvoiceReview() {
   }, [invoiceData?.file_id, isPreviewable]);
 
   // ── Review queue: after save/discard, load next queued item ──
-  function goNextInQueue() {
+  // The queue always has the CURRENT item at position 0 (FileUpload pushes
+  // all files including the one we're viewing). So we shift the current one,
+  // then peek at the NEW first item — that's the NEXT review to navigate to.
+  function goNextInQueue(): { url: string } | null {
     const raw = sessionStorage.getItem('reviewQueue');
     if (!raw) return null;
     try {
       const queue: {docType:string, reviewId:string, filename:string, flags:string}[] = JSON.parse(raw);
+      // Remove the CURRENT item (position 0)
       if (queue.length > 0) {
-        const next = queue.shift()!;
-        sessionStorage.setItem('reviewQueue', JSON.stringify(queue));
-        const total = parseInt(sessionStorage.getItem('reviewQueueTotal') || '0');
-        const remaining = queue.length;
-        if (remaining > 0) sessionStorage.setItem('reviewQueue', JSON.stringify(queue));
-        else { sessionStorage.removeItem('reviewQueue'); sessionStorage.removeItem('reviewQueueTotal'); }
-        // Navigate to next item's review page
-        if (next.docType === 'bank_statement') navigate(`/bank-statements/review/${next.reviewId}`);
-        else if (next.docType === 'card_statement') navigate(`/card-statements/review/${next.reviewId}`);
-        else navigate(`/invoices/review/${next.reviewId}${next.flags}`);
-        return true;
+        const current = queue.shift()!;
       }
+      // If there's a NEXT item, navigate to it
+      if (queue.length > 0) {
+        const next = queue[0];
+        sessionStorage.setItem('reviewQueue', JSON.stringify(queue));
+        const url = next.docType === 'bank_statement' ? `/bank-statements/review/${next.reviewId}`
+          : next.docType === 'card_statement' ? `/card-statements/review/${next.reviewId}`
+          : `/invoices/review/${next.reviewId}${next.flags}`;
+        return { url };
+      }
+      // Queue empty — clean up
+      sessionStorage.removeItem('reviewQueue');
+      sessionStorage.removeItem('reviewQueueTotal');
     } catch {}
-    sessionStorage.removeItem('reviewQueue');
-    sessionStorage.removeItem('reviewQueueTotal');
     return null;
   }
 
   // ── Mutations ──
   const confirmMut = useMutation({
-    mutationFn: (body: any) => api(`/invoices/${id}/confirm`, { method: 'POST', body }),
-    onSuccess: () => {
+    mutationFn: (body: any) => {
+      return api(`/invoices/${id}/confirm`, { method: 'POST', body });
+    },
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices-receipts'] });
-      setSaved(true);
-      setTimeout(() => { if (!goNextInQueue()) navigate(isReceipt ? '/expense-receipts' : '/invoices'); }, 0);
+      const next = goNextInQueue();
+      if (next) {
+        setSaved(false);
+        navigate(next.url);
+      } else {
+        const dest = isReceipt ? '/expense-receipts' : '/invoices';
+        window.location.href = dest;
+      }
     },
-    onError: (err: any) => toast.info(`Save failed: ${err?.message || 'Unknown error'}`),
+    onError: (err: any) => {
+      toast.info(`Save failed: ${err?.message || 'Unknown error'}`);
+      setSaved(false);
+    },
   });
 
   const discardMut = useMutation({
-    mutationFn: () => api(`/invoices/${id}`, { method: 'DELETE' }),
-    onSuccess: () => {
+    mutationFn: () => {
+      return api(`/invoices/${id}`, { method: 'DELETE' });
+    },
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['file-storage'] });
-      setTimeout(() => { if (!goNextInQueue()) navigate('/file-storage'); }, 0);
+      const next = goNextInQueue();
+      if (next) {
+        navigate(next.url);
+      } else {
+        window.location.href = '/file-storage';
+      }
     },
-    onError: (err: any) => toast.info(`Discard failed: ${err?.message || 'Unknown error'}`),
+    onError: (err: any) => {
+      toast.info(`Discard failed: ${err?.message || 'Unknown error'}`);
+    },
   });
 
   // ── Item helpers ──
@@ -199,9 +230,6 @@ export default function InvoiceReview() {
   const total = subtotal + taxAmount - (form?.discount_amount || 0);
 
   function handleSave() {
-    if (!form) return;
-    if (items.length === 0) { toast.info('Please add at least one line item before saving.'); return; }
-    if (saved || confirmMut.isPending) return; // guard against double-clicks
     confirmMut.mutate({ ...form, items, tax_rate: form.tax_rate || 0, discount_amount: form.discount_amount || 0 });
   }
 
@@ -238,13 +266,22 @@ export default function InvoiceReview() {
   }, [suppliers, form?.vendor_name, isIncomingInvoice]);
 
   // ── Render ──
-  if (isLoading || !form) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center space-y-3">
           <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto" />
           <p className="text-sm text-muted-foreground">{tr('Loading invoice data…', '載入發票資料中…', '载入发票资料中…')}</p>
         </div>
+      </div>
+    );
+  }
+  if (isError || !form) {
+    return (
+      <div className="p-6 text-center">
+        <p className="text-red-600">{tr('Invoice not found or failed to load.', '找不到發票或載入失敗。', '找不到发票或载入失败。')}</p>
+        <button onClick={() => { sessionStorage.removeItem('reviewQueue'); sessionStorage.removeItem('reviewQueueTotal'); navigate(isReceipt ? '/expense-receipts' : '/invoices'); }}
+          className="text-primary underline mt-2">← {tr('Back', '返回', '返回')}</button>
       </div>
     );
   }

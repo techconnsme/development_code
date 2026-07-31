@@ -240,13 +240,14 @@ firms.get('/:id/clients', async (c) => {
 
 // POST /api/firms/my/clients — add client for current firm user (or standalone supervisor/accountant)
 firms.post('/my/clients', async (c) => {
+  try {
   const user = c.get('user');
   const canManage = user.firm_role === 'admin' || ['admin', 'supervisor', 'accountant'].includes(user.role);
   if (!canManage) {
     return c.json({ error: 'Access denied. Requires admin, supervisor, or accountant role.' }, 403);
   }
   const body = await c.req.json();
-  const { company_name, email, display_name, contact_name, initial_password, permission_tier, industry, fy_start, fy_end } = body as any;
+  const { company_name, email, display_name, contact_name, initial_password, industry, fy_start, fy_end } = body as any;
   if (!company_name || !email) return c.json({ error: 'company_name and email required' }, 400);
 
   const clientUserId = `u-${uuidv4().slice(0, 8)}`;
@@ -258,10 +259,11 @@ firms.post('/my/clients', async (c) => {
   const parentUserId = user.firm_id ? user.id : user.id;
   const isFirmContext = !!user.firm_id;
 
+  // Supervisor accounts always get higher tier — tier is per-user, not per-company
   await c.env.DB.prepare(
     `INSERT INTO users (id, email, password_hash, name, company_name, role, permission_tier, parent_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(clientUserId, email, passwordHash, name, company_name, 'supervisor', permission_tier || 'higher', isFirmContext ? null : parentUserId).run();
+     VALUES (?, ?, ?, ?, ?, 'supervisor', 'higher', ?)`
+  ).bind(clientUserId, email, passwordHash, name, company_name, isFirmContext ? null : parentUserId).run();
 
   await c.env.DB.prepare(
     `INSERT INTO company_settings (user_id, name, legal_name, industry, fiscal_year_start, fiscal_year_end)
@@ -283,6 +285,10 @@ firms.post('/my/clients', async (c) => {
     id: firmClientId || clientUserId, client_user_id: clientUserId, user_id: clientUserId,
     company_name, email, password: pw, display_name: display_name || null,
   }, 201);
+  } catch (e: any) {
+    console.error('POST /firms/my/clients error:', e?.message, e?.stack);
+    return c.json({ error: e?.message || 'Internal error' }, 500);
+  }
 });
 
 // POST /api/firms/:id/clients — add client (creates user + company_settings + firm_clients)
@@ -294,7 +300,7 @@ firms.post('/:id/clients', async (c) => {
     return c.json({ error: 'Access denied' }, 403);
   }
   const body = await c.req.json();
-  const { company_name, email, display_name, contact_name, initial_password, permission_tier, industry, fy_start, fy_end } = body as any;
+  const { company_name, email, display_name, contact_name, initial_password, industry, fy_start, fy_end } = body as any;
   if (!company_name || !email) return c.json({ error: 'company_name and email required' }, 400);
 
   const clientUserId = `u-${uuidv4().slice(0, 8)}`;
@@ -302,10 +308,11 @@ firms.post('/:id/clients', async (c) => {
   const passwordHash = await hash(pw, 10);
   const name = contact_name || company_name;
 
+  // Supervisor accounts always get higher tier — tier is per-user, not per-company
   await c.env.DB.prepare(
     `INSERT INTO users (id, email, password_hash, name, company_name, role, permission_tier)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(clientUserId, email, passwordHash, name, company_name, 'supervisor', permission_tier || 'higher').run();
+     VALUES (?, ?, ?, ?, ?, 'supervisor', 'higher')`
+  ).bind(clientUserId, email, passwordHash, name, company_name).run();
 
   await c.env.DB.prepare(
     `INSERT INTO company_settings (user_id, name, legal_name, industry, fiscal_year_start, fiscal_year_end)
@@ -340,7 +347,8 @@ async function seedClientData(c: any, clientUserId: string, adminUserId: string)
       } else {
         for (const s of stmts) await s.run();
       }
-    } catch {
+    } catch (e: any) {
+      console.error('seedClientData compliance batch failed, falling back:', e?.message);
       // Fall back to sequential if batch fails
       for (const t of templates.results as any[]) {
         await c.env.DB.prepare(
@@ -374,7 +382,8 @@ async function seedClientData(c: any, clientUserId: string, adminUserId: string)
       } else {
         for (const s of inserts) await s.run();
       }
-    } catch {
+    } catch (e: any) {
+      console.error('seedClientData COA batch failed, falling back:', e?.message);
       // Fall back to sequential
       for (const s of inserts) await s.run();
     }

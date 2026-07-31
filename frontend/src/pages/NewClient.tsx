@@ -14,7 +14,6 @@ export default function NewClient() {
     contact_email: '',
     contact_name: '',
     initial_password: '',
-    permission_tier: 'higher' as string,
     industry: '',
     fy_start: '2026-04-01',
     fy_end: '2027-03-31',
@@ -30,7 +29,6 @@ export default function NewClient() {
         email: form.contact_email,
         contact_name: form.contact_name || undefined,
         initial_password: form.initial_password || undefined,
-        permission_tier: form.permission_tier,
         industry: form.industry || undefined,
         fy_start: form.fy_start || undefined,
         fy_end: form.fy_end || undefined,
@@ -93,7 +91,7 @@ export default function NewClient() {
               <ExternalLink className="h-4 w-4" />
               {tr('View Client Dashboard', '查看客戶儀表板', '查看客户仪表板')}
             </button>
-            <button onClick={() => { setResult(null); setForm({ company_name: '', contact_email: '', contact_name: '', initial_password: '', permission_tier: 'higher', industry: '', fy_start: '2026-04-01', fy_end: '2027-03-31' }); }}
+            <button onClick={() => { setResult(null); setForm({ company_name: '', contact_email: '', contact_name: '', initial_password: '', industry: '', fy_start: '2026-04-01', fy_end: '2027-03-31' }); }}
               className="px-4 py-2 border rounded text-sm">
               {tr('Add another client', '新增其他客戶', '新增其他客户')}
             </button>
@@ -177,20 +175,6 @@ export default function NewClient() {
             <button type="button" onClick={generatePassword} className="px-3 py-2 border rounded text-sm">
               {tr('Generate', '生成', '生成')}
             </button>
-          </div>
-        </div>
-
-        <div>
-          <label className="text-xs font-medium text-muted-foreground">{tr('Permission tier', '權限等級', '权限等级')}</label>
-          <div className="mt-1 flex gap-3">
-            <label className="flex items-center gap-2 text-sm">
-              <input type="radio" checked={form.permission_tier === 'higher'} onChange={() => setForm(f => ({ ...f, permission_tier: 'higher' }))} />
-              {tr('Higher — can delete, restore', '高級 — 可刪除、恢復', '高级 — 可删除、恢复')}
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="radio" checked={form.permission_tier === 'normal'} onChange={() => setForm(f => ({ ...f, permission_tier: 'normal' }))} />
-              {tr('Normal — read/write only', '一般 — 僅讀寫', '一般 — 仅读写')}
-            </label>
           </div>
         </div>
 

@@ -17,7 +17,7 @@ export default function CompanySwitcher() {
 
   // Include own company + sub-accounts for managers, firm clients for firm users
   const isManager = ['admin', 'supervisor', 'accountant'].includes(user?.role || '');
-  const ownCompany = user?.company_name ? { id: user.id, display_name: user.company_name, company_name: user.company_name, email: user.email, user_name: user.name } : null;
+  const ownCompany = (user?.company_name || user?.name) ? { id: user.id, display_name: user.company_name || user.name, company_name: user.company_name || user.name || '', email: user.email, user_name: user.name } : null;
   const clients = isFirmUser ? (firmClients || []) : (isManager ? (firmClients || []) : (ownCompany ? [ownCompany] : []));
   // Prepend own company for managers so they can always access their own data
   const allClients = (isManager && ownCompany && !clients.some(c => c.id === ownCompany.id))

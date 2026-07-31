@@ -794,9 +794,26 @@ bank.post('/:id/auto-categorize', async (c) => {
   const db = c.env.DB;
   const stmtId = c.req.param('id');
 
-  const stmt = await db.prepare('SELECT id FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-    .bind(stmtId, tenantId).first();
+  const stmt = await db.prepare(
+    'SELECT id, bank_name, account_number, statement_year, statement_month FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(stmtId, tenantId).first<{ id: string; bank_name: string | null; account_number: string | null; statement_year: number | null; statement_month: number | null }>();
   if (!stmt) return c.json({ error: 'Statement not found' }, 404);
+
+  // Duplicate guard: if another active statement for the same bank+account+period
+  // already has journal entries, skip auto-categorize to prevent double-counting
+  if (stmt.bank_name && stmt.account_number && stmt.statement_year && stmt.statement_month) {
+    const dup = await db.prepare(
+      `SELECT bs.id FROM bank_statements bs
+       JOIN bank_transactions bt ON bt.bank_statement_id = bs.id AND bt.deleted_at IS NULL
+       JOIN journal_entries je ON je.reference_id = bt.id AND je.reference_type = 'bank_transaction'
+       WHERE bs.user_id = ? AND bs.bank_name = ? AND bs.account_number = ?
+       AND bs.statement_year = ? AND bs.statement_month = ? AND bs.id != ? AND bs.deleted_at IS NULL
+       LIMIT 1`
+    ).bind(tenantId, stmt.bank_name, stmt.account_number, stmt.statement_year, stmt.statement_month, stmtId).first();
+    if (dup) {
+      return c.json({ categorized: 0, skipped: 0, total: 0, journal_skipped: true, reason: 'A statement for this period already has journal entries. Skipping to prevent double-counting.' });
+    }
+  }
 
   // Categorization rules: [pattern, account_code]
   const rules: [RegExp, string][] = [

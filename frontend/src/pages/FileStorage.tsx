@@ -272,6 +272,7 @@ export default function FileStorage() {
         );
         const result: any = await importResp.json();
         if (result?.ocr_text) console.log('[OCR-RAW-TEXT]', result.ocr_text);
+        if (result?.deepseek_raw) console.log('[DEEPSEEK-OUTPUT]', JSON.parse(result.deepseek_raw));
 
         setProcessingMsg(null);
         setUploading(false);

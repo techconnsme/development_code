@@ -238,7 +238,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 {user?.name || t('app.title')}
               </h1>
               <p className="text-sm text-muted-foreground mt-1">
-                {activeClient?.display_name || activeClient?.company_name || user?.company_name || activeCompany?.name || ''}
+                {activeClient?.display_name || activeClient?.company_name || user?.company_name || user?.name || activeCompany?.name || ''}
               </p>
             </>
           )}

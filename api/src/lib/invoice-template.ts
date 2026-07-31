@@ -202,7 +202,7 @@ function drawHeader(page: PDFPage, data: InvoiceData, fonts: PdfFonts, assets: P
     page.drawImage(assets.logoImage, { x: 57, y: Y.logo, width: 46, height: 37 });
   }
   const cx = PAGE_W / 2 - 50;
-  drawText(page, data.company_name || 'OPCC', cx, Y.company, fonts.arial, 13, 'center', cjkFontKey);
+  drawText(page, data.company_name || '', cx, Y.company, fonts.arial, 13, 'center', cjkFontKey);
   drawText(page, data.company_address1 || 'Hong Kong', cx, Y.addr1, fonts.arial, 10, 'center', cjkFontKey);
   drawText(page, data.company_address2 || '', cx, Y.addr2, fonts.arial, 10, 'center', cjkFontKey);
   drawText(page, data.company_contact || '', cx, Y.contact, fonts.arial, 10, 'center', cjkFontKey);

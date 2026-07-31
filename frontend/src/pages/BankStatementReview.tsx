@@ -111,8 +111,19 @@ export default function BankStatementReview() {
   const [localRows, setLocalRows] = useState<Transaction[]>([]);
   // Guard against double-submission — true for the ENTIRE save-and-confirm pipeline
   const [isSaving, setIsSaving] = useState(false);
-  // Reset saving state when navigating to a different review (React Router reuses component)
-  useEffect(() => { setIsSaving(false); }, [id]);
+  // Reset ALL local state when navigating to a different review (React Router reuses component)
+  // This fixes the same class of bug as the previous isSaving-only fix:
+  // stale pdfUrl/pdfError/edits leaking across queue items causes blank PDF panes and dead "Loading…" states.
+  useEffect(() => {
+    setIsSaving(false);
+    setPdfUrl(null);
+    setPdfError(null);
+    setHeaderEdits({});
+    setTxEdits({});
+    setDeletedTxIds(new Set());
+    setLocalRows([]);
+    setClosingManuallyEdited(false);
+  }, [id]);
 
   // PDF blob URL (loaded with auth)
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
@@ -191,20 +202,25 @@ export default function BankStatementReview() {
   });
 
   // ── Review queue: after save/discard, load next queued item ──
+  // Shift current item (position 0), then navigate to the NEXT one.
   function goNextInQueue() {
     const raw = sessionStorage.getItem('reviewQueue');
     if (!raw) return null;
     try {
       const queue: {docType:string, reviewId:string, filename:string, flags:string}[] = JSON.parse(raw);
+      // Remove current item
+      if (queue.length > 0) queue.shift();
+      // Navigate to next item if any
       if (queue.length > 0) {
-        const next = queue.shift()!;
-        if (queue.length > 0) sessionStorage.setItem('reviewQueue', JSON.stringify(queue));
-        else { sessionStorage.removeItem('reviewQueue'); sessionStorage.removeItem('reviewQueueTotal'); }
+        const next = queue[0];
+        sessionStorage.setItem('reviewQueue', JSON.stringify(queue));
         if (next.docType === 'bank_statement') navigate(`/bank-statements/review/${next.reviewId}`);
         else if (next.docType === 'card_statement') navigate(`/card-statements/review/${next.reviewId}`);
         else navigate(`/invoices/review/${next.reviewId}${next.flags || ''}`);
         return true;
       }
+      sessionStorage.removeItem('reviewQueue');
+      sessionStorage.removeItem('reviewQueueTotal');
     } catch {}
     sessionStorage.removeItem('reviewQueue');
     sessionStorage.removeItem('reviewQueueTotal');
@@ -212,13 +228,16 @@ export default function BankStatementReview() {
   }
 
   const confirmMut = useMutation({
-    mutationFn: (body?: any) => api(`/bank-statements/${id}/confirm`, { method: 'POST', body }),
-    onSuccess: () => {
+    mutationFn: (body?: any) => {
+      return api(`/bank-statements/${id}/confirm`, { method: 'POST', body });
+    },
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['bank-statements'] });
       queryClient.invalidateQueries({ queryKey: ['bank-statements-drafts'] });
       queryClient.invalidateQueries({ queryKey: ['bank-continuity'] });
       toast.success(tr('Saved to database! This statement is now confirmed.', '已儲存至數據庫！此月結單已確認。', '已储存至数据库！此月结单已确认。'));
-      setTimeout(() => { if (!goNextInQueue()) navigate('/bank-statements'); }, 0);
+      setIsSaving(false);
+      const next = goNextInQueue();
     },
     onError: (err: any) => {
       toast.error(`Failed to save: ${err?.message || err?.error || 'Unknown error'}`);
@@ -227,12 +246,19 @@ export default function BankStatementReview() {
   });
 
   const discardMut = useMutation({
-    mutationFn: () => api(`/bank-statements/${id}`, { method: 'DELETE' }),
-    onSuccess: () => {
+    mutationFn: () => {
+      return api(`/bank-statements/${id}`, { method: 'DELETE' });
+    },
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['bank-statements'] });
       queryClient.invalidateQueries({ queryKey: ['bank-statements-drafts'] });
       queryClient.invalidateQueries({ queryKey: ['bank-continuity'] });
-      setTimeout(() => { if (!goNextInQueue()) navigate('/bank-statements'); }, 0);
+      setIsSaving(false);
+      const next = goNextInQueue();
+    },
+    onError: (err: any) => {
+      toast.error(`Failed to discard: ${err?.message || err?.error || 'Unknown error'}`);
+      setIsSaving(false);
     },
   });
 
@@ -439,11 +465,14 @@ export default function BankStatementReview() {
   };
 
   const saveAndConfirm = async () => {
-    if (isSaving || confirmMut.isPending) return;
     setIsSaving(true);
     try {
-      if (headerHasChanges) await saveHeaderMut.mutateAsync(headerEdits);
-      if (txDirtyCount > 0 || localRows.length > 0) await saveAllTxEdits();
+      if (headerHasChanges) {
+        await saveHeaderMut.mutateAsync(headerEdits);
+      }
+      if (txDirtyCount > 0 || localRows.length > 0) {
+        await saveAllTxEdits();
+      }
     } catch (e: any) {
       toast.error(`Failed to save edits: ${e?.message || e?.error || 'Unknown error'}`);
       setIsSaving(false);

@@ -112,7 +112,8 @@ app.use('/api/*', async (c, next) => {
     } catch {}
   }
   // Run firm context after auth
-  await firmContextMiddleware(c, next);
+  const firmResult = await firmContextMiddleware(c, next);
+  if (firmResult) return firmResult;
 });
 
 // Health check

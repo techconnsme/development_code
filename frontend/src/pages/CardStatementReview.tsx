@@ -34,55 +34,96 @@ export default function CardStatementReview() {
   const [txEdits, setTxEdits] = useState<Record<string, Record<string, any>>>({});
   const [deletedTxIds, setDeletedTxIds] = useState<Set<string>>(new Set());
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // Reset saving state when navigating to a different review (React Router reuses component)
   useEffect(() => { setSaving(false); }, [id]);
 
-  const { data: stmt, isLoading } = useQuery({
+  const { data: stmt, isLoading, isError } = useQuery({
     queryKey: ['card-statement', id],
     queryFn: () => api(`/card-statements/${id}`),
     enabled: !!id,
-  }) as { data: CardStatement | undefined; isLoading: boolean };
-
-  // Load PDF
-  useEffect(() => {
-    if (!id) return;
-    const token = localStorage.getItem('token');
-    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-    const ac = localStorage.getItem('activeClient');
-    if (ac) { try { const c = JSON.parse(ac); if (c?.id) headers['X-Active-Client'] = c.id; } catch {} }
-    fetch(`${WORKER_API_BASE}/card-statements/${id}/file`, { headers })
-      .then(r => r.blob()).then(blob => setPdfUrl(URL.createObjectURL(blob))).catch(() => {});
-    return () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl); };
-  }, [id]);
-
-  const saveHeaderMut = useMutation({ mutationFn: (body: any) => api(`/card-statements/${id}`, { method: 'PATCH', body }) });
-  const saveTxMut = useMutation({ mutationFn: ({ txId, body }: { txId: string; body: any }) => api(`/card-statements/transactions/${txId}`, { method: 'PATCH', body }) });
-  const deleteTxMut = useMutation({ mutationFn: (txId: string) => api(`/card-statements/transactions/${txId}`, { method: 'DELETE' }) });
+  }) as { data: CardStatement | undefined; isLoading: boolean; isError: boolean };
+  // ── Review queue: after save/discard, load next queued item ──
+  // Shift current item (position 0), then navigate to the NEXT one.
   function goNextInQueue() {
     const raw = sessionStorage.getItem('reviewQueue');
     if (!raw) return null;
     try {
       const queue: {docType:string, reviewId:string, filename:string, flags:string}[] = JSON.parse(raw);
+      // Remove current item
+      if (queue.length > 0) queue.shift();
+      // Navigate to next item if any
       if (queue.length > 0) {
-        const next = queue.shift()!;
-        if (queue.length > 0) sessionStorage.setItem('reviewQueue', JSON.stringify(queue));
-        else { sessionStorage.removeItem('reviewQueue'); sessionStorage.removeItem('reviewQueueTotal'); }
+        const next = queue[0];
+        sessionStorage.setItem('reviewQueue', JSON.stringify(queue));
         if (next.docType === 'bank_statement') nav(`/bank-statements/review/${next.reviewId}`);
         else if (next.docType === 'card_statement') nav(`/card-statements/review/${next.reviewId}`);
         else nav(`/invoices/review/${next.reviewId}${next.flags || ''}`);
         return true;
       }
+      sessionStorage.removeItem('reviewQueue');
+      sessionStorage.removeItem('reviewQueueTotal');
     } catch {}
     sessionStorage.removeItem('reviewQueue');
     sessionStorage.removeItem('reviewQueueTotal');
     return null;
   }
 
-  const confirmMut = useMutation({ mutationFn: (body?: any) => api(`/card-statements/${id}/confirm`, { method: 'POST', body }), onSuccess: () => { setTimeout(() => { if (!goNextInQueue()) nav('/card-statements'); }, 0); } });
-  const discardMut = useMutation({ mutationFn: () => api(`/card-statements/${id}`, { method: 'DELETE' }), onSuccess: () => { setTimeout(() => { if (!goNextInQueue()) nav('/card-statements'); }, 0); } });
+  // Load PDF
+  useEffect(() => {
+    if (!id) return;
+    let revokeUrl: string | null = null;
+    let cancelled = false;
+    const token = localStorage.getItem('token');
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+    const ac = localStorage.getItem('activeClient');
+    if (ac) { try { const c = JSON.parse(ac); if (c?.id) headers['X-Active-Client'] = c.id; } catch {} }
+    fetch(`${WORKER_API_BASE}/card-statements/${id}/file`, { headers })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
+      .then(blob => { const url = URL.createObjectURL(blob); revokeUrl = url; if (!cancelled) setPdfUrl(url); })
+      .catch(() => { if (!cancelled) setPdfError('Could not load PDF'); });
+    return () => { cancelled = true; if (revokeUrl) URL.revokeObjectURL(revokeUrl); };
+  }, [id]);
 
-  if (isLoading || !stmt) return <div className="p-6 text-muted-foreground">Loading…</div>;
+  const saveHeaderMut = useMutation({ mutationFn: (body: any) => api(`/card-statements/${id}`, { method: 'PATCH', body }) });
+  const saveTxMut = useMutation({ mutationFn: ({ txId, body }: { txId: string; body: any }) => api(`/card-statements/transactions/${txId}`, { method: 'PATCH', body }) });
+  const deleteTxMut = useMutation({ mutationFn: (txId: string) => api(`/card-statements/transactions/${txId}`, { method: 'DELETE' }) });
+
+  const confirmMut = useMutation({
+    mutationFn: (body?: any) => api(`/card-statements/${id}/confirm`, { method: 'POST', body }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['card-statements'] });
+      queryClient.invalidateQueries({ queryKey: ['card-statements-drafts'] });
+      queryClient.invalidateQueries({ queryKey: ['card-continuity'] });
+      setTimeout(() => { if (!goNextInQueue()) nav('/card-statements'); }, 0);
+    },
+    onError: (err: any) => {
+      alert(`Failed to save: ${err?.message || err?.error || 'Unknown error'}`);
+      setSaving(false);
+    },
+  });
+  const discardMut = useMutation({
+    mutationFn: () => api(`/card-statements/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['card-statements'] });
+      queryClient.invalidateQueries({ queryKey: ['card-statements-drafts'] });
+      queryClient.invalidateQueries({ queryKey: ['card-continuity'] });
+      setTimeout(() => { if (!goNextInQueue()) nav('/card-statements'); }, 0);
+    },
+    onError: (err: any) => {
+      alert(`Failed to discard: ${err?.message || err?.error || 'Unknown error'}`);
+    },
+  });
+
+  if (isLoading) return <div className="p-6 text-muted-foreground">Loading…</div>;
+  if (isError || !stmt) return (
+    <div className="p-6 text-center">
+      <p className="text-red-600">Statement not found.</p>
+      <button onClick={() => { sessionStorage.removeItem('reviewQueue'); sessionStorage.removeItem('reviewQueueTotal'); nav('/card-statements'); }}
+        className="text-primary underline mt-2">← Back to Card Statements</button>
+    </div>
+  );
 
   const txs = (stmt.transactions || []).filter((tx: CardTransaction) => !deletedTxIds.has(tx.id));
   const netChange = txs.reduce((sum: number, tx: CardTransaction) => {

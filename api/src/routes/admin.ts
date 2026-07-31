@@ -57,6 +57,126 @@ admin.delete('/domains/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// ── Create account (any role) — admin only ──
+// POST /api/admin/create-account
+// Body: { email, password, name, role, company_name?, permission_tier?, link_to_firm_id? }
+admin.post('/create-account', async (c) => {
+  const adminUser = c.get('user');
+  if (adminUser.role !== 'admin') return c.json({ error: 'Admin only' }, 403);
+
+  const body = await c.req.json();
+  const { email, password, name, role, company_name, permission_tier, link_to_firm_id } = body as any;
+
+  if (!email || !password || !name || !role) {
+    return c.json({ error: 'email, password, name, and role are required' }, 400);
+  }
+  if (password.length < 6) {
+    return c.json({ error: 'password must be at least 6 characters' }, 400);
+  }
+  const validRoles = ['admin', 'supervisor', 'accountant', 'staff', 'viewer', 'auditor'];
+  if (!validRoles.includes(role)) {
+    return c.json({ error: `role must be one of: ${validRoles.join(', ')}` }, 400);
+  }
+
+  const db = c.env.DB;
+
+  // Check email not already registered
+  const existing = await db.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+  if (existing) return c.json({ error: 'This email is already registered.' }, 409);
+
+  const userId = `u-${uuidv4().slice(0, 8)}`;
+  const passwordHash = await hash(password, 10);
+
+  // Default permission tier by role
+  const tier = permission_tier
+    || (['admin', 'supervisor', 'accountant'].includes(role) ? 'higher' : 'normal');
+
+  await db.prepare(
+    `INSERT INTO users (id, email, password_hash, name, company_name, role, status, permission_tier)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`
+  ).bind(userId, email, passwordHash, name, company_name || name, role, tier).run();
+
+  // If a company_name is provided, create company_settings
+  if (company_name) {
+    const csId = `cs-${uuidv4().slice(0, 8)}`;
+    try {
+      await db.prepare(
+        `INSERT OR IGNORE INTO company_settings (user_id, name, email)
+         VALUES (?, ?, ?)`
+      ).bind(userId, company_name, email).run();
+    } catch { /* ignore if table missing */ }
+  }
+
+  // If link_to_firm_id is provided, also create a firm_clients entry
+  let firmClientId: string | null = null;
+  if (link_to_firm_id) {
+    const firm = await db.prepare('SELECT id FROM firms WHERE id = ?').bind(link_to_firm_id).first();
+    if (!firm) return c.json({ error: `Firm ${link_to_firm_id} not found` }, 400);
+    firmClientId = `fc-${uuidv4().slice(0, 8)}`;
+    await db.prepare(
+      'INSERT INTO firm_clients (id, firm_id, client_user_id, display_name) VALUES (?, ?, ?, ?)'
+    ).bind(firmClientId, link_to_firm_id, userId, company_name || name).run();
+  }
+
+  // Seed COA from template
+  try {
+    const templateAccounts = await db.prepare(
+      "SELECT account_code, account_name, account_type, parent_code, opening_balance FROM accounts WHERE user_id = 'u-hayson'"
+    ).all();
+    if (templateAccounts.results.length > 0) {
+      const inserts = templateAccounts.results.map((a: any) =>
+        db.prepare(
+          'INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code, opening_balance) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(`acc-${uuidv4().slice(0, 8)}`, userId, a.account_code, a.account_name, a.account_type, a.parent_code || null, a.opening_balance || 0)
+      );
+      if (typeof db.batch === 'function') {
+        for (let i = 0; i < inserts.length; i += 100) {
+          await db.batch(inserts.slice(i, i + 100));
+        }
+      } else {
+        for (const s of inserts) await s.run();
+      }
+    }
+  } catch { /* ignore */ }
+
+  // Seed compliance templates
+  try {
+    const templates = await db.prepare('SELECT id FROM compliance_templates WHERE is_required = 1').all();
+    if (templates.results.length > 0) {
+      const stmts = templates.results.map((t: any) =>
+        db.prepare(
+          'INSERT OR IGNORE INTO member_compliance (id, user_id, template_id, status) VALUES (?, ?, ?, ?)'
+        ).bind(`mc-${uuidv4().slice(0, 8)}`, userId, t.id, 'pending')
+      );
+      if (typeof db.batch === 'function') {
+        await db.batch(stmts);
+      } else {
+        for (const s of stmts) await s.run();
+      }
+    }
+  } catch { /* ignore */ }
+
+  // Audit log
+  try {
+    await db.prepare(
+      'INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(`al-${uuidv4().slice(0, 8)}`, adminUser.id, 'create_account', 'user', userId,
+      JSON.stringify({ email, name, role, company_name: company_name || null, link_to_firm_id: link_to_firm_id || null })
+    ).run();
+  } catch { /* ignore */ }
+
+  return c.json({
+    id: userId,
+    email,
+    name,
+    role,
+    company_name: company_name || null,
+    permission_tier: tier,
+    firm_client_id: firmClientId,
+    password, // return plaintext so the admin can share it
+  }, 201);
+});
+
 // ── One-click onboard: create user + domain + DNS + Pages ──
 admin.post('/onboard', async (c) => {
   const adminUser = c.get('user');

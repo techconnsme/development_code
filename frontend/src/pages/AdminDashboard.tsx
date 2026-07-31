@@ -293,7 +293,7 @@ function RecentActivity() {
           <span className="text-muted-foreground flex-shrink-0 w-20 text-xs">{u.created_at?.slice(0, 10)}</span>
           <span className="font-medium">{u.name}</span>
           <span className="text-muted-foreground">·</span>
-          <span className="text-muted-foreground truncate">{u.company_name || u.email}</span>
+          <span className="text-muted-foreground truncate">{u.company_name || u.name}</span>
           <span className="flex-1" />
           <span className={`text-xs px-1.5 py-0.5 rounded ${
             u.role === 'admin' ? 'bg-red-100 text-red-700' :
