@@ -24,3 +24,4 @@ fix-admin-password.sql
 test-results/
 test-samples-generated/
 *.tsbuildinfo
+tests/
