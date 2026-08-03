@@ -127,32 +127,6 @@ export default function NewClient() {
             className="mt-1 block w-full px-3 py-2 border rounded" />
         </div>
 
-        <div>
-          <label className="text-xs font-medium text-muted-foreground">{tr('Industry Classification', '行業分類', '行业分类')}</label>
-          <select value={form.industry} onChange={e => setForm(f => ({ ...f, industry: e.target.value }))}
-            className="mt-1 block w-full px-3 py-2 border rounded bg-background text-sm">
-            <option value="">{tr('— Select industry —', '— 選擇行業 —', '— 选择行业 —')}</option>
-            <option value="general">{tr('General — OPC / Professional Services', '一般 — OPC / 專業服務', '一般 — OPC / 专业服务')}</option>
-            <option value="it">{tr('IT / Design / Consulting', 'IT / 設計 / 顧問', 'IT / 设计 / 顾问')}</option>
-            <option value="f_b">{tr('Food & Beverage', '餐飲', '餐饮')}</option>
-            <option value="trading">{tr('Trading / Import-Export', '貿易 / 進出口', '贸易 / 进出口')}</option>
-            <option value="finance">{tr('Financial Services', '金融服務', '金融服务')}</option>
-          </select>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-medium text-muted-foreground">{tr('FY Start', '會計年度開始', '会计年度开始')}</label>
-            <input type="date" value={form.fy_start} onChange={e => setForm(f => ({ ...f, fy_start: e.target.value }))}
-              className="mt-1 block w-full px-3 py-2 border rounded text-sm" />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground">{tr('FY End', '會計年度結束', '会计年度结束')}</label>
-            <input type="date" value={form.fy_end} onChange={e => setForm(f => ({ ...f, fy_end: e.target.value }))}
-              className="mt-1 block w-full px-3 py-2 border rounded text-sm" />
-          </div>
-        </div>
-
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-medium text-muted-foreground">{tr('Contact name', '聯絡人', '联络人')}</label>
@@ -176,6 +150,32 @@ export default function NewClient() {
             <button type="button" onClick={generatePassword} className="px-3 py-2 border rounded text-sm">
               {tr('Generate', '生成', '生成')}
             </button>
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs font-medium text-muted-foreground">{tr('Industry Classification', '行業分類', '行业分类')}</label>
+          <select value={form.industry} onChange={e => setForm(f => ({ ...f, industry: e.target.value }))}
+            className="mt-1 block w-full px-3 py-2 border rounded bg-background text-sm">
+            <option value="">{tr('— Select industry —', '— 選擇行業 —', '— 选择行业 —')}</option>
+            <option value="general">{tr('General — OPC / Professional Services', '一般 — OPC / 專業服務', '一般 — OPC / 专业服务')}</option>
+            <option value="it">{tr('IT / Design / Consulting', 'IT / 設計 / 顧問', 'IT / 设计 / 顾问')}</option>
+            <option value="f_b">{tr('Food & Beverage', '餐飲', '餐饮')}</option>
+            <option value="trading">{tr('Trading / Import-Export', '貿易 / 進出口', '贸易 / 进出口')}</option>
+            <option value="finance">{tr('Financial Services', '金融服務', '金融服务')}</option>
+          </select>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">{tr('FY Start', '會計年度開始', '会计年度开始')}</label>
+            <input type="date" value={form.fy_start} onChange={e => setForm(f => ({ ...f, fy_start: e.target.value }))}
+              className="mt-1 block w-full px-3 py-2 border rounded text-sm" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">{tr('FY End', '會計年度結束', '会计年度结束')}</label>
+            <input type="date" value={form.fy_end} onChange={e => setForm(f => ({ ...f, fy_end: e.target.value }))}
+              className="mt-1 block w-full px-3 py-2 border rounded text-sm" />
           </div>
         </div>
 
