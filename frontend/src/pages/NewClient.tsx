@@ -5,7 +5,7 @@ import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { UserPlus, ArrowLeft, Copy, Check, AlertCircle, ExternalLink } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
-import CoaPreview from '../components/CoaPreview';
+import CoaPreview, { type CoaMode, type CoaAccount } from '../components/CoaPreview';
 
 export default function NewClient() {
   const nav = useNavigate();
@@ -21,6 +21,9 @@ export default function NewClient() {
   });
   const [result, setResult] = useState<{ user_id: string; email: string; password: string; clientId: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [coaMode, setCoaMode] = useState<CoaMode>('manual');
+  const [customAccounts, setCustomAccounts] = useState<CoaAccount[]>([]);
+  const [removedCodes, setRemovedCodes] = useState<Set<string>>(new Set());
 
   const createMut = useMutation({
     mutationFn: () => api('/firms/my/clients', {
@@ -33,6 +36,10 @@ export default function NewClient() {
         industry: form.industry || undefined,
         fy_start: form.fy_start || undefined,
         fy_end: form.fy_end || undefined,
+        coa_mode: coaMode,
+        coa_industry: form.industry || 'professional',
+        custom_accounts: customAccounts,
+        removed_codes: [...removedCodes],
       },
     }) as Promise<{ user_id: string; client_user_id?: string; id: string; password?: string; success: boolean }>,
     onSuccess: (res: any) => {
@@ -120,6 +127,7 @@ export default function NewClient() {
       </div>
 
       <div className="rounded-lg border bg-card p-4 space-y-3">
+        {/* Company name */}
         <div>
           <label className="text-xs font-medium text-muted-foreground">{tr('Company name', '公司名稱', '公司名称')} *</label>
           <input value={form.company_name} onChange={e => setForm(f => ({ ...f, company_name: e.target.value }))}
@@ -127,6 +135,7 @@ export default function NewClient() {
             className="mt-1 block w-full px-3 py-2 border rounded" />
         </div>
 
+        {/* Contact + Email grid */}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-medium text-muted-foreground">{tr('Contact name', '聯絡人', '联络人')}</label>
@@ -141,6 +150,7 @@ export default function NewClient() {
           </div>
         </div>
 
+        {/* Password + Generate */}
         <div>
           <label className="text-xs font-medium text-muted-foreground">{tr('Initial password', '初始密碼', '初始密码')} * ({tr('at least 6 characters', '至少6個字符', '至少6个字符')})</label>
           <div className="flex gap-2 mt-1">
@@ -153,19 +163,27 @@ export default function NewClient() {
           </div>
         </div>
 
+        {/* Industry */}
         <div>
           <label className="text-xs font-medium text-muted-foreground">{tr('Industry Classification', '行業分類', '行业分类')}</label>
           <select value={form.industry} onChange={e => setForm(f => ({ ...f, industry: e.target.value }))}
             className="mt-1 block w-full px-3 py-2 border rounded bg-background text-sm">
             <option value="">{tr('— Select industry —', '— 選擇行業 —', '— 选择行业 —')}</option>
-            <option value="general">{tr('General — OPC / Professional Services', '一般 — OPC / 專業服務', '一般 — OPC / 专业服务')}</option>
-            <option value="it">{tr('IT / Design / Consulting', 'IT / 設計 / 顧問', 'IT / 设计 / 顾问')}</option>
-            <option value="f_b">{tr('Food & Beverage', '餐飲', '餐饮')}</option>
-            <option value="trading">{tr('Trading / Import-Export', '貿易 / 進出口', '贸易 / 进出口')}</option>
+            <option value="professional">{tr('Professional & Business Services', '專業及商業服務', '专业及商业服务')}</option>
             <option value="finance">{tr('Financial Services', '金融服務', '金融服务')}</option>
+            <option value="trading">{tr('Trading & Logistics', '貿易及物流', '贸易及物流')}</option>
+            <option value="tourism">{tr('Tourism', '旅遊', '旅游')}</option>
+            <option value="it">{tr('Innovation & Technology', '創新及科技', '创新及科技')}</option>
+            <option value="fintech">{tr('Fintech', '金融科技', '金融科技')}</option>
+            <option value="medical">{tr('Medical & Healthcare', '醫療及保健', '医疗及保健')}</option>
+            <option value="education">{tr('Education', '教育', '教育')}</option>
+            <option value="construction">{tr('Construction & Real Estate', '建築及地產', '建筑及地产')}</option>
+            <option value="ict">{tr('ICT & Telecommunications', '資訊及通訊科技', '资讯及通讯科技')}</option>
+            <option value="manufacturing">{tr('Manufacturing', '製造業', '制造业')}</option>
           </select>
         </div>
 
+        {/* FY dates */}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-medium text-muted-foreground">{tr('FY Start', '會計年度開始', '会计年度开始')}</label>
@@ -179,8 +197,16 @@ export default function NewClient() {
           </div>
         </div>
 
-        {/* COA Template Preview */}
-        <CoaPreview fyStart={form.fy_start} fyEnd={form.fy_end} />
+        {/* COA Review */}
+        <CoaPreview
+          industry={form.industry}
+          mode={coaMode}
+          onModeChange={setCoaMode}
+          customAccounts={customAccounts}
+          onCustomAccountsChange={setCustomAccounts}
+          removedCodes={removedCodes}
+          onRemovedCodesChange={setRemovedCodes}
+        />
 
         <div className="pt-2 flex justify-end gap-2">
           <button onClick={() => nav('/')} className="px-4 py-2 border rounded text-sm">

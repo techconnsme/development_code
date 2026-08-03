@@ -3,15 +3,16 @@ import { v4 as uuidv4 } from 'uuid';
 import { hash } from 'bcryptjs';
 import { Bindings, Variables } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { getCoaTemplate, mergeCustomAccounts, type CoaTemplateAccount } from '../lib/coa-templates';
 
 const firms = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 firms.use('*', authMiddleware);
 
-// GET /api/firms/my — current user's firm info + all accessible clients (or standalone sub-accounts)
+// GET /api/firms/my ??current user's firm info + all accessible clients (or standalone sub-accounts)
 firms.get('/my', async (c) => {
   const user = c.get('user');
 
-  // Standalone supervisor/accountant/admin — return sub-accounts linked via parent_user_id
+  // Standalone supervisor/accountant/admin ??return sub-accounts linked via parent_user_id
   if (!user.firm_id) {
     if (['admin', 'supervisor', 'accountant'].includes(user.role)) {
       const clients = await c.env.DB.prepare(
@@ -56,11 +57,11 @@ firms.get('/my', async (c) => {
   return c.json({ firm, clients: clients.results, my_role: user.firm_role });
 });
 
-// GET /api/firms/my-clients — list of accessible client IDs (lightweight)
+// GET /api/firms/my-clients ??list of accessible client IDs (lightweight)
 firms.get('/my-clients', async (c) => {
   const user = c.get('user');
 
-  // Standalone supervisor/accountant/admin — show sub-accounts linked via parent_user_id
+  // Standalone supervisor/accountant/admin ??show sub-accounts linked via parent_user_id
   if (!user.firm_id) {
     if (['admin', 'supervisor', 'accountant'].includes(user.role)) {
       const rows = await c.env.DB.prepare(
@@ -96,7 +97,7 @@ firms.get('/my-clients', async (c) => {
   return c.json({ data: rows.results });
 });
 
-// GET /api/firms/:id/members — list staff members (firm admin only)
+// GET /api/firms/:id/members ??list staff members (firm admin only)
 firms.get('/:id/members', async (c) => {
   const user = c.get('user');
   if (!user.firm_id || user.firm_id !== c.req.param('id')) return c.json({ error: 'Access denied' }, 403);
@@ -110,7 +111,7 @@ firms.get('/:id/members', async (c) => {
   return c.json({ data: rows.results });
 });
 
-// POST /api/firms/:id/members — add staff member
+// POST /api/firms/:id/members ??add staff member
 firms.post('/:id/members', async (c) => {
   const user = c.get('user');
   if (!user.firm_id || user.firm_id !== c.req.param('id') || user.firm_role !== 'admin') {
@@ -157,7 +158,7 @@ firms.post('/:id/members', async (c) => {
   return c.json({ id: memberId, user_id: memberUser.id, email: memberUser.email, name: memberUser.name, role: role || 'staff', ...(createdPassword ? { password: createdPassword } : {}) }, 201);
 });
 
-// DELETE /api/firms/:id/members/:mid — permanently delete staff member and user account
+// DELETE /api/firms/:id/members/:mid ??permanently delete staff member and user account
 firms.delete('/:id/members/:mid', async (c) => {
   const user = c.get('user');
   if (!user.firm_id || user.firm_id !== c.req.param('id') || user.firm_role !== 'admin') {
@@ -181,7 +182,7 @@ firms.delete('/:id/members/:mid', async (c) => {
   return c.json({ success: true, deleted_user_id: member.user_id });
 });
 
-// PATCH /api/firms/:id/members/:mid — toggle active/inactive or update role
+// PATCH /api/firms/:id/members/:mid ??toggle active/inactive or update role
 firms.patch('/:id/members/:mid', async (c) => {
   const user = c.get('user');
   if (!user.firm_id || user.firm_id !== c.req.param('id') || user.firm_role !== 'admin') {
@@ -205,7 +206,7 @@ firms.patch('/:id/members/:mid', async (c) => {
   return c.json({ success: true });
 });
 
-// PATCH /api/firms/:id/members/:mid/password — change login password
+// PATCH /api/firms/:id/members/:mid/password ??change login password
 firms.patch('/:id/members/:mid/password', async (c) => {
   const user = c.get('user');
   if (!user.firm_id || user.firm_id !== c.req.param('id') || user.firm_role !== 'admin') {
@@ -223,7 +224,7 @@ firms.patch('/:id/members/:mid/password', async (c) => {
   return c.json({ success: true });
 });
 
-// GET /api/firms/:id/clients — list clients (firm admin only)
+// GET /api/firms/:id/clients ??list clients (firm admin only)
 firms.get('/:id/clients', async (c) => {
   const user = c.get('user');
   if (!user.firm_id || user.firm_id !== c.req.param('id')) return c.json({ error: 'Access denied' }, 403);
@@ -238,7 +239,7 @@ firms.get('/:id/clients', async (c) => {
   return c.json({ data: rows.results });
 });
 
-// POST /api/firms/my/clients — add client for current firm user (or standalone supervisor/accountant)
+// POST /api/firms/my/clients ??add client for current firm user (or standalone supervisor/accountant)
 firms.post('/my/clients', async (c) => {
   try {
   const user = c.get('user');
@@ -247,7 +248,8 @@ firms.post('/my/clients', async (c) => {
     return c.json({ error: 'Access denied. Requires admin, supervisor, or accountant role.' }, 403);
   }
   const body = await c.req.json();
-  const { company_name, email, display_name, contact_name, initial_password, industry, fy_start, fy_end } = body as any;
+  const { company_name, email, display_name, contact_name, initial_password, industry, fy_start, fy_end,
+          coa_mode, coa_industry, custom_accounts, removed_codes } = body as any;
   if (!company_name || !email) return c.json({ error: 'company_name and email required' }, 400);
 
   const clientUserId = `u-${uuidv4().slice(0, 8)}`;
@@ -259,7 +261,7 @@ firms.post('/my/clients', async (c) => {
   const parentUserId = user.firm_id ? user.id : user.id;
   const isFirmContext = !!user.firm_id;
 
-  // Supervisor accounts always get higher tier — tier is per-user, not per-company
+  // Supervisor accounts always get higher tier ??tier is per-user, not per-company
   await c.env.DB.prepare(
     `INSERT INTO users (id, email, password_hash, name, company_name, role, permission_tier, parent_user_id)
      VALUES (?, ?, ?, ?, ?, 'supervisor', 'higher', ?)`
@@ -279,7 +281,7 @@ firms.post('/my/clients', async (c) => {
   }
 
   // Seed compliance + COA
-  await seedClientData(c, clientUserId, user.id);
+	  await seedClientData(c, clientUserId, user.id, { industry: coa_industry || industry || "general", coaMode: coa_mode === "manual" ? "manual" : "industry", customAccounts: custom_accounts || [], removedCodes: removed_codes || [] });
 
   return c.json({
     id: firmClientId || clientUserId, client_user_id: clientUserId, user_id: clientUserId,
@@ -291,7 +293,7 @@ firms.post('/my/clients', async (c) => {
   }
 });
 
-// POST /api/firms/:id/clients — add client (creates user + company_settings + firm_clients)
+// POST /api/firms/:id/clients ??add client (creates user + company_settings + firm_clients)
 firms.post('/:id/clients', async (c) => {
   const user = c.get('user');
   const isFirmAdmin = user.firm_id && user.firm_id === c.req.param('id') && user.firm_role === 'admin';
@@ -300,7 +302,8 @@ firms.post('/:id/clients', async (c) => {
     return c.json({ error: 'Access denied' }, 403);
   }
   const body = await c.req.json();
-  const { company_name, email, display_name, contact_name, initial_password, industry, fy_start, fy_end } = body as any;
+  const { company_name, email, display_name, contact_name, initial_password, industry, fy_start, fy_end,
+          coa_mode, coa_industry, custom_accounts, removed_codes } = body as any;
   if (!company_name || !email) return c.json({ error: 'company_name and email required' }, 400);
 
   const clientUserId = `u-${uuidv4().slice(0, 8)}`;
@@ -308,7 +311,7 @@ firms.post('/:id/clients', async (c) => {
   const passwordHash = await hash(pw, 10);
   const name = contact_name || company_name;
 
-  // Supervisor accounts always get higher tier — tier is per-user, not per-company
+  // Supervisor accounts always get higher tier ??tier is per-user, not per-company
   await c.env.DB.prepare(
     `INSERT INTO users (id, email, password_hash, name, company_name, role, permission_tier)
      VALUES (?, ?, ?, ?, ?, 'supervisor', 'higher')`
@@ -324,7 +327,7 @@ firms.post('/:id/clients', async (c) => {
     'INSERT INTO firm_clients (id, firm_id, client_user_id, display_name) VALUES (?, ?, ?, ?)'
   ).bind(firmClientId, user.firm_id, clientUserId, display_name || null).run();
 
-  await seedClientData(c, clientUserId, user.id);
+	  await seedClientData(c, clientUserId, user.id, { industry: coa_industry || industry || "general", coaMode: coa_mode === "manual" ? "manual" : "industry", customAccounts: custom_accounts || [], removedCodes: removed_codes || [] });
 
   return c.json({
     id: firmClientId, client_user_id: clientUserId, user_id: clientUserId,
@@ -332,8 +335,9 @@ firms.post('/:id/clients', async (c) => {
   }, 201);
 });
 
-async function seedClientData(c: any, clientUserId: string, adminUserId: string) {
-  // Seed compliance templates — try batch, fall back to sequential
+async function seedClientData(c: any, clientUserId: string, adminUserId: string,
+  opts?: { industry?: string; coaMode?: 'industry' | 'manual'; customAccounts?: CoaTemplateAccount[]; removedCodes?: string[]; }) {
+  // Seed compliance templates ??try batch, fall back to sequential
   const templates = await c.env.DB.prepare('SELECT id FROM compliance_templates WHERE is_required = 1').all();
   if (templates.results.length > 0) {
     try {
@@ -358,17 +362,43 @@ async function seedClientData(c: any, clientUserId: string, adminUserId: string)
     }
   }
 
-  // Seed COA accounts — try batch, fall back to sequential
-  const canonicalAccounts = await c.env.DB.prepare(
-    "SELECT account_code, account_name, account_type, parent_code, opening_balance FROM accounts WHERE user_id = 'u-hayson'"
-  ).all();
-  const sourceAccounts: any[] = canonicalAccounts.results.length > 0 ? canonicalAccounts.results
-    : (await c.env.DB.prepare(
-      'SELECT account_code, account_name, account_type, parent_code, opening_balance FROM accounts WHERE user_id = ?'
-    ).bind(adminUserId).all()).results;
+  // Seed COA accounts — use industry-aware template or fall back to u-hayson
+  const coaIndustry = opts?.industry || 'general';
+  const coaMode = opts?.coaMode || 'industry';
+  const customAccounts = opts?.customAccounts || [];
+  const removedCodes = new Set(opts?.removedCodes || []);
 
-  if (sourceAccounts.length > 0) {
-    const inserts = sourceAccounts.map((a: any) =>
+  let accounts: any[];
+  if (opts?.coaMode) {
+    // New behaviour: use coa-templates module
+    accounts = getCoaTemplate(coaIndustry, coaMode);
+    if (customAccounts.length > 0) {
+      accounts = mergeCustomAccounts(accounts, customAccounts);
+    }
+    // Filter out removed codes
+    if (removedCodes.size > 0) {
+      accounts = accounts.filter((a: any) => !removedCodes.has(a.account_code));
+    }
+  } else {
+    // Backward compat: copy from u-hayson (no coa_mode sent)
+    const canonicalAccounts = await c.env.DB.prepare(
+      "SELECT account_code, account_name, account_type, parent_code, opening_balance FROM accounts WHERE user_id = 'u-hayson'"
+    ).all();
+    const sourceAccounts: any[] = canonicalAccounts.results.length > 0 ? canonicalAccounts.results
+      : (await c.env.DB.prepare(
+        'SELECT account_code, account_name, account_type, parent_code, opening_balance FROM accounts WHERE user_id = ?'
+      ).bind(adminUserId).all()).results;
+    accounts = sourceAccounts.map((a: any) => ({
+      account_code: a.account_code,
+      account_name: a.account_name,
+      account_type: a.account_type,
+      parent_code: a.parent_code || null,
+      opening_balance: a.opening_balance || 0,
+    }));
+  }
+
+  if (accounts.length > 0) {
+    const inserts = accounts.map((a: any) =>
       c.env.DB.prepare(
         'INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code, opening_balance) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).bind(`acc-${uuidv4().slice(0, 8)}`, clientUserId, a.account_code, a.account_name, a.account_type, a.parent_code || null, a.opening_balance || 0)
@@ -390,7 +420,7 @@ async function seedClientData(c: any, clientUserId: string, adminUserId: string)
   }
 }
 
-// PATCH /api/firms/:id/clients/:cid — update client (archive/restore)
+// PATCH /api/firms/:id/clients/:cid ??update client (archive/restore)
 firms.patch('/:id/clients/:cid', async (c) => {
   const user = c.get('user');
   if (!user.firm_id || user.firm_id !== c.req.param('id') || user.firm_role !== 'admin') {
@@ -414,7 +444,7 @@ firms.patch('/:id/clients/:cid', async (c) => {
   return c.json({ success: true });
 });
 
-// GET /api/firms/:id/assignments — list all staff-to-client assignments
+// GET /api/firms/:id/assignments ??list all staff-to-client assignments
 firms.get('/:id/assignments', async (c) => {
   const user = c.get('user');
   if (!user.firm_id || user.firm_id !== c.req.param('id') || user.firm_role !== 'admin') {
@@ -432,7 +462,7 @@ firms.get('/:id/assignments', async (c) => {
   return c.json({ data: rows.results });
 });
 
-// POST /api/firms/:id/assignments — bulk update assignments for a member
+// POST /api/firms/:id/assignments ??bulk update assignments for a member
 firms.post('/:id/assignments', async (c) => {
   const user = c.get('user');
   if (!user.firm_id || user.firm_id !== c.req.param('id') || user.firm_role !== 'admin') {
