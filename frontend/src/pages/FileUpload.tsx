@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Upload, FileText, Image, File, Loader2 } from 'lucide-react';
+import { Upload, FileText, Image, File, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 import { writeTokenUsage, clearTokenUsage } from '../components/TokenPopup';
 
@@ -30,6 +30,8 @@ export default function FileUpload() {
   const batchRef = useRef({ total: 0, done: 0, bank: 0, invoice: 0, card: 0 });
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0, currentFile: '' });
   const [tokenCardDismissed, setTokenCardDismissed] = useState(false);
+  const [fileErrors, setFileErrors] = useState<Record<number, string>>({});
+  const [fileStatuses, setFileStatuses] = useState<Record<number, 'pending' | 'processing' | 'success' | 'error'>>({});
 
   function pushToQueue(docType: string, reviewId: string, filename: string, flags: string) {
     const stored = sessionStorage.getItem('reviewQueue');
@@ -50,11 +52,11 @@ export default function FileUpload() {
   const handleDragLeave = useCallback(() => setDragOver(false), []);
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setDragOver(false);
-    if (e.dataTransfer.files.length > 0) setFiles(Array.from(e.dataTransfer.files));
+    if (e.dataTransfer.files.length > 0) { setFiles(Array.from(e.dataTransfer.files)); setFileErrors({}); setFileStatuses({}); }
   }, []);
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) setFiles(Array.from(e.target.files));
+    if (e.target.files && e.target.files.length > 0) { setFiles(Array.from(e.target.files)); setFileErrors({}); setFileStatuses({}); }
   }, []);
 
   // Upload one file: base64 → upload → import-document (OCR + type detection) → navigate
@@ -136,22 +138,36 @@ export default function FileUpload() {
       return 'duplicate';
     }
 
-    // Route based on detected document type
+    // Validation failure: OCR failed or server returned an error
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    if (result?.ocr_failed) {
+      throw new Error(tr(
+        'Could not read this document. The file may be blurry, scanned at low resolution, or in an unsupported format.',
+        '無法讀取此文件。文件可能模糊、掃描分辨率低或格式不支援。',
+        '无法读取此文件。文件可能模糊、扫描分辨率低或格式不支援。',
+      ));
+    }
+
+    // Route based on detected document type — auto-save, skip review, go to /bookkeeping
     const docType = result?.type;
     if (docType === 'card_statement' && result?.statement_id) {
-      if (result?.ocr_failed) toast.warning(tr('Could not auto-read. Please enter details manually.', '無法自動讀取。請手動輸入。', '无法自动读取。请手动输入。'));
       if (skipNavigation) { pushToQueue(docType, result.statement_id, file.name, ''); return 'ok'; }
-      nav(`/card-statements/review/${result.statement_id}`);
+      return 'ok';
     } else if (docType === 'bank_statement' && result?.statement_id) {
-      if (result?.ocr_failed) toast.warning(tr('Could not auto-read. Please enter details manually.', '無法自動讀取。請手動輸入。', '无法自动读取。请手动输入。'));
       if (skipNavigation) { pushToQueue(docType, result.statement_id, file.name, ''); return 'ok'; }
-      nav(`/bank-statements/review/${result.statement_id}`);
+      return 'ok';
     } else if (docType === 'invoice' && result?.invoice_id) {
       const flags = reviewPageFlags(result);
       if (skipNavigation) { pushToQueue(docType, result.invoice_id, file.name, flags); return 'ok'; }
-      nav(`/invoices/review/${result.invoice_id}${flags}`);
-    } else if (result?.error) {
-      toast.error(tr('Processing error:', '處理錯誤：', '处理错误：') + ' ' + result.error);
+      return 'ok';
+    } else if (!docType) {
+      throw new Error(tr(
+        'Could not determine document type. Please check the file and try again.',
+        '無法識別文件類型。請檢查文件後重試。',
+        '无法识别文件类型。请检查文件后重试。',
+      ));
     }
     return 'ok';
   };
@@ -159,6 +175,8 @@ export default function FileUpload() {
   const handleUpload = async () => {
     if (files.length === 0) return;
     setUploading(true);
+    setFileErrors({});
+    setFileStatuses({});
     const isBatch = files.length > 1;
 
     if (isBatch) {
@@ -171,44 +189,52 @@ export default function FileUpload() {
     }
 
     let ok = 0;
+    let hasError = false;
     let idx = 0;
     for (const file of files) {
       idx++;
+      const fileIdx = idx - 1;
+      setFileStatuses(prev => ({ ...prev, [fileIdx]: 'processing' }));
       try {
         setBatchProgress(prev => ({ ...prev, currentFile: file.name }));
         await uploadFile(file, isBatch, idx, files.length);
         ok++;
+        setFileStatuses(prev => ({ ...prev, [fileIdx]: 'success' }));
       } catch (e: any) {
-        toast.error(`${file.name}: ${e.message}`);
+        hasError = true;
+        setFileStatuses(prev => ({ ...prev, [fileIdx]: 'error' }));
+        setFileErrors(prev => ({ ...prev, [fileIdx]: e.message || 'Unknown error' }));
         if (isBatch) { batchRef.current.done++; setBatchProgress(prev => ({ ...prev, done: batchRef.current.done })); }
+        // Stop processing remaining files on validation failure
+        break;
       }
     }
 
     setUploading(false);
+
+    // On validation failure: keep files visible so user can inspect errors
+    if (hasError) {
+      // Don't clear files — user needs to see the errors and fix/re-upload
+      return;
+    }
+
     setFiles([]);
     setDescription('');
 
     const storedTokens = (() => { try { const r = sessionStorage.getItem('aiTokenUsage'); return r ? JSON.parse(r) : null; } catch { return null; } })();
-    const tokenLabel = storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : '';
 
-    if (isBatch && ok > 0) {
-      const stored = sessionStorage.getItem('reviewQueue');
-      const queue = stored ? JSON.parse(stored) : [];
-      const parts: string[] = [];
-      if (batchRef.current.bank > 0) parts.push(`${batchRef.current.bank} bank`);
-      if (batchRef.current.card > 0) parts.push(`${batchRef.current.card} card`);
-      if (batchRef.current.invoice > 0) parts.push(`${batchRef.current.invoice} invoice`);
-      toast.info(`Batch complete: ${parts.join(', ')} (${queue.length} queued)${tokenLabel}. Save each to advance to the next.`);
-
-      if (queue.length > 0) {
-        const first = queue[0];
-        if (first.docType === 'bank_statement') nav(`/bank-statements/review/${first.reviewId}`);
-        else if (first.docType === 'card_statement') nav(`/card-statements/review/${first.reviewId}`);
-        else nav(`/invoices/review/${first.reviewId}${first.flags || ''}`);
-      }
+    if (ok > 0) {
+      queryClient.invalidateQueries({ queryKey: ['file-storage'] });
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['bookkeeping'] });
+      toast.success(tr(
+        `Successfully processed and saved ${ok} file(s)${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}. Redirecting to Bookkeeping…`,
+        `已成功處理並儲存 ${ok} 個文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。正在跳轉至賬本…`,
+        `已成功处理并储存 ${ok} 个文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。正在跳转至账本…`,
+      ));
+      // Auto-redirect to Bookkeeping — skip review step
+      setTimeout(() => nav('/bookkeeping'), 800);
     }
-
-    if (ok > 0) queryClient.invalidateQueries({ queryKey: ['file-storage'] });
   };
 
   return (
@@ -236,16 +262,44 @@ export default function FileUpload() {
           <>
             <div className="mt-4 pt-4 border-t">
               <p className="text-sm font-medium mb-2">{files.length} {tr('file(s) selected', '個文件已選擇', '个文件已选择')}</p>
-              <div className="space-y-1 max-h-40 overflow-y-auto">
-                {files.map((f, i) => (
-                  <div key={i} className="flex items-center gap-2 text-sm text-muted-foreground">
-                    {f.type.includes('pdf') ? <FileText className="h-4 w-4 text-red-500" />
-                     : f.type.includes('image') ? <Image className="h-4 w-4 text-blue-500" />
-                     : <File className="h-4 w-4 text-gray-500" />}
-                    <span className="truncate">{f.name}</span>
-                    <span className="text-xs">({(f.size / 1024).toFixed(1)} KB)</span>
-                  </div>
-                ))}
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {files.map((f, i) => {
+                  const status = fileStatuses[i];
+                  const errorMsg = fileErrors[i];
+                  const isError = status === 'error';
+                  const isSuccess = status === 'success';
+                  const isProcessing = status === 'processing';
+
+                  return (
+                    <div key={i} className={`flex flex-col gap-1 ${isError ? '' : ''}`}>
+                      <div className={`flex items-center gap-2 text-sm ${isError ? 'text-red-600 dark:text-red-400 font-medium' : isSuccess ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'}`}>
+                        {isError ? (
+                          <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
+                        ) : isSuccess ? (
+                          <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
+                        ) : isProcessing ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
+                        ) : f.type.includes('pdf') ? (
+                          <FileText className="h-4 w-4 text-red-500 shrink-0" />
+                        ) : f.type.includes('image') ? (
+                          <Image className="h-4 w-4 text-blue-500 shrink-0" />
+                        ) : (
+                          <File className="h-4 w-4 text-gray-500 shrink-0" />
+                        )}
+                        <span className="truncate">{f.name}</span>
+                        <span className="text-xs shrink-0">({(f.size / 1024).toFixed(1)} KB)</span>
+                        {isError && (
+                          <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-xs font-bold shrink-0">!</span>
+                        )}
+                      </div>
+                      {isError && errorMsg && (
+                        <div className="ml-6 px-3 py-2 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md text-xs text-red-700 dark:text-red-300">
+                          {errorMsg}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3 mt-4 pt-4 border-t">
@@ -261,7 +315,7 @@ export default function FileUpload() {
               </div>
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => { setFiles([]); setDescription(''); }}
+              <button onClick={() => { setFiles([]); setDescription(''); setFileErrors({}); setFileStatuses({}); }}
                 className="px-4 py-2 border rounded-md text-sm hover:bg-muted">{tr('Clear', '清除', '清除')}</button>
               <button onClick={handleUpload} disabled={uploading}
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-2">
