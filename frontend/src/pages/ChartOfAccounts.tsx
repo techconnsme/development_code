@@ -5,7 +5,7 @@ import { api } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
 import {
   Search, Plus, X, ChevronDown, ChevronRight, Building2, BookOpen,
-  RefreshCw, ExternalLink, FileText, Banknote,
+  RefreshCw, ExternalLink, FileText, Banknote, GripVertical, EyeOff,
 } from 'lucide-react';
 
 const TYPE_ORDER = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;
@@ -105,6 +105,9 @@ export default function ChartOfAccounts() {
   const [expandedAccounts, setExpandedAccounts] = useState<Record<string, boolean>>({});
   const [accountTxns, setAccountTxns] = useState<Record<string, any[]>>({});
   const [accountTxnLoading, setAccountTxnLoading] = useState<Record<string, boolean>>({});
+  const [typeOrder, setTypeOrder] = useState<string[]>([...TYPE_ORDER]);
+  const [hideZeroBalance, setHideZeroBalance] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newAccount, setNewAccount] = useState({
     account_code: '', account_name: '', account_type: 'asset', parent_code: '', opening_balance: 0,
@@ -193,6 +196,32 @@ export default function ChartOfAccounts() {
 
   const toggleType = (t: string) => setExpandedTypes(prev => ({ ...prev, [t]: !prev[t] }));
 
+  // ── Drag-and-drop type reordering ──
+  const handleDragStart = useCallback((index: number) => {
+    setDragIndex(index);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+  }, []);
+
+  const handleDragEnter = useCallback((e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (dragIndex !== null && dragIndex !== index) {
+      setTypeOrder(prev => {
+        const next = [...prev];
+        const [dragged] = next.splice(dragIndex, 1);
+        next.splice(index, 0, dragged);
+        return next;
+      });
+      setDragIndex(index);
+    }
+  }, [dragIndex]);
+
+  const handleDragEnd = useCallback(() => {
+    setDragIndex(null);
+  }, []);
+
   const toggleAccount = useCallback(async (code: string) => {
     setExpandedAccounts(prev => ({ ...prev, [code]: !prev[code] }));
     if (!accountTxns[code] && !accountTxnLoading[code]) {
@@ -224,6 +253,7 @@ export default function ChartOfAccounts() {
 
   const filtered = accounts.filter((a: any) => {
     if (typeFilter && a.account_type !== typeFilter) return false;
+    if (hideZeroBalance && hasCurrentBalance && (!a.current_balance || Math.abs(a.current_balance) < 0.001)) return false;
     if (search) {
       const q = search.toLowerCase();
       return (a.account_code || '').toLowerCase().includes(q) || (a.account_name || '').toLowerCase().includes(q);
@@ -232,7 +262,7 @@ export default function ChartOfAccounts() {
   });
 
   const grouped: Record<string, any[]> = {};
-  for (const t of TYPE_ORDER) grouped[t] = [];
+  for (const t of typeOrder) grouped[t] = [];
   for (const a of filtered) {
     const t = a.account_type || 'expense';
     if (!grouped[t]) grouped[t] = [];
@@ -246,7 +276,7 @@ export default function ChartOfAccounts() {
 
   const nonZeroByType: Record<string, number> = {};
   if (hasCurrentBalance) {
-    for (const t of TYPE_ORDER) {
+    for (const t of typeOrder) {
       nonZeroByType[t] = (grouped[t] || []).filter((a: any) => a.current_balance && Math.abs(a.current_balance) > 0.001).length;
     }
   }
@@ -374,6 +404,16 @@ export default function ChartOfAccounts() {
             <Plus className="h-4 w-4" />
             {tr('Add Account', '新增科目', '新增科目')}
           </button>
+          <label className={`inline-flex items-center gap-2 px-3 py-2 border rounded-lg text-sm cursor-pointer select-none hover:bg-muted/50 transition-colors ${hideZeroBalance ? 'bg-primary/10 border-primary/30' : ''}`}>
+            <input
+              type="checkbox"
+              checked={hideZeroBalance}
+              onChange={e => setHideZeroBalance(e.target.checked)}
+              className="sr-only"
+            />
+            <EyeOff className={`h-4 w-4 ${hideZeroBalance ? 'text-primary' : 'text-muted-foreground'}`} />
+            <span className="text-sm">{tr('Hide zero balance', '隱藏零餘額', '隐藏零余额')}</span>
+          </label>
         </div>
       )}
 
@@ -442,12 +482,18 @@ export default function ChartOfAccounts() {
       )}
 
       {/* Grouped account sections */}
-      {TYPE_ORDER.filter(t => grouped[t]?.length > 0).map(type => (
+      {typeOrder.filter(t => grouped[t]?.length > 0).map((type, idx) => (
         <div key={type} className="bg-card border rounded-xl overflow-hidden">
           <button
             onClick={() => toggleType(type)}
-            className="w-full flex items-center gap-3 px-4 py-3 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
+            draggable
+            onDragStart={() => handleDragStart(idx)}
+            onDragOver={handleDragOver}
+            onDragEnter={(e) => handleDragEnter(e, idx)}
+            onDragEnd={handleDragEnd}
+            className={`w-full flex items-center gap-3 px-4 py-3 bg-muted/30 hover:bg-muted/50 transition-colors text-left ${dragIndex === idx ? 'opacity-50 ring-2 ring-primary' : ''}`}
           >
+            <GripVertical className="h-4 w-4 shrink-0 text-muted-foreground/40 cursor-grab active:cursor-grabbing" />
             {expandedTypes[type] ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
             <span className={`inline-flex px-2 py-0.5 rounded text-xs font-semibold ${TYPE_COLORS[type]}`}>
               {TYPE_LABELS[type]}
