@@ -219,7 +219,7 @@ ${ocrText.slice(0, 8000)}` }],
   ).bind(stmtId, userId, String(fileRow.original_name || fileRow.filename || 'statement.pdf'), String(fileRow.file_type || 'application/pdf'),
     String(fileRow.r2_key || ''), String(bankName || ''), String(accountNumber || ''), String(currency || 'HKD'),
     stmtYear || null, stmtMonth || null, periodStart || null, periodEnd || null,
-    typeof openingBal === 'number' ? openingBal : null, typeof closingBal === 'number' ? closingBal : null, String(ocrText || ''), 'draft'
+    typeof openingBal === 'number' ? openingBal : null, typeof closingBal === 'number' ? closingBal : null, String(ocrText || ''), 'active'
   ).run();
 
   let txCount = 0;
@@ -919,11 +919,12 @@ ${ocrText.slice(0, 8000)}`;
   const needsReview = reviewFlags.join(',');
 
   const invId = `i-${uuidv4().slice(0, 8)}`;
-  // Save as 'pending_review' — the user must confirm/edit on the Invoice Review page.
+  // Clean imports → 'active' (auto-confirmed). Needs-review imports → 'pending_review'.
+  const invStatus = needsReview ? 'pending_review' : 'active';
   await db.prepare(
     `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref)
-     VALUES (?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(invId, userId, invNumber, customerId, supplierId || null, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef).run();
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(invId, userId, invNumber, customerId, supplierId || null, invStatus, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef).run();
 
   // Auto-link: if this is a receipt, try to find a matching invoice by amount
   // Receipt = proof of payment. Links to AR (customer paid us) or AP (we paid supplier)
@@ -2045,7 +2046,7 @@ ${ocrText.slice(0, 12000)}` }],
      card_issuer, card_network, card_number_last4, cardholder_name, currency,
      statement_year, statement_month, period_start, period_end,
      credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
   ).bind(stmtId, userId, fileRow.original_name || fileRow.filename, fileRow.file_type, fileRow.r2_key, ocrText,
     parsed?.card_issuer || null, parsed?.card_network || null, parsed?.card_number_last4 || null,
     parsed?.cardholder_name || null, parsed?.currency || 'HKD',

@@ -1,11 +1,32 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Plus, Calculator, Download, Save } from 'lucide-react';
+import { Plus, Download, Save } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
+import DropdownSelect from '../components/DropdownSelect';
+
+// ── Fiscal year helpers (mirrors ChartOfAccounts.tsx) ──────────────────────
+interface FiscalYearOption { label: string; startDate: string; endDate: string; }
+function buildFiscalYearOptions(fiscalStartMD: string, fiscalEndMD: string): FiscalYearOption[] {
+  const [sm, sd] = fiscalStartMD.split('-').map(Number);
+  const [em, ed] = fiscalEndMD.split('-').map(Number);
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  let baseYear = now.getFullYear();
+  if (currentMonth < sm) baseYear--;
+  const opts: FiscalYearOption[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const sy = baseYear - i;
+    const ey = em <= sm ? sy + 1 : sy;
+    const sD = `${sy}-${String(sm).padStart(2, '0')}-${String(sd).padStart(2, '0')}`;
+    const eD = `${ey}-${String(em).padStart(2, '0')}-${String(ed).padStart(2, '0')}`;
+    opts.push({ label: `${sy}-${sy + 1} (Apr ${sy} - Mar ${sy + 1})`, startDate: sD, endDate: eD });
+  }
+  return opts;
+}
 
 export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'entries' | 'accounts' | 'trial' | 'pl' | 'bs' | 'ledger' | 'export'; hideTabs?: boolean }) {
   const { i18n } = useTranslation();
@@ -15,10 +36,47 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<'entries' | 'accounts' | 'trial' | 'pl' | 'bs' | 'ledger' | 'export'>(initialTab || 'entries');
   useEffect(() => { if (initialTab) setTab(initialTab); }, [initialTab]);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  // Force-refresh when switching to ledger tab — ensure fresh data after page navigation
+  useEffect(() => {
+    if (tab === 'ledger') queryClient.invalidateQueries({ queryKey: ['ledger'] });
+    if (tab === 'entries') queryClient.invalidateQueries({ queryKey: ['entries'] });
+    if (tab === 'pl') queryClient.invalidateQueries({ queryKey: ['income-statement'] });
+  }, [tab]);
+  const [selectedFY, setSelectedFY] = useState('');
   const [showEntryForm, setShowEntryForm] = useState(false);
   const [ledgerAccount, setLedgerAccount] = useState('');
+
+  // ── Fiscal year — mirrors ChartOfAccounts.tsx pattern ──────────────────
+  const { data: fiscalData } = useQuery({
+    queryKey: ['fiscal-period'],
+    queryFn: () => api('/bookkeeping/fiscal-period'),
+    staleTime: 0, // always fetch fresh on mount — critical for fyOptions init
+  });
+  const rawStart = (fiscalData as any)?.fiscal_year_start || '04-01';
+  const rawEnd = (fiscalData as any)?.fiscal_year_end || '03-31';
+  // Handle both "04-01" and "2026-04-01" formats — extract MM-DD portion
+  const fyStartMD = rawStart.length > 5 ? rawStart.slice(5) : rawStart;
+  const fyEndMD = rawEnd.length > 5 ? rawEnd.slice(5) : rawEnd;
+
+  // useState for fyOptions + selectedFY, set atomically in useEffect (like COA)
+  const [fyOptions, setFyOptions] = useState<FiscalYearOption[]>([]);
+
+  useEffect(() => {
+    const opts = buildFiscalYearOptions(fyStartMD, fyEndMD);
+    setFyOptions(opts);
+    if (!selectedFY) {
+      const now = new Date();
+      const [sm] = fyStartMD.split('-').map(Number);
+      const baseYear = now.getFullYear() - (now.getMonth() + 1 < sm ? 1 : 0);
+      const def = opts.find(o => o.label.startsWith(String(baseYear))) || opts[0];
+      if (def) setSelectedFY(def.label);
+    }
+  }, [fyStartMD]);
+
+  // Dates derived from selectedFY — always in sync
+  const selectedFYOption = useMemo(() => fyOptions.find(o => o.label === selectedFY) || null, [fyOptions, selectedFY]);
+  const startDate = selectedFYOption?.startDate || '';
+  const endDate = selectedFYOption?.endDate || '';
   const [entryForm, setEntryForm] = useState({
     entry_number: '', entry_date: new Date().toISOString().split('T')[0], description: '',
     lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0 }],
@@ -28,12 +86,13 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     queryKey: ['entries', startDate, endDate],
     queryFn: () => api(`/bookkeeping/entries?start_date=${startDate}&end_date=${endDate}`),
     enabled: tab === 'entries',
+    staleTime: 0,
   });
 
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => api('/bookkeeping/accounts'),
-    enabled: tab === 'accounts',
+    enabled: tab === 'accounts' || tab === 'ledger',
   });
 
   const { data: trialBalance } = useQuery({
@@ -45,7 +104,8 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const { data: incomeStatement } = useQuery({
     queryKey: ['income-statement', startDate, endDate],
     queryFn: () => api(`/bookkeeping/income-statement?start_date=${startDate}&end_date=${endDate}`),
-    enabled: tab === 'pl',
+    enabled: tab === 'pl' && !!startDate,
+    staleTime: 0,
   });
 
   const { data: balanceSheet } = useQuery({
@@ -54,7 +114,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     enabled: tab === 'bs',
   });
 
-  const { data: ledgerData, isLoading: ledgerLoading } = useQuery({
+  const { data: ledgerData, isLoading: ledgerLoading, isFetching } = useQuery({
     queryKey: ['ledger', ledgerAccount, startDate, endDate],
     queryFn: () => {
       const params = new URLSearchParams();
@@ -65,19 +125,10 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       return api(`/bookkeeping/ledger${qs ? `?${qs}` : ''}`);
     },
     enabled: tab === 'ledger',
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
-  const autoGenMut = useMutation({
-    mutationFn: () => api('/bookkeeping/auto-generate-entries', { method: 'POST' }),
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ['ledger'] });
-      queryClient.invalidateQueries({ queryKey: ['entries'] });
-      queryClient.invalidateQueries({ queryKey: ['trial-balance'] });
-      queryClient.invalidateQueries({ queryKey: ['income-statement'] });
-      queryClient.invalidateQueries({ queryKey: ['balance-sheet'] });
-      toast.info(`已建立 ${data.created} 筆分錄（共 ${data.total_transactions} 筆銀行交易，跳過 ${data.skipped} 筆已存在）`);
-    },
-  });
 
   const createEntry = useMutation({
     mutationFn: (body: any) => api('/bookkeeping/entries', { method: 'POST', body }),
@@ -172,14 +223,14 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       </div>
       )}
 
-      {/* Date filters for relevant tabs */}
-      {(tab === 'entries' || tab === 'pl' || tab === 'ledger' || tab === 'export') && (
-        <div className="flex gap-3">
-          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
-            className="px-3 py-2 border rounded-md bg-background text-sm" />
-          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
-            className="px-3 py-2 border rounded-md bg-background text-sm" />
-        </div>
+      {/* Fiscal year filter — same pattern as Chart of Accounts */}
+      {(tab === 'entries' || tab === 'pl' || tab === 'ledger' || tab === 'export') && fyOptions.length > 0 && (
+        <DropdownSelect
+          value={selectedFY}
+          options={fyOptions.map(o => ({ value: o.label, label: o.label }))}
+          onChange={setSelectedFY}
+          className="min-w-[260px]"
+        />
       )}
 
       {/* Entries Tab */}
@@ -269,18 +320,20 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       {tab === 'ledger' && (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
-            <select value={ledgerAccount} onChange={e => setLedgerAccount(e.target.value)}
-              className="px-3 py-2 border rounded-md bg-background text-sm min-w-[180px]">
-              <option value="">所有科目</option>
-              {(accounts?.data || []).map((a: any) => (
-                <option key={a.account_code} value={a.account_code}>{a.account_code} – {a.account_name}</option>
-              ))}
-            </select>
-            <span className="text-xs text-muted-foreground">資料來源：{ledgerData?.source === 'journal' ? '分錄' : '銀行交易'}</span>
-            <button onClick={() => autoGenMut.mutate()} disabled={autoGenMut.isPending}
-              className="ml-auto flex items-center gap-1 px-3 py-2 bg-primary text-primary-foreground rounded-md text-xs hover:opacity-90 disabled:opacity-40">
-              <Calculator className="h-3 w-3" /> 從銀行資料自動產生分錄
-            </button>
+            <DropdownSelect
+              key={`ledger-acct-${accounts?.data?.length || 0}`}
+              value={ledgerAccount}
+              options={[
+                { value: '', label: '所有科目' },
+                ...(accounts?.data || []).map((a: any) => ({ value: a.account_code, label: `${a.account_code} – ${a.account_name}` })),
+              ]}
+              onChange={setLedgerAccount}
+              className="min-w-[180px]"
+            />
+            <span className="text-xs text-muted-foreground">
+              {tr('Source:', '資料來源：', '资料来源：')}
+              {ledgerData?.source === 'journal' ? tr('Journal Entries', '分錄', '分录') : tr('Bank Transactions', '銀行交易', '银行交易')}
+            </span>
           </div>
 
           {ledgerLoading ? (
@@ -439,10 +492,10 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
           <h3 className="font-semibold">{tr('Export for Auditor', '導出給審計師 Export for Auditor', '导出給审计师 Export for Auditor')}</h3>
           <p className="text-sm text-muted-foreground">{tr('Select a date range and export CSV file', '選擇日期範圍後導出 CSV 檔案', '选择日期范围後导出 CSV 档案')}</p>
           <div className="flex gap-3 items-center">
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+            <input type="date" value={startDate} readOnly
               className="px-3 py-2 border rounded-md bg-background text-sm" />
             <span className="text-muted-foreground">至</span>
-            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+            <input type="date" value={endDate} readOnly
               className="px-3 py-2 border rounded-md bg-background text-sm" />
             {!isStaff && (
             <button onClick={exportCSV}

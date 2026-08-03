@@ -59,7 +59,9 @@ export default function FileUpload() {
     if (e.target.files && e.target.files.length > 0) { setFiles(Array.from(e.target.files)); setFileErrors({}); setFileStatuses({}); }
   }, []);
 
-  // Upload one file: base64 → upload → import-document (OCR + type detection) → navigate
+  // Upload one file: base64 → upload → import-document (OCR + type detection)
+  // Returns 'ok' (clean auto-save), 'review' (saved but needs human review), or 'duplicate'
+  // Throws on hard errors (file not saved — needs re-upload)
   const uploadFile = async (file: File, skipNavigation = false, fileIndex = 0, totalFiles = 0): Promise<string> => {
     const token = localStorage.getItem('token');
     const activeClient = localStorage.getItem('activeClient');
@@ -138,7 +140,7 @@ export default function FileUpload() {
       return 'duplicate';
     }
 
-    // Validation failure: OCR failed or server returned an error
+    // Hard errors: file was NOT saved — refuse save, user must re-upload
     if (result?.error) {
       throw new Error(result.error);
     }
@@ -150,17 +152,20 @@ export default function FileUpload() {
       ));
     }
 
-    // Route based on detected document type — auto-save, skip review, go to /bookkeeping
+    // Determine if review is needed (OCR mismatch flags)
+    const needsReview = !!(result?.needs_direction_review || result?.company_not_detected);
+
+    // Route based on detected document type
     const docType = result?.type;
     if (docType === 'card_statement' && result?.statement_id) {
-      if (skipNavigation) { pushToQueue(docType, result.statement_id, file.name, ''); return 'ok'; }
+      if (skipNavigation && needsReview) { pushToQueue(docType, result.statement_id, file.name, ''); return 'review'; }
       return 'ok';
     } else if (docType === 'bank_statement' && result?.statement_id) {
-      if (skipNavigation) { pushToQueue(docType, result.statement_id, file.name, ''); return 'ok'; }
+      if (skipNavigation && needsReview) { pushToQueue(docType, result.statement_id, file.name, ''); return 'review'; }
       return 'ok';
     } else if (docType === 'invoice' && result?.invoice_id) {
       const flags = reviewPageFlags(result);
-      if (skipNavigation) { pushToQueue(docType, result.invoice_id, file.name, flags); return 'ok'; }
+      if (skipNavigation && needsReview) { pushToQueue(docType, result.invoice_id, file.name, flags); return 'review'; }
       return 'ok';
     } else if (!docType) {
       throw new Error(tr(
@@ -189,6 +194,7 @@ export default function FileUpload() {
     }
 
     let ok = 0;
+    let reviewCount = 0;
     let hasError = false;
     let idx = 0;
     for (const file of files) {
@@ -197,7 +203,10 @@ export default function FileUpload() {
       setFileStatuses(prev => ({ ...prev, [fileIdx]: 'processing' }));
       try {
         setBatchProgress(prev => ({ ...prev, currentFile: file.name }));
-        await uploadFile(file, isBatch, idx, files.length);
+        const status = await uploadFile(file, isBatch, idx, files.length);
+        if (status === 'review') {
+          reviewCount++;
+        }
         ok++;
         setFileStatuses(prev => ({ ...prev, [fileIdx]: 'success' }));
       } catch (e: any) {
@@ -205,16 +214,16 @@ export default function FileUpload() {
         setFileStatuses(prev => ({ ...prev, [fileIdx]: 'error' }));
         setFileErrors(prev => ({ ...prev, [fileIdx]: e.message || 'Unknown error' }));
         if (isBatch) { batchRef.current.done++; setBatchProgress(prev => ({ ...prev, done: batchRef.current.done })); }
-        // Stop processing remaining files on validation failure
+        // Stop processing remaining files on hard error (file not saved)
         break;
       }
     }
 
     setUploading(false);
 
-    // On validation failure: keep files visible so user can inspect errors
+    // On hard error: keep files visible so user can fix and re-upload
+    // Queue may contain review items from files processed before the error
     if (hasError) {
-      // Don't clear files — user needs to see the errors and fix/re-upload
       return;
     }
 
@@ -227,13 +236,50 @@ export default function FileUpload() {
       queryClient.invalidateQueries({ queryKey: ['file-storage'] });
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
       queryClient.invalidateQueries({ queryKey: ['bookkeeping'] });
+
+      // Auto-generate journal entries from newly imported bank/card transactions
+      // so COA balances and bookkeeping reports are immediately populated
+      if (batchRef.current.bank > 0 || batchRef.current.card > 0) {
+        try {
+          await api('/bookkeeping/auto-generate-entries', { method: 'POST' });
+        } catch { /* non-critical — user can generate manually later */ }
+      }
+
+      if (reviewCount > 0) {
+        // Some files need human review — navigate to first queued item
+        const raw = sessionStorage.getItem('reviewQueue');
+        try {
+          const queue = raw ? JSON.parse(raw) : [];
+          if (queue.length > 0) {
+            const first = queue[0];
+            const reviewUrl = first.docType === 'bank_statement' ? `/bank-statements/review/${first.reviewId}`
+              : first.docType === 'card_statement' ? `/card-statements/review/${first.reviewId}`
+              : `/invoices/review/${first.reviewId}${first.flags || ''}`;
+            toast.success(tr(
+              `${reviewCount} file(s) need review. ${ok - reviewCount} auto-saved.`,
+              `${reviewCount} 個文件需要審核。${ok - reviewCount} 個已自動儲存。`,
+              `${reviewCount} 个文件需要审核。${ok - reviewCount} 个已自动储存。`,
+            ));
+            setTimeout(() => nav(reviewUrl), 800);
+            return;
+          }
+        } catch {}
+        // Fallback: queue corrupted, go to bookkeeping
+        sessionStorage.removeItem('reviewQueue');
+        sessionStorage.removeItem('reviewQueueTotal');
+      } else {
+        // All clean — clear queue, go to bookkeeping
+        sessionStorage.removeItem('reviewQueue');
+        sessionStorage.removeItem('reviewQueueTotal');
+      }
+
       toast.success(tr(
         `Successfully processed and saved ${ok} file(s)${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}. Redirecting to Bookkeeping…`,
         `已成功處理並儲存 ${ok} 個文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。正在跳轉至賬本…`,
         `已成功处理并储存 ${ok} 个文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。正在跳转至账本…`,
       ));
-      // Auto-redirect to Bookkeeping — skip review step
-      setTimeout(() => nav('/bookkeeping'), 800);
+      // Auto-redirect to Bank Statements — skip review step
+      setTimeout(() => nav('/bank-statements'), 800);
     }
   };
 

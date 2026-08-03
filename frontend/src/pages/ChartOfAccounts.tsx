@@ -5,8 +5,9 @@ import { api } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
 import {
   Search, Plus, X, ChevronDown, ChevronRight, Building2, BookOpen,
-  RefreshCw, ExternalLink, FileText, Banknote, GripVertical, EyeOff,
+  ExternalLink, FileText, Banknote, GripVertical, EyeOff,
 } from 'lucide-react';
+import DropdownSelect from '../components/DropdownSelect';
 
 const TYPE_ORDER = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;
 
@@ -60,7 +61,7 @@ function buildFiscalYearOptions(fiscalStartMD: string, fiscalEndMD: string): Fis
   if (currentMonth < sm) baseYear--;
 
   const opts: FiscalYearOption[] = [];
-  for (let i = 5; i >= -1; i--) {
+  for (let i = 5; i >= 0; i--) {
     const sy = baseYear - i;
     const ey = em <= sm ? sy + 1 : sy;
     const sD = `${sy}-${String(sm).padStart(2, '0')}-${String(sd).padStart(2, '0')}`;
@@ -121,8 +122,11 @@ export default function ChartOfAccounts() {
     queryFn: () => api('/bookkeeping/fiscal-period'),
   });
 
-  const fyStart = (fiscalData as any)?.fiscal_year_start || '04-01';
-  const fyEnd = (fiscalData as any)?.fiscal_year_end || '03-31';
+  const rawStart = (fiscalData as any)?.fiscal_year_start || '04-01';
+  const rawEnd = (fiscalData as any)?.fiscal_year_end || '03-31';
+  // Handle both "04-01" and "2026-04-01" formats — extract MM-DD portion
+  const fyStart = rawStart.length > 5 ? rawStart.slice(5) : rawStart;
+  const fyEnd = rawEnd.length > 5 ? rawEnd.slice(5) : rawEnd;
 
   useEffect(() => {
     const opts = buildFiscalYearOptions(fyStart, fyEnd);
@@ -167,14 +171,6 @@ export default function ChartOfAccounts() {
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
       setShowAddForm(false);
       setNewAccount({ account_code: '', account_name: '', account_type: 'asset', parent_code: '', opening_balance: 0 });
-    },
-  });
-
-  const autoGenMut = useMutation({
-    mutationFn: () => api('/bookkeeping/auto-generate-entries', { method: 'POST' }),
-    onSuccess: (result: any) => {
-      queryClient.invalidateQueries({ queryKey: ['accounts'] });
-      queryClient.invalidateQueries({ queryKey: ['missing-codes'] });
     },
   });
 
@@ -358,15 +354,11 @@ export default function ChartOfAccounts() {
       {hasAccounts && (
         <div className="flex items-center gap-3 flex-wrap">
           {fyOptions.length > 0 && (
-            <select
+            <DropdownSelect
               value={selectedFY}
-              onChange={e => setSelectedFY(e.target.value)}
-              className="px-3 py-2 border rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              {fyOptions.map(o => (
-                <option key={o.label} value={o.label}>{o.label}</option>
-              ))}
-            </select>
+              options={fyOptions.map(o => ({ value: o.label, label: o.label }))}
+              onChange={setSelectedFY}
+            />
           )}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -390,14 +382,6 @@ export default function ChartOfAccounts() {
           </select>
           <div className="flex-1" />
           <button
-            onClick={() => autoGenMut.mutate()}
-            disabled={autoGenMut.isPending}
-            className="inline-flex items-center gap-2 px-4 py-2 border rounded-lg text-sm font-medium hover:bg-muted/50 disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${autoGenMut.isPending ? 'animate-spin' : ''}`} />
-            {autoGenMut.isPending ? tr('Generating...', '產生中...', '产生中...') : tr('Generate from Bank', '從銀行產生', '从银行产生')}
-          </button>
-          <button
             onClick={() => setShowAddForm(!showAddForm)}
             className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90"
           >
@@ -414,16 +398,6 @@ export default function ChartOfAccounts() {
             <EyeOff className={`h-4 w-4 ${hideZeroBalance ? 'text-primary' : 'text-muted-foreground'}`} />
             <span className="text-sm">{tr('Hide zero balance', '隱藏零餘額', '隐藏零余额')}</span>
           </label>
-        </div>
-      )}
-
-      {autoGenMut.data && (
-        <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-4 py-2 text-sm text-green-700 dark:text-green-300">
-          {tr(
-            `Created ${(autoGenMut.data as any).created || 0} journal entries.`,
-            `已建立 ${(autoGenMut.data as any).created || 0} 筆分錄。`,
-            `已建立 ${(autoGenMut.data as any).created || 0} 笔分录。`,
-          )}
         </div>
       )}
 
