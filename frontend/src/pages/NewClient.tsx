@@ -5,6 +5,7 @@ import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { UserPlus, ArrowLeft, Copy, Check, AlertCircle, ExternalLink } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
+import CoaPreview from '../components/CoaPreview';
 
 export default function NewClient() {
   const nav = useNavigate();
@@ -177,6 +178,9 @@ export default function NewClient() {
             </button>
           </div>
         </div>
+
+        {/* COA Template Preview */}
+        <CoaPreview fyStart={form.fy_start} fyEnd={form.fy_end} />
 
         <div className="pt-2 flex justify-end gap-2">
           <button onClick={() => nav('/')} className="px-4 py-2 border rounded text-sm">
