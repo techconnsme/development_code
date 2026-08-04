@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Plus, Download, Save } from 'lucide-react';
+import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import DropdownSelect from '../components/DropdownSelect';
@@ -45,6 +45,9 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [selectedFY, setSelectedFY] = useState('');
   const [showEntryForm, setShowEntryForm] = useState(false);
   const [ledgerAccount, setLedgerAccount] = useState('');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [entryDetails, setEntryDetails] = useState<Record<string, any[]>>({});
+  const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
 
   // ── Fiscal year — mirrors ChartOfAccounts.tsx pattern ──────────────────
   const { data: fiscalData } = useQuery({
@@ -138,7 +141,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const exportCSV = async () => {
     try {
       const token = localStorage.getItem('token') || '';
-      const res = await fetch(`https://opcc-crm-api.ruhan-farhan.workers.dev/api/bookkeeping/export?format=csv&start_date=${startDate}&end_date=${endDate}`, {
+      const res = await fetch(`/api/bookkeeping/export?format=csv&start_date=${startDate}&end_date=${endDate}`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       if (!res.ok) { toast.info('Export failed'); return; }
@@ -163,6 +166,68 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     if (field === 'debit') lines[idx].credit = 0;
     if (field === 'credit') lines[idx].debit = 0;
     setEntryForm({ ...entryForm, lines });
+  }
+
+  // ── Shared helpers ──────────────────────────────────────────────────────
+  const fmtMoney = (n: number) => (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 });
+
+  const totals = useMemo(() => {
+    const debit = entryForm.lines.reduce((s, l) => s + (l.debit || 0), 0);
+    const credit = entryForm.lines.reduce((s, l) => s + (l.credit || 0), 0);
+    return { debit, credit, diff: debit - credit, balanced: Math.abs(debit - credit) <= 0.001 };
+  }, [entryForm.lines]);
+  const canSubmit = totals.balanced && entryForm.lines.length >= 2 && !createEntry.isPending;
+
+  function suggestVoucherNumber(entryRows: any[] | undefined, date: string, prefix = 'JE'): string {
+    const ym = date.slice(0, 7).replace(/-/g, '');
+    const pattern = `${prefix}-${ym}-`;
+    let maxSeq = 0;
+    for (const e of entryRows || []) {
+      if ((e.entry_number || '').startsWith(pattern)) {
+        const seq = parseInt((e.entry_number as string).slice(pattern.length), 10);
+        if (!isNaN(seq)) maxSeq = Math.max(maxSeq, seq);
+      }
+    }
+    return `${pattern}${String(maxSeq + 1).padStart(3, '0')}`;
+  }
+
+  // Reset form with fresh voucher suggestion when modal opens
+  useEffect(() => {
+    if (!showEntryForm) return;
+    const today = new Date().toISOString().split('T')[0];
+    setEntryForm({
+      entry_number: suggestVoucherNumber(entries?.data, today),
+      entry_date: today,
+      description: '',
+      lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0 }],
+    });
+  }, [showEntryForm]);
+
+  // Lazy-fetch journal entry detail lines
+  async function toggleEntryDetail(id: string) {
+    if (expandedId === id) { setExpandedId(null); return; }
+    setExpandedId(id);
+    if (!entryDetails[id]) {
+      setLoadingDetail(id);
+      try {
+        const d = await api(`/bookkeeping/entries/${id}`);
+        setEntryDetails(prev => ({ ...prev, [id]: d.lines || [] }));
+      } catch { /* leave empty */ }
+      finally { setLoadingDetail(null); }
+    }
+  }
+
+  function statusBadge(s: string) {
+    const styles: Record<string, string> = {
+      draft: 'bg-muted text-muted-foreground',
+      posted: 'bg-green-100 text-green-700 dark:bg-green-950/40',
+      reconciled: 'bg-blue-100 text-blue-700 dark:bg-blue-950/40',
+      stale: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40',
+    };
+    const labels: Record<string, string> = {
+      draft: '草稿 Draft', posted: '已過帳 Posted', reconciled: '已對帳 Reconciled', stale: '⚠ 過時 Stale',
+    };
+    return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${styles[s] || 'bg-muted text-muted-foreground'}`}>{labels[s] || s}</span>;
   }
 
   const tabs = [
@@ -239,33 +304,40 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="text-left p-3">號碼</th>
+                <th className="w-8 p-3"></th>
+                <th className="text-left p-3">號碼 No.</th>
                 <th className="text-left p-3">日期</th>
                 <th className="text-left p-3">描述</th>
-                <th className="text-right p-3">借方 Debit</th>
-                <th className="text-right p-3">貸方 Credit</th>
+                <th className="text-right p-3">借方 Debit ($Dr$)</th>
+                <th className="text-right p-3">貸方 Credit ($Cr$)</th>
                 <th className="text-left p-3">狀態</th>
                 <th className="text-center p-3 w-[80px]">操作</th>
               </tr>
             </thead>
             <tbody>
               {(entries?.data || []).map((e: any) => (
-                <tr key={e.id} className="border-b hover:bg-muted/30">
-                  <td className="p-3 font-medium">{e.entry_number}</td>
-                  <td className="p-3">{e.entry_date}</td>
-                  <td className="p-3">{e.description}</td>
-                  <td className="p-3 text-right font-mono">{e.total_debit > 0 ? e.total_debit.toLocaleString(undefined, { minimumFractionDigits: 2 }) : ''}</td>
-                  <td className="p-3 text-right font-mono">{e.total_credit > 0 ? e.total_credit.toLocaleString(undefined, { minimumFractionDigits: 2 }) : ''}</td>
+                <React.Fragment key={e.id}>
+                <tr className={`border-b hover:bg-muted/30 ${expandedId === e.id ? 'bg-muted/40' : ''}`}>
                   <td className="p-3">
-                    {e.status === 'stale' ? <span className="text-amber-600 font-medium" title="銀行交易已修改，分錄可能過時">⚠ 過時</span>
-                     : e.status === 'draft' ? <span className="text-muted-foreground italic">草稿 Draft</span>
-                     : e.status}
-                    {e.status === 'draft' && (
-                      <button onClick={async () => {
-                        await api(`/bookkeeping/entries/${e.id}/status`, { method: 'PATCH', body: { status: 'posted' } });
-                        queryClient.invalidateQueries({ queryKey: ['entries'] });
-                      }} className="ml-2 text-xs text-primary hover:underline">過帳 Post</button>
-                    )}
+                    <button onClick={() => toggleEntryDetail(e.id)} className="p-0.5 hover:bg-muted rounded">
+                      {expandedId === e.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    </button>
+                  </td>
+                  <td className="p-3 font-medium font-mono text-xs">{e.entry_number}</td>
+                  <td className="p-3">{e.entry_date}</td>
+                  <td className="p-3 max-w-[200px] truncate" title={e.description}>{e.description}</td>
+                  <td className="p-3 text-right font-mono">{e.total_debit > 0 ? fmtMoney(e.total_debit) : ''}</td>
+                  <td className="p-3 text-right font-mono">{e.total_credit > 0 ? fmtMoney(e.total_credit) : ''}</td>
+                  <td className="p-3">
+                    <div className="flex items-center gap-2">
+                      {statusBadge(e.status)}
+                      {e.status === 'draft' && (
+                        <button onClick={async () => {
+                          await api(`/bookkeeping/entries/${e.id}/status`, { method: 'PATCH', body: { status: 'posted' } });
+                          queryClient.invalidateQueries({ queryKey: ['entries'] });
+                        }} className="text-xs text-primary hover:underline whitespace-nowrap">過帳 Post</button>
+                      )}
+                    </div>
                   </td>
                   <td className="p-3 text-center">
                     <button onClick={() => {
@@ -276,9 +348,53 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                     }} className="text-destructive text-xs hover:underline">刪除</button>
                   </td>
                 </tr>
+                {expandedId === e.id && (
+                  <tr key={`${e.id}-detail`} className="bg-muted/20 border-b">
+                    <td colSpan={8} className="p-0">
+                      <div className="px-8 py-3">
+                        {loadingDetail === e.id ? (
+                          <div className="flex justify-center py-4"><div className="animate-spin h-5 w-5 border-2 border-primary border-t-transparent rounded-full" /></div>
+                        ) : (entryDetails[e.id] || []).length === 0 ? (
+                          <p className="text-xs text-muted-foreground py-2">暫無分錄行資料</p>
+                        ) : (
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b text-muted-foreground">
+                                <th className="text-left py-1.5 font-medium w-8">#</th>
+                                <th className="text-left py-1.5 font-medium">科目 Account</th>
+                                <th className="text-left py-1.5 font-medium">描述 Description</th>
+                                <th className="text-right py-1.5 font-medium">借方 Debit ($Dr$)</th>
+                                <th className="text-right py-1.5 font-medium">貸方 Credit ($Cr$)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(entryDetails[e.id] || []).map((l: any, i: number) => (
+                                <tr key={i} className="border-b border-muted/30">
+                                  <td className="py-1 px-2 text-muted-foreground">{i + 1}</td>
+                                  <td className="py-1 px-2">{l.account_code} – {l.account_name}</td>
+                                  <td className="py-1 px-2 max-w-[240px] truncate" title={l.description || ''}>{l.description || '—'}</td>
+                                  <td className="py-1 px-2 text-right font-mono">{l.debit > 0 ? fmtMoney(l.debit) : ''}</td>
+                                  <td className="py-1 px-2 text-right font-mono">{l.credit > 0 ? fmtMoney(l.credit) : ''}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot>
+                              <tr className="font-medium border-t">
+                                <td colSpan={3} className="py-1.5 px-2">合計 Totals</td>
+                                <td className="py-1.5 px-2 text-right font-mono">{fmtMoney(e.total_debit)}</td>
+                                <td className="py-1.5 px-2 text-right font-mono">{fmtMoney(e.total_credit)}</td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               ))}
               {(!entries?.data || entries.data.length === 0) && (
-                <tr><td colSpan={7} className="text-center p-6 text-muted-foreground">未有分錄記錄</td></tr>
+                <tr><td colSpan={8} className="text-center p-6 text-muted-foreground">未有分錄記錄</td></tr>
               )}
             </tbody>
           </table>
@@ -296,8 +412,8 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
               <tr className="border-b bg-muted/50">
                 <th className="text-left p-3">科目</th>
                 <th className="text-right p-3">期初 Opening</th>
-                <th className="text-right p-3">借方 Debit</th>
-                <th className="text-right p-3">貸方 Credit</th>
+                <th className="text-right p-3">借方 Debit ($Dr$)</th>
+                <th className="text-right p-3">貸方 Credit ($Cr$)</th>
                 <th className="text-right p-3">期末 Ending</th>
               </tr>
             </thead>
@@ -352,8 +468,8 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                     <tr className="border-b text-xs text-muted-foreground">
                       <th className="text-left py-2 px-4 font-medium">日期</th>
                       <th className="text-left py-2 px-3 font-medium">描述</th>
-                      <th className="text-right py-2 px-3 font-medium">借方 Debit</th>
-                      <th className="text-right py-2 px-3 font-medium">貸方 Credit</th>
+                      <th className="text-right py-2 px-3 font-medium">借方 Debit ($Dr$)</th>
+                      <th className="text-right py-2 px-3 font-medium">貸方 Credit ($Cr$)</th>
                       <th className="text-right py-2 px-3 font-medium">餘額 Balance</th>
                     </tr>
                   </thead>
@@ -510,62 +626,137 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       {/* Entry Form Modal */}
       {showEntryForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto" onClick={() => setShowEntryForm(false)}>
-          <div className="bg-card border rounded-xl p-6 w-full max-w-2xl mx-4 my-8 space-y-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-bold text-lg">新增分錄 Journal Entry</h3>
+          <div className="bg-card border rounded-xl p-6 w-full max-w-3xl mx-4 my-8 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg">新增分錄 General Journal Entry</h3>
             <form onSubmit={(e) => { e.preventDefault(); createEntry.mutate(entryForm); }} className="space-y-3">
-              <div className="grid grid-cols-3 gap-3">
-                <input required value={entryForm.entry_number} onChange={(e) => setEntryForm({ ...entryForm, entry_number: e.target.value })}
-                  placeholder="分錄號碼 *" className="px-3 py-2 border rounded-md bg-background text-sm" />
+              {/* Voucher row — manual + generate button */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="flex items-center gap-2">
+                  <input required value={entryForm.entry_number}
+                    onChange={(e) => setEntryForm({ ...entryForm, entry_number: e.target.value })}
+                    placeholder="分錄號碼 Voucher No. *" className="flex-1 px-3 py-2 border rounded-md bg-background text-sm font-mono" />
+                  <button type="button" title="自動產生下一號碼"
+                    onClick={() => setEntryForm({ ...entryForm, entry_number: suggestVoucherNumber(entries?.data, entryForm.entry_date) })}
+                    className="px-2.5 py-2 border rounded-md text-xs hover:bg-muted flex items-center gap-1 shrink-0">
+                    <RefreshCw className="h-3 w-3" /> 產生
+                  </button>
+                </div>
                 <input type="date" required value={entryForm.entry_date} onChange={(e) => setEntryForm({ ...entryForm, entry_date: e.target.value })}
                   className="px-3 py-2 border rounded-md bg-background text-sm" />
                 <input required value={entryForm.description} onChange={(e) => setEntryForm({ ...entryForm, description: e.target.value })}
-                  placeholder="描述 *" className="px-3 py-2 border rounded-md bg-background text-sm" />
+                  placeholder="描述 Description *" className="px-3 py-2 border rounded-md bg-background text-sm" />
               </div>
-              <div className="border rounded-md p-3 space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium">分錄行 Lines</span>
-                  <button type="button" onClick={addLine} className="text-xs text-primary hover:underline">+ 新增行</button>
-                </div>
-                {entryForm.lines.map((line, idx) => (
-                  <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                    <input required value={line.account_code} onChange={(e) => {
-                      const code = e.target.value;
-                      updateLine(idx, 'account_code', code);
-                      const match = (accounts?.data || []).find((a: any) => a.account_code === code);
-                      if (match) updateLine(idx, 'account_name', match.account_name);
-                    }} placeholder="科目編號" list="account-list" className="col-span-2 px-2 py-1 border rounded text-sm" />
-                    <select value={line.account_name} onChange={(e) => {
-                      const name = e.target.value;
-                      updateLine(idx, 'account_name', name);
-                      const match = (accounts?.data || []).find((a: any) => a.account_name === name);
-                      if (match) updateLine(idx, 'account_code', match.account_code);
-                    }} className="col-span-3 px-2 py-1 border rounded text-sm bg-background">
-                      <option value="">選擇科目...</option>
-                      {(accounts?.data || []).map((a: any) => (
-                        <option key={a.id} value={a.account_name}>{a.account_code} – {a.account_name}</option>
-                      ))}
-                    </select>
-                    <input type="number" step="0.01" value={line.debit} onChange={(e) => updateLine(idx, 'debit', parseFloat(e.target.value))}
-                      className="col-span-2 px-2 py-1 border rounded text-sm" placeholder="借方" />
-                    <input type="number" step="0.01" value={line.credit} onChange={(e) => updateLine(idx, 'credit', parseFloat(e.target.value))}
-                      className="col-span-2 px-2 py-1 border rounded text-sm" placeholder="貸方" />
-                    <input value={line.description} onChange={(e) => updateLine(idx, 'description', e.target.value)}
-                      placeholder="描述" className="col-span-2 px-2 py-1 border rounded text-sm" />
-                    <button type="button" onClick={() => {
-                      const lines = entryForm.lines.filter((_, i) => i !== idx);
-                      setEntryForm({ ...entryForm, lines: lines.length ? lines : [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0 }] });
-                    }} className="col-span-1 text-destructive text-xs">✕</button>
-                  </div>
-                ))}
-                <div className="text-sm text-muted-foreground">
-                  借方總計: {entryForm.lines.reduce((s, l) => s + (l.debit || 0), 0).toFixed(2)} |
-                  貸方總計: {entryForm.lines.reduce((s, l) => s + (l.credit || 0), 0).toFixed(2)}
+
+              {/* Lines table */}
+              <div className="border rounded-md overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-muted/50 border-b text-xs text-muted-foreground">
+                      <th className="py-2 px-2 w-8 font-medium">#</th>
+                      <th className="py-2 px-2 text-left font-medium">科目 Account</th>
+                      <th className="py-2 px-2 text-left font-medium">描述 Description</th>
+                      <th className="py-2 px-2 text-right font-medium w-[130px]">借方 Debit ($Dr$)</th>
+                      <th className="py-2 px-2 text-right font-medium w-[130px]">貸方 Credit ($Cr$)</th>
+                      <th className="py-2 px-2 w-8"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entryForm.lines.map((line, idx) => {
+                      const matchedAccount = (accounts?.data || []).find((a: any) => a.account_code === line.account_code);
+                      const typeBadge = matchedAccount ? ({
+                        asset: 'bg-blue-100 text-blue-700', liability: 'bg-orange-100 text-orange-700',
+                        equity: 'bg-green-100 text-green-700', revenue: 'bg-emerald-100 text-emerald-700', expense: 'bg-red-100 text-red-700',
+                      } as Record<string, string>)[matchedAccount.account_type] || '' : '';
+                      const normalSide = matchedAccount ? (
+                        matchedAccount.account_type === 'asset' || matchedAccount.account_type === 'expense' ? 'Dr' : 'Cr'
+                      ) : '';
+                      return (
+                        <tr key={idx} className="border-b border-muted/30 hover:bg-muted/20">
+                          <td className="py-1.5 px-2 text-muted-foreground text-xs text-center">{idx + 1}</td>
+                          <td className="py-1.5 px-2">
+                            <div className="flex flex-col gap-1">
+                              <div className="flex items-center gap-1.5">
+                                <input required value={line.account_code}
+                                  onChange={(e) => {
+                                    const code = e.target.value;
+                                    updateLine(idx, 'account_code', code);
+                                    const match = (accounts?.data || []).find((a: any) => a.account_code === code);
+                                    if (match) updateLine(idx, 'account_name', match.account_name);
+                                  }}
+                                  placeholder="科目編號"
+                                  list="account-list"
+                                  className="w-[100px] px-2 py-1 border rounded text-xs font-mono" />
+                                <select value={line.account_name}
+                                  onChange={(e) => {
+                                    const name = e.target.value;
+                                    updateLine(idx, 'account_name', name);
+                                    const match = (accounts?.data || []).find((a: any) => a.account_name === name);
+                                    if (match) updateLine(idx, 'account_code', match.account_code);
+                                  }}
+                                  className="flex-1 px-2 py-1 border rounded text-xs bg-background min-w-[140px]">
+                                  <option value="">選擇科目...</option>
+                                  {(accounts?.data || []).map((a: any) => (
+                                    <option key={a.id} value={a.account_name}>{a.account_code} – {a.account_name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              {matchedAccount && (
+                                <div className="flex items-center gap-1">
+                                  <span className={`text-[10px] px-1 py-0 rounded ${typeBadge}`}>{matchedAccount.account_type}</span>
+                                  <span className="text-[10px] text-muted-foreground">({normalSide})</span>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-1.5 px-2">
+                            <input value={line.description} onChange={(e) => updateLine(idx, 'description', e.target.value)}
+                              placeholder="描述" className="w-full px-2 py-1 border rounded text-xs" />
+                          </td>
+                          <td className="py-1.5 px-2">
+                            <input type="number" step="0.01" min="0"
+                              value={line.debit || ''} onChange={(e) => updateLine(idx, 'debit', parseFloat(e.target.value) || 0)}
+                              className="w-full px-2 py-1 border rounded text-xs text-right font-mono" placeholder="0.00" />
+                          </td>
+                          <td className="py-1.5 px-2">
+                            <input type="number" step="0.01" min="0"
+                              value={line.credit || ''} onChange={(e) => updateLine(idx, 'credit', parseFloat(e.target.value) || 0)}
+                              className="w-full px-2 py-1 border rounded text-xs text-right font-mono" placeholder="0.00" />
+                          </td>
+                          <td className="py-1.5 px-2 text-center">
+                            <button type="button" onClick={() => {
+                              const lines = entryForm.lines.filter((_, i) => i !== idx);
+                              setEntryForm({ ...entryForm, lines: lines.length ? lines : [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0 }] });
+                            }} className="text-destructive text-xs hover:bg-destructive/10 rounded p-1">✕</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div className="px-3 py-2 border-t flex justify-between items-center">
+                  <button type="button" onClick={addLine} className="text-xs text-primary hover:underline">+ 新增行 Add Line</button>
+                  <span className="text-xs text-muted-foreground">{entryForm.lines.length} 行 line(s)</span>
                 </div>
               </div>
+
+              {/* Balance validation bar */}
+              <div aria-live="polite" className={`flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 rounded-md text-sm font-medium ${
+                totals.balanced ? 'bg-green-50 dark:bg-green-950/30 text-green-700' : 'bg-red-50 dark:bg-red-950/30 text-red-700'
+              }`}>
+                <span className="flex items-center gap-1">
+                  {totals.balanced ? '✓ 平衡 Balanced' : '⚠ 不平衡 Unbalanced'}
+                </span>
+                <span className="font-mono text-xs">
+                  借方 Debit: {fmtMoney(totals.debit)} &nbsp;|&nbsp; 貸方 Credit: {fmtMoney(totals.credit)}
+                  {!totals.balanced && <>&nbsp;|&nbsp; 差異 Diff: {fmtMoney(Math.abs(totals.diff))}</>}
+                </span>
+              </div>
+
               <div className="flex gap-3 justify-end">
                 <button type="button" onClick={() => setShowEntryForm(false)} className="px-4 py-2 border rounded-md text-sm">取消</button>
-                <button type="submit" disabled={createEntry.isPending}
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm">建立</button>
+                <button type="submit" disabled={!canSubmit}
+                  title={!totals.balanced ? '借貸不平衡 Debits must equal credits' : entryForm.lines.length < 2 ? '至少需要兩行 At least 2 lines required' : ''}
+                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm disabled:opacity-50 disabled:cursor-not-allowed">建立 Post Entry</button>
               </div>
             </form>
             <datalist id="account-list">
