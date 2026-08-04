@@ -36,7 +36,7 @@ export default function Invoices() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
-  const [directionFilter, setDirectionFilter] = useState<'all' | 'outgoing' | 'incoming'>('all');
+  const [expenseCategory, setExpenseCategory] = useState<'all' | 'cash_expenses' | 'employee_reimbursements' | 'director_expenses'>('all');
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
@@ -105,10 +105,10 @@ export default function Invoices() {
   }
 
   const allInvoices = data?.data || [];
-  const invoices = directionFilter === 'all' ? allInvoices
-    : allInvoices.filter((inv: any) => inv.direction === directionFilter);
+  const invoices = expenseCategory === 'all' ? allInvoices
+    : allInvoices.filter((inv: any) => inv.expense_category === expenseCategory);
   const statusLabel = (s: string) => {
-    const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '應收', '应收'), paid: tr('Paid', '已收', '已收'), overdue: tr('Overdue', '逾期未收', '逾期未收'), cancelled: tr('Cancelled', '已取消', '已取消'), pending_review: tr('⏳ Pending Review', '⏳ 待審核', '⏳ 待审核') };
+    const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '已發送', '已发送'), paid: tr('Paid', '已付', '已付'), overdue: tr('Overdue', '逾期', '逾期'), cancelled: tr('Cancelled', '已取消', '已取消'), pending_review: tr('⏳ Pending', '⏳ 待審', '⏳ 待审') };
     return labels[s] || s;
   };
   const statusBadge = (s: string) => {
@@ -121,7 +121,7 @@ export default function Invoices() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold">{tr('Invoices', '發票 Invoices', '发票 Invoices')}</h2>
-          <p className="text-muted-foreground mt-1">{tr('Manage sales invoices and supplier bills', '管理銷售發票和供應商帳單', '管理銷售发票和供应商账單')}</p>
+          <p className="text-muted-foreground mt-1">{tr('Manage invoices, expenses and reimbursements', '管理發票、支出與報銷', '管理发票、支出与报销')}</p>
         </div>
         <button onClick={() => setShowForm(true)}
           className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
@@ -129,18 +129,19 @@ export default function Invoices() {
         </button>
       </div>
 
-      {/* Direction tabs: All / Receivable (AR) / Payable (AP) */}
-      <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit">
+      {/* Expense category tabs */}
+      <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit flex-wrap">
         {([
           { key: 'all', label: tr('All Invoices', '全部', '全部') },
-          { key: 'outgoing', label: tr('Receivable (AR)', '應收帳款 AR', '應收账款 AR') },
-          { key: 'incoming', label: tr('Payable (AP)', '應付帳款 AP', '應付账款 AP') },
+          { key: 'cash_expenses', label: tr('Cash Expenses', '現金支出', '现金支出') },
+          { key: 'employee_reimbursements', label: tr('Employee Reimb.', '員工報銷', '员工报销') },
+          { key: 'director_expenses', label: tr('Director Expenses', '董事支出', '董事支出') },
         ] as const).map(t => (
           <button
             key={t.key}
-            onClick={() => { setDirectionFilter(t.key); setPage(1); }}
+            onClick={() => { setExpenseCategory(t.key); setPage(1); }}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              directionFilter === t.key
+              expenseCategory === t.key
                 ? 'bg-background shadow-sm text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
             }`}
@@ -148,7 +149,7 @@ export default function Invoices() {
             {t.label}
             {t.key !== 'all' && (
               <span className="ml-1.5 text-xs text-muted-foreground">
-                ({allInvoices.filter((inv: any) => inv.direction === t.key).length})
+                ({allInvoices.filter((inv: any) => inv.expense_category === t.key).length})
               </span>
             )}
           </button>
@@ -165,10 +166,10 @@ export default function Invoices() {
           className="px-3 py-2 border rounded-md bg-background text-sm">
           <option value="">{tr('All Status', '全部狀態', '全部状态')}</option>
           <option value="draft">{tr('Draft', '草稿', '草稿')}</option>
-          <option value="sent">{tr('Receivable', '應收', '應收')}</option>
-          <option value="paid">{tr('Paid', '已收', '已收')}</option>
+          <option value="sent">{tr('Sent', '已發送', '已发送')}</option>
+          <option value="paid">{tr('Paid', '已付', '已付')}</option>
           <option value="pending_review">{tr('⏳ Pending Review', '⏳ 待審核', '⏳ 待审核')}</option>
-          <option value="overdue">{tr('Overdue', '逾期未收', '逾期未收')}</option>
+          <option value="overdue">{tr('Overdue', '逾期', '逾期')}</option>
         </select>
       </div>
 
@@ -212,13 +213,21 @@ export default function Invoices() {
                   </td>
                   <td className="p-3 hidden md:table-cell">{inv.direction === 'incoming' ? (inv.vendor_name || inv.supplier_name || inv.customer_name || '-') : (inv.customer_name || '-')}</td>
                   <td className="p-3">
-                    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                      inv.direction === 'incoming'
-                        ? 'bg-orange-100 text-orange-700'
-                        : 'bg-blue-100 text-blue-700'
-                    }`}>
-                      {inv.direction === 'incoming' ? (tr('AP', '應付', '應付')) : (tr('AR', '應收', '應收'))}
-                    </span>
+                    {(() => {
+                      const cat = inv.expense_category;
+                      if (cat === 'cash_expenses') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-700">{tr('Cash', '現金', '现金')}</span>;
+                      if (cat === 'employee_reimbursements') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-700">{tr('Reimb.', '報銷', '报销')}</span>;
+                      if (cat === 'director_expenses') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-teal-100 text-teal-700">{tr('Director', '董事', '董事')}</span>;
+                      return (
+                        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                          inv.direction === 'incoming'
+                            ? 'bg-orange-100 text-orange-700'
+                            : 'bg-blue-100 text-blue-700'
+                        }`}>
+                          {inv.direction === 'incoming' ? (tr('AP', '應付', '應付')) : (tr('AR', '應收', '應收'))}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="p-3"><span className={statusBadge(inv.status)}>{statusLabel(inv.status)}</span></td>
                   <td className="p-3 text-right hidden lg:table-cell">{inv.currency} {inv.total?.toLocaleString()}</td>
@@ -228,15 +237,13 @@ export default function Invoices() {
                     <button onClick={() => navigate(`/invoices/review/${inv.id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Edit', '編輯', '编辑')}><Pencil className="h-4 w-4" /></button>
                     <button onClick={() => downloadInvoicePDF(inv.id, inv.invoice_number)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Download PDF', '下載 PDF', '下载 PDF')}><Download className="h-4 w-4" /></button>
                     {inv.status === 'draft' && (
-                      <button onClick={() => updateStatus.mutate({ id: inv.id, status: 'sent' })} className={`text-xs hover:underline mr-2 ${inv.direction === 'incoming' ? 'text-orange-600' : 'text-blue-600'}`}>
-                        {inv.direction === 'incoming'
-                          ? tr('Send (AP)', '發送（應付）', '发送（应付）')
-                          : tr('Send (AR)', '發送（應收）', '发送（应收）')}
+                      <button onClick={() => updateStatus.mutate({ id: inv.id, status: 'sent' })} className="text-xs text-blue-600 hover:underline mr-2">
+                        {tr('Send', '發送', '发送')}
                       </button>
                     )}
                     {inv.status === 'sent' && (
                       <button onClick={() => updateStatus.mutate({ id: inv.id, status: 'paid' })} className="text-xs text-green-600 hover:underline mr-2">
-                        {inv.direction === 'incoming' ? tr('Paid', '已付', '已付') : tr('Paid', '已收', '已收')}
+                        {tr('Mark Paid', '標記已付', '标记已付')}
                       </button>
                     )}
                     <button onClick={() => { if (confirm(tr('Delete this item?', '確定刪除?', '确定删除?'))) deleteMut.mutate(inv.id); }} className="p-1 hover:bg-muted rounded text-destructive"><Trash2 className="h-4 w-4" /></button>
