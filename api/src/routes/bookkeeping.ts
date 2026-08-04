@@ -257,8 +257,11 @@ bookkeeping.get('/accounts', async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
   const asOf = c.req.query('as_of');
+  const includeInactive = c.req.query('include_inactive') === 'true';
 
-  const rows = await db.prepare('SELECT * FROM accounts WHERE user_id = ? AND is_active = 1 ORDER BY account_code').bind(tenantId).all();
+  const rows = await db.prepare(
+    `SELECT * FROM accounts WHERE user_id = ? ${includeInactive ? '' : 'AND is_active = 1'} ORDER BY account_code`
+  ).bind(tenantId).all();
 
   // Compute current_balance for each account if as_of is provided
   if (asOf) {
@@ -289,6 +292,50 @@ bookkeeping.get('/accounts', async (c) => {
       const currentBalance = isDebitNatural ? opening + debit - credit : opening + credit - debit;
       return { ...a, total_debit: debit, total_credit: credit, current_balance: Math.round(currentBalance * 100) / 100 };
     });
+
+    // Aggregate child balances into parent accounts (bottom-up)
+    const balByCode = new Map<string, number>();
+    for (const a of data) {
+      balByCode.set(a.account_code, a.current_balance);
+    }
+
+    // Build children lookup
+    const childrenMap = new Map<string, string[]>();
+    for (const a of data) {
+      if (a.parent_code) {
+        const list = childrenMap.get(a.parent_code) || [];
+        list.push(a.account_code);
+        childrenMap.set(a.parent_code, list);
+      }
+    }
+
+    // Compute max depth per code for bottom-up processing
+    const depthCache = new Map<string, number>();
+    function maxDepth(code: string): number {
+      if (depthCache.has(code)) return depthCache.get(code)!;
+      const kids = childrenMap.get(code) || [];
+      let max = 0;
+      for (const c of kids) max = Math.max(max, maxDepth(c) + 1);
+      depthCache.set(code, max);
+      return max;
+    }
+
+    // Process deepest first — children aggregate into parents
+    const sortedByDepth = [...data].sort((a, b) => maxDepth(b.account_code) - maxDepth(a.account_code));
+    for (const a of sortedByDepth) {
+      if (a.parent_code && balByCode.has(a.account_code)) {
+        const childBal = balByCode.get(a.account_code) || 0;
+        balByCode.set(a.parent_code, (balByCode.get(a.parent_code) || 0) + childBal);
+      }
+    }
+
+    // Apply aggregated balances to parent accounts
+    for (const a of data) {
+      if (a.account_code.endsWith('00')) {
+        a.current_balance = Math.round((balByCode.get(a.account_code) || 0) * 100) / 100;
+      }
+    }
+
     return c.json({ data, as_of: asOf });
   }
 
@@ -351,7 +398,7 @@ bookkeeping.get('/accounts/missing-codes', async (c) => {
 
   const codes = await collectTransactionCodes(db, tenantId);
   const existingRows = await db.prepare(
-    `SELECT account_code FROM accounts WHERE user_id = ? AND is_active = 1`
+    `SELECT account_code FROM accounts WHERE user_id = ?`
   ).bind(tenantId).all();
   const existingSet = new Set((existingRows.results as any[]).map(r => r.account_code));
   const missing = codes.filter(c => !existingSet.has(c)).map(code => ({
@@ -381,6 +428,11 @@ bookkeeping.post('/accounts', bookkeeperMiddleware, zValidator('json', createAcc
   const existing = await db.prepare('SELECT id FROM accounts WHERE user_id = ? AND account_code = ?')
     .bind(tenantId, data.account_code).first();
   if (existing) return c.json({ error: 'Account code already exists' }, 409);
+
+  // Check for duplicate name
+  const existingName = await db.prepare('SELECT id FROM accounts WHERE user_id = ? AND account_name = ?')
+    .bind(tenantId, data.account_name).first();
+  if (existingName) return c.json({ error: 'Account name already exists' }, 409);
 
   const id = `acc-${uuidv4().slice(0, 8)}`;
   await db.prepare(
@@ -455,17 +507,34 @@ bookkeeping.get('/accounts/:code/transactions', async (c) => {
   });
 });
 
-// PATCH opening balance for an account
+// PATCH account fields (opening_balance, is_active) — at least one required
 bookkeeping.patch('/accounts/:code', authMiddleware, bookkeeperMiddleware, async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const code = c.req.param('code');
   const body = await c.req.json();
-  const { opening_balance } = body;
-  if (opening_balance === undefined) return c.json({ error: 'opening_balance required' }, 400);
-  await c.env.DB.prepare('UPDATE accounts SET opening_balance = ? WHERE user_id = ? AND account_code = ?')
-    .bind(opening_balance, tenantId, code).run();
-  await auditLog(c.env.DB, user.id, 'update', 'account', code, { opening_balance });
+
+  const sets: string[] = [];
+  const params: any[] = [];
+  const changes: Record<string, unknown> = {};
+
+  if (body.opening_balance !== undefined) {
+    sets.push('opening_balance = ?'); params.push(body.opening_balance);
+    changes.opening_balance = body.opening_balance;
+  }
+  if (body.is_active !== undefined) {
+    if (body.is_active !== 0 && body.is_active !== 1)
+      return c.json({ error: 'is_active must be 0 or 1' }, 400);
+    sets.push('is_active = ?'); params.push(body.is_active);
+    changes.is_active = body.is_active;
+  }
+  if (sets.length === 0) return c.json({ error: 'No fields to update' }, 400);
+
+  params.push(tenantId, code);
+  await c.env.DB.prepare(
+    `UPDATE accounts SET ${sets.join(', ')} WHERE user_id = ? AND account_code = ?`
+  ).bind(...params).run();
+  await auditLog(c.env.DB, user.id, 'update', 'account', code, changes);
   return c.json({ success: true });
 });
 
