@@ -44,6 +44,7 @@ export default function BankStatements() {
   const [acctModalTx, setAcctModalTx] = useState<Transaction | null>(null);
   const [aiLoading, setAiLoading] = useState<string | null>(null);
   const [reconData, setReconData] = useState<any>(null);
+  const [hideReconciledCoa, setHideReconciledCoa] = useState(true);
 
   const { data, isLoading } = useQuery({
     queryKey: ['bank-statements'],
@@ -298,6 +299,15 @@ export default function BankStatements() {
                                   ? (tr('Done Editing', '完成編輯', '完成編輯'))
                                   : (tr('✏️ Edit', '✏️ 編輯', '✏️ 編輯'))}
                               </button>
+                              {detail?.balance_status === 'ok' && (
+                                <button onClick={() => setHideReconciledCoa(!hideReconciledCoa)}
+                                  className={`px-2 py-1 text-xs rounded border hover:bg-muted ${hideReconciledCoa ? 'bg-green-50 border-green-300' : ''}`}
+                                  title={hideReconciledCoa ? tr('Show COA accounts', '顯示會計科目', '显示会计科目') : tr('Hide reconciled COA', '隱藏已對賬科目', '隐藏已对账科目')}>
+                                  {hideReconciledCoa
+                                    ? tr('🔒 Reconciled', '🔒 已對賬', '🔒 已对账')
+                                    : tr('🔓 Show COA', '🔓 顯示科目', '🔓 显示科目')}
+                                </button>
+                              )}
                               <button onClick={async () => {
                                 if (!detail?.id) return;
                                 try {
@@ -320,6 +330,7 @@ export default function BankStatements() {
                               <tr className="border-b text-left text-xs text-muted-foreground">
                                 <th className="py-2 pr-3 font-medium">Date</th>
                                 <th className="py-2 pr-3 font-medium">Description</th>
+                                <th className="py-2 pr-3 font-medium max-w-[120px]">{tr('Voucher', '憑證', '凭证')}</th>
                                 {detail?.accounts?.length > 1 && <th className="py-2 pr-3 font-medium">Account</th>}
                                 <th className="py-2 pr-3 font-medium text-right">Deposit</th>
                                 <th className="py-2 pr-3 font-medium text-right">Withdrawal</th>
@@ -360,6 +371,15 @@ export default function BankStatements() {
                                       <span className="truncate block">{tx.description}</span>
                                     )}
                                   </td>
+                                  <td className="py-1.5 pr-3 max-w-[120px]">
+                                    {(tx as any).voucher_number ? (
+                                      <span className="text-[10px] font-mono bg-muted/30 px-1 py-0.5 rounded truncate block" title={(tx as any).voucher_number}>
+                                        {(tx as any).voucher_number}
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-muted-foreground italic">—</span>
+                                    )}
+                                  </td>
                                   {detail?.accounts?.length > 1 && (
                                     <td className="py-1.5 pr-3">
                                       <span className="text-xs bg-muted px-1 rounded">{tx.account_type}</span>
@@ -396,16 +416,22 @@ export default function BankStatements() {
                                       (() => {
                                         const acc = accounts.find((a: any) => a.account_code === tx.account_code);
                                         const name = acc?.account_name || '(unknown account)';
+                                        const isReconciled = detail?.balance_status === 'ok';
                                         return (
                                           <span
-                                            className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded cursor-pointer hover:bg-primary/20 inline-block max-w-[260px] truncate"
-                                            title={`${tx.account_code} · ${name}`}
-                                            onClick={() => setAcctModalTx(tx)}>
+                                            className={`text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded inline-block max-w-[260px] truncate ${
+                                              isReconciled && hideReconciledCoa ? 'opacity-60 cursor-default' : 'cursor-pointer hover:bg-primary/20'
+                                            }`}
+                                            title={`${tx.account_code} · ${name}${isReconciled ? tr(' (reconciled)', '（已對賬）', '（已对账）') : ''}`}
+                                            onClick={() => { if (!(isReconciled && hideReconciledCoa)) setAcctModalTx(tx); }}>
                                             <span className="font-mono">{tx.account_code}</span>
                                             <span className="text-muted-foreground ml-1">{name}</span>
+                                            {isReconciled && <span className="text-[9px] ml-1 text-green-600">✓</span>}
                                           </span>
                                         );
                                       })()
+                                    ) : hideReconciledCoa && detail?.balance_status === 'ok' ? (
+                                      <span className="text-xs text-muted-foreground italic">—</span>
                                     ) : (
                                       <select
                                         className="text-xs border rounded px-1 py-0.5 bg-background max-w-[260px] truncate cursor-pointer"

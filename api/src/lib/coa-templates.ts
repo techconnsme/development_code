@@ -157,6 +157,9 @@ export const BASE_HK_COA: CoaTemplateAccount[] = [
   { account_code: '66201', account_name: '罰款及附加費 Penalties & Surcharges', account_type: 'expense', parent_code: '66200' },
   { account_code: '66202', account_name: '捐款 Donations', account_type: 'expense', parent_code: '66200' },
   { account_code: '66203', account_name: '其他雜項 Miscellaneous', account_type: 'expense', parent_code: '66200' },
+  // ── Petty Cash (67000) ──
+  { account_code: '67000', account_name: '零用金 Petty Cash', account_type: 'expense', parent_code: '60000' },
+  { account_code: '67001', account_name: '零用金支出 Petty Cash Expenses', account_type: 'expense', parent_code: '67000' },
   // ── Profits Tax (80000) ──
   { account_code: '80000', account_name: '利得稅 Profits Tax', account_type: 'expense', parent_code: null },
   { account_code: '81100', account_name: '香港利得稅 HK Profits Tax', account_type: 'expense', parent_code: '80000' },

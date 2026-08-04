@@ -435,6 +435,75 @@ card.post('/:id/auto-categorize', async (c) => {
   }
   return c.json({ success: true, categorized, total: txs.results.length });
 });
+
+// ── Post card transactions to GL ──
+card.post('/:id/post-to-gl', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const statementId = c.req.param('id');
+
+  // Verify statement exists and belongs to tenant
+  const stmt = await db.prepare(
+    'SELECT id, card_issuer, statement_year, statement_month FROM card_statements WHERE id = ? AND user_id = ?'
+  ).bind(statementId, tenantId).first<{ id: string; card_issuer: string; statement_year: number; statement_month: number }>();
+  if (!stmt) return c.json({ error: 'Statement not found' }, 404);
+
+  // Get categorized transactions without existing journal entries
+  const txs = await db.prepare(
+    `SELECT ct.* FROM card_transactions ct
+     LEFT JOIN journal_entries je ON je.reference_id = ct.id AND je.reference_type = 'card_transaction'
+     WHERE ct.card_statement_id = ? AND ct.user_id = ?
+     AND ct.expense_account_code IS NOT NULL
+     AND ct.deleted_at IS NULL
+     AND je.id IS NULL`
+  ).bind(statementId, tenantId).all();
+
+  const rows = txs.results as any[];
+  if (rows.length === 0) return c.json({ posted: 0, message: 'No uncategorized or already-posted transactions' });
+
+  // Ensure required COA accounts exist
+  const codes = new Set<string>();
+  for (const tx of rows) codes.add(tx.expense_account_code);
+  codes.add('11101'); // Cash on Hand
+  for (const code of codes) {
+    const exists = await db.prepare('SELECT id FROM accounts WHERE user_id = ? AND account_code = ?').bind(tenantId, code).first();
+    if (!exists) {
+      const type = code.startsWith('1') ? 'asset' : code.startsWith('2') ? 'liability' : code.startsWith('3') ? 'equity' : code.startsWith('4') ? 'revenue' : 'expense';
+      await db.prepare('INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, is_active) VALUES (?, ?, ?, ?, ?, 1)')
+        .bind(`ac-${Date.now()}-${code}`, tenantId, code, `Card auto-created ${code}`, type).run();
+    }
+  }
+
+  let posted = 0;
+  const ym = `${stmt.statement_year}${String(stmt.statement_month).padStart(2, '0')}`;
+  const issuer = (stmt.card_issuer || 'CARD').replace(/[^A-Z0-9]/gi, '').slice(0, 6).toUpperCase();
+
+  for (const tx of rows) {
+    const entryId = `je-${Date.now().toString(36)}-${posted}`;
+    const voucherNum = `C-${issuer}-${ym}-${String(posted + 1).padStart(3, '0')}`;
+    const amount = Math.abs(tx.amount || 0);
+    if (amount < 0.01) continue;
+
+    await db.prepare(
+      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(entryId, tenantId, voucherNum, tx.transaction_date || tx.posting_date, tx.description || 'Card Transaction', 'card_transaction', tx.id).run();
+
+    // Dr expense account, Cr Cash on Hand (11101)
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, 0)'
+    ).bind(`jl-${Date.now().toString(36)}-${posted}-0`, entryId, tx.expense_account_code, 'Card Expense', tx.description || '', amount, 0).run();
+
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, 1)'
+    ).bind(`jl-${Date.now().toString(36)}-${posted}-1`, entryId, '11101', 'Cash on Hand', `Card payment: ${tx.description || ''}`, 0, amount).run();
+
+    posted++;
+  }
+
+  return c.json({ success: true, posted, total: rows.length });
+});
+
 // ── Get single statement with transactions ──
 card.get('/:id', async (c) => {
   const user = c.get('user');

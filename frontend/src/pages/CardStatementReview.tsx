@@ -5,6 +5,7 @@ import { api, WORKER_API_BASE } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import { CreditCard, Save, Trash2, Plus, AlertTriangle, CheckCircle } from 'lucide-react';
+import { useToast } from '../components/Toast';
 
 interface CardTransaction {
   id: string; transaction_date: string; posting_date: string | null;
@@ -30,6 +31,7 @@ export default function CardStatementReview() {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [headerEdits, setHeaderEdits] = useState<Record<string, any>>({});
   const [txEdits, setTxEdits] = useState<Record<string, Record<string, any>>>({});
   const [deletedTxIds, setDeletedTxIds] = useState<Set<string>>(new Set());
@@ -44,6 +46,29 @@ export default function CardStatementReview() {
     queryFn: () => api(`/card-statements/${id}`),
     enabled: !!id,
   }) as { data: CardStatement | undefined; isLoading: boolean; isError: boolean };
+
+  // Fetch COA accounts for expense code dropdown
+  const { data: acctData } = useQuery({
+    queryKey: ['accounts'],
+    queryFn: () => api('/bookkeeping/accounts?include_inactive=false&limit=500') as Promise<{ data?: any[]; results?: any[] }>,
+    enabled: !!id,
+  });
+  const accounts = (acctData as any)?.data || (acctData as any)?.results || [];
+
+  // Post card transactions to GL
+  const postToGlMut = useMutation({
+    mutationFn: () => api(`/card-statements/${id}/post-to-gl`, { method: 'POST' }),
+    onSuccess: (res: any) => {
+      toast.success
+        ? toast.success(tr(`${res.posted} entries posted to GL`, `已過賬 ${res.posted} 筆分錄`, `已过账 ${res.posted} 笔分录`))
+        : alert(tr(`${res.posted} entries posted to GL`, `已過賬 ${res.posted} 筆分錄`, `已过账 ${res.posted} 笔分录`));
+      queryClient.invalidateQueries({ queryKey: ['card-statement', id] });
+    },
+    onError: (err: any) => {
+      alert(tr('Failed to post: ', '過賬失敗：', '过账失败：') + (err?.message || 'Unknown error'));
+    },
+  });
+
   // ── Review queue: after save/discard, load next queued item ──
   // Shift current item (position 0), then navigate to the NEXT one.
   function goNextInQueue() {
@@ -204,7 +229,7 @@ export default function CardStatementReview() {
             <h3 className="font-medium text-sm mb-2">Transactions ({txs.length})</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-[11px]">
-                <thead><tr className="text-left text-muted-foreground border-b"><th className="py-1 w-[80px]">Date</th><th className="py-1">Description</th><th className="py-1 w-[70px] text-right">Amount</th><th className="py-1 w-[70px]">Type</th><th className="py-1 w-[50px]"></th></tr></thead>
+                <thead><tr className="text-left text-muted-foreground border-b"><th className="py-1 w-[80px]">Date</th><th className="py-1">Description</th><th className="py-1 w-[70px] text-right">Amount</th><th className="py-1 w-[70px]">Type</th><th className="py-1 w-[90px]">{tr('Account', '科目', '科目')}</th><th className="py-1 w-[50px]"></th></tr></thead>
                 <tbody>
                   {txs.map((tx: CardTransaction) => (
                     <tr key={tx.id} className={`border-b border-muted/20 ${txEdits[tx.id] ? 'bg-blue-50 dark:bg-blue-950/30' : ''}`} title={txEdits[tx.id] ? 'Manually edited' : ''}>
@@ -214,6 +239,18 @@ export default function CardStatementReview() {
                       <td className="py-1">
                         <select value={txEdits[tx.id]?.transaction_type ?? tx.transaction_type ?? ''} onChange={e => setTxEdits(ed => ({ ...ed, [tx.id]: { ...ed[tx.id], transaction_type: e.target.value } }))} className="w-full px-1 py-0.5 border rounded text-[11px] bg-background">
                           <option value="">—</option><option value="purchase">Purchase</option><option value="payment">Payment</option><option value="refund">Refund</option><option value="fee">Fee</option><option value="interest">Interest</option><option value="cash_advance">Cash Advance</option>
+                        </select>
+                      </td>
+                      <td className="py-1">
+                        <select
+                          value={txEdits[tx.id]?.expense_account_code ?? tx.expense_account_code ?? ''}
+                          onChange={e => setTxEdits(ed => ({ ...ed, [tx.id]: { ...ed[tx.id], expense_account_code: e.target.value || null } }))}
+                          className="w-full px-1 py-0.5 border rounded text-[11px] bg-background"
+                        >
+                          <option value="">—</option>
+                          {accounts.filter((a: any) => a.account_type === 'expense').map((a: any) => (
+                            <option key={a.account_code} value={a.account_code}>{a.account_code}</option>
+                          ))}
                         </select>
                       </td>
                       <td className="py-1"><button onClick={() => setDeletedTxIds(s => new Set([...s, tx.id]))} className="p-0.5 text-muted-foreground hover:text-red-500"><Trash2 className="h-3 w-3" /></button></td>
@@ -226,9 +263,21 @@ export default function CardStatementReview() {
         </div>
 
         <div className="border-t bg-card p-3 flex items-center justify-between">
-          <div className="text-xs text-muted-foreground">{txs.length} transactions{stmt.status === 'draft' && <span className="ml-2 text-amber-600 font-medium">Draft</span>}</div>
+          <div className="text-xs text-muted-foreground">
+            {txs.length} transactions
+            {txs.filter((t: CardTransaction) => t.expense_account_code).length > 0 && (
+              <span className="ml-2 text-green-600 font-medium">{txs.filter((t: CardTransaction) => t.expense_account_code).length} categorized</span>
+            )}
+            {stmt.status === 'draft' && <span className="ml-2 text-amber-600 font-medium">Draft</span>}
+          </div>
           <div className="flex gap-2">
             {stmt.status === 'draft' && <button onClick={() => { if (confirm('Discard?')) discardMut.mutate(); }} className="px-3 py-1.5 border rounded text-sm text-red-600">Discard</button>}
+            {stmt.status === 'active' && txs.filter((t: CardTransaction) => t.expense_account_code).length > 0 && (
+              <button onClick={() => postToGlMut.mutate()} disabled={postToGlMut.isPending}
+                className="px-3 py-1.5 border rounded text-sm font-medium text-green-700 border-green-400 hover:bg-green-50 disabled:opacity-50">
+                {postToGlMut.isPending ? tr('Posting…', '過賬中…', '过账中…') : tr('Post to GL', '過賬', '过账')}
+              </button>
+            )}
             <button onClick={handleSave} disabled={saving} className="px-4 py-1.5 bg-primary text-primary-foreground rounded text-sm font-medium disabled:opacity-50 flex items-center gap-1"><Save className="h-3.5 w-3.5" /> Save & Confirm</button>
           </div>
         </div>

@@ -3,9 +3,35 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Upload, FileText, Image, File, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Upload, FileText, Image, File, Loader2, AlertCircle, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 import { writeTokenUsage, clearTokenUsage } from '../components/TokenPopup';
+
+// ── Channel types ─────────────────────────────────────────────────────────
+
+type UploadChannel = 'bank_statement' | 'card_statement' | 'bank_invoice' | 'cash_invoice' | 'petty_cash' | 'others';
+
+interface ChannelDef {
+  key: UploadChannel;
+  label: string;
+  labelZh: string;
+  labelCn: string;
+  folder: string;
+  category: string;
+}
+
+const CHANNELS: ChannelDef[] = [
+  { key: 'bank_statement', label: 'Bank Statement', labelZh: '銀行月結單', labelCn: '银行月结单', folder: 'Bank Statements', category: 'bank_statement' },
+  { key: 'card_statement', label: 'Card Statement', labelZh: '信用卡月結單', labelCn: '信用卡月结单', folder: 'Card Statements', category: 'card_statement' },
+  { key: 'bank_invoice', label: 'Bank-TXN Invoice', labelZh: '銀行交易發票', labelCn: '银行交易发票', folder: 'Invoices', category: 'bank_invoice' },
+  { key: 'cash_invoice', label: 'Cash Invoice', labelZh: '現金發票', labelCn: '现金发票', folder: 'Invoices', category: 'cash_invoice' },
+  { key: 'petty_cash', label: 'Petty Cash', labelZh: '零用金', labelCn: '零用金', folder: 'Petty Cash', category: 'petty_cash' },
+  { key: 'others', label: 'Others', labelZh: '其他', labelCn: '其他', folder: 'Others', category: 'general' },
+];
+
+function channelLabel(ch: ChannelDef): string {
+  return tr(ch.label, ch.labelZh, ch.labelCn);
+}
 
 function reviewPageFlags(result: any): string {
   const params = new URLSearchParams();
@@ -17,13 +43,91 @@ function reviewPageFlags(result: any): string {
   return qs ? `?${qs}` : '';
 }
 
+// ── Mismatch dialog ────────────────────────────────────────────────────────
+
+interface MismatchInfo {
+  channel: ChannelDef;
+  detectedType: string;
+  inferredValues: Record<string, string>;
+  fileId: string;
+  result: any;
+  fileName: string;
+}
+
+function MismatchDialog({ info, onForce, onSwitch, onClose }: {
+  info: MismatchInfo;
+  onForce: () => void;
+  onSwitch: () => void;
+  onClose: () => void;
+}) {
+  const detectedChannel = CHANNELS.find(c => c.key === info.detectedType);
+  const detectedLabel = detectedChannel ? channelLabel(detectedChannel) : info.detectedType;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="bg-card border rounded-xl shadow-xl max-w-lg w-full mx-4 p-6 space-y-4">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="h-6 w-6 text-amber-500 shrink-0 mt-0.5" />
+          <div>
+            <h3 className="text-lg font-bold">
+              {tr('Document Type Mismatch', '文件類型不符', '文件类型不符')}
+            </h3>
+            <p className="text-sm text-muted-foreground mt-1">
+              {tr(
+                `This file was uploaded as "${channelLabel(info.channel)}" but OCR detected it as "${detectedLabel}".`,
+                `此文件上傳為「${channelLabel(info.channel)}」，但 OCR 檢測為「${detectedLabel}」。`,
+                `此文件上传为「${channelLabel(info.channel)}」，但 OCR 检测为「${detectedLabel}」。`,
+              )}
+            </p>
+          </div>
+        </div>
+
+        {/* Inferred values table */}
+        {Object.keys(info.inferredValues).length > 0 && (
+          <div className="bg-muted/30 rounded-lg p-3 space-y-1">
+            <p className="text-xs font-semibold text-muted-foreground mb-2">
+              {tr('OCR Inferred Values:', 'OCR 推斷值：', 'OCR 推断值：')}
+            </p>
+            <table className="w-full text-xs">
+              <tbody>
+                {Object.entries(info.inferredValues).map(([key, value]) => (
+                  <tr key={key} className="border-b border-border/30 last:border-b-0">
+                    <td className="py-1 pr-3 font-medium text-muted-foreground capitalize">{key}</td>
+                    <td className="py-1">{value || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="flex gap-2 justify-end pt-2">
+          <button onClick={onClose} className="px-3 py-2 border rounded-lg text-sm hover:bg-muted">
+            {tr('Cancel', '取消', '取消')}
+          </button>
+          <button onClick={onForce} className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 flex items-center gap-1.5">
+            {tr(`Force as ${channelLabel(info.channel)}`, `強制作為${channelLabel(info.channel)}`, `强制作为${channelLabel(info.channel)}`)}
+          </button>
+          <button onClick={onSwitch} className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 flex items-center gap-1.5">
+            {detectedChannel
+              ? tr(`Switch to ${channelLabel(detectedChannel)}`, `切換至${channelLabel(detectedChannel)}`, `切换至${channelLabel(detectedChannel)}`)
+              : tr('Switch channel', '切換頻道', '切换频道')}
+            <ArrowRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Component ──────────────────────────────────────────────────────────────
+
 export default function FileUpload() {
   const nav = useNavigate();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [dragOver, setDragOver] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
-  const [folder, setFolder] = useState('');
   const [description, setDescription] = useState('');
   const [uploading, setUploading] = useState(false);
   const [processingMsg, setProcessingMsg] = useState<string | null>(null);
@@ -32,6 +136,14 @@ export default function FileUpload() {
   const [tokenCardDismissed, setTokenCardDismissed] = useState(false);
   const [fileErrors, setFileErrors] = useState<Record<number, string>>({});
   const [fileStatuses, setFileStatuses] = useState<Record<number, 'pending' | 'processing' | 'success' | 'error'>>({});
+
+  // Channel selection
+  const [channel, setChannel] = useState<UploadChannel>('bank_statement');
+  const channelDef = CHANNELS.find(c => c.key === channel)!;
+
+  // Mismatch dialog state
+  const [mismatch, setMismatch] = useState<MismatchInfo | null>(null);
+  const mismatchResolveRef = useRef<((action: 'force' | 'switch' | 'cancel') => void) | null>(null);
 
   function pushToQueue(docType: string, reviewId: string, filename: string, flags: string) {
     const stored = sessionStorage.getItem('reviewQueue');
@@ -44,7 +156,6 @@ export default function FileUpload() {
     if (docType === 'bank_statement') batchRef.current.bank++;
     else if (docType === 'invoice') batchRef.current.invoice++;
     else if (docType === 'card_statement') batchRef.current.card++;
-    // Sync to React state so progress bar re-renders
     setBatchProgress({ done: batchRef.current.done, total: batchRef.current.total, currentFile: filename });
   }
 
@@ -59,9 +170,25 @@ export default function FileUpload() {
     if (e.target.files && e.target.files.length > 0) { setFiles(Array.from(e.target.files)); setFileErrors({}); setFileStatuses({}); }
   }, []);
 
-  // Upload one file: base64 → upload → import-document (OCR + type detection)
-  // Returns 'ok' (clean auto-save), 'review' (saved but needs human review), or 'duplicate'
-  // Throws on hard errors (file not saved — needs re-upload)
+  // Extract inferred values from OCR result for display
+  function extractInferredValues(result: any): Record<string, string> {
+    const vals: Record<string, string> = {};
+    if (result?.amount != null) vals['Amount'] = typeof result.amount === 'number' ? result.amount.toLocaleString('en-HK', { minimumFractionDigits: 2 }) : String(result.amount);
+    if (result?.statement_date || result?.invoice_date) vals['Date'] = result.statement_date || result.invoice_date || '';
+    if (result?.bank_name || result?.counterparty_name || result?.supplier_name) vals['Counterparty'] = result.bank_name || result.counterparty_name || result.supplier_name || '';
+    if (result?.account_number || result?.invoice_number) vals['Reference'] = result.account_number || result.invoice_number || '';
+    if (result?.currency) vals['Currency'] = result.currency;
+    return vals;
+  }
+
+  // Show mismatch dialog and wait for user decision
+  function showMismatchDialog(info: MismatchInfo): Promise<'force' | 'switch' | 'cancel'> {
+    return new Promise((resolve) => {
+      mismatchResolveRef.current = resolve;
+      setMismatch(info);
+    });
+  }
+
   const uploadFile = async (file: File, skipNavigation = false, fileIndex = 0, totalFiles = 0): Promise<string> => {
     const token = localStorage.getItem('token');
     const activeClient = localStorage.getItem('activeClient');
@@ -73,7 +200,6 @@ export default function FileUpload() {
       try { const c = JSON.parse(activeClient); if (c?.id) headers['X-Active-Client'] = c.id; } catch {}
     }
 
-    // Convert to base64
     const base64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result as string);
@@ -81,14 +207,14 @@ export default function FileUpload() {
       reader.readAsDataURL(file);
     });
 
-    // Step 1: Upload to file-storage
+    // Step 1: Upload to file-storage with channel's folder
     const uploadBody = {
       filename: file.name,
       original_name: file.name,
       file_type: file.type,
       file_size: file.size,
       file_data: base64,
-      folder: folder || 'Uploads',
+      folder: channelDef.folder,
       description: description,
     };
 
@@ -110,7 +236,6 @@ export default function FileUpload() {
     const result = await importResp.json().catch(() => ({}));
     if (result?.ocr_text) console.log('[OCR-RAW-TEXT]', result.ocr_text);
     if (result?.deepseek_raw) console.log('[DEEPSEEK-OUTPUT]', JSON.parse(result.deepseek_raw));
-    // Accumulate token usage: DeepSeek + GLM, persisted to sessionStorage
     if (result?.usage?.total_tokens || result?.glm_usage?.total_tokens) {
       const dsTotal = result.usage?.total_tokens || 0;
       const glmTotal = result.glm_usage?.total_tokens || 0;
@@ -140,10 +265,8 @@ export default function FileUpload() {
       return 'duplicate';
     }
 
-    // Hard errors: file was NOT saved — refuse save, user must re-upload
-    if (result?.error) {
-      throw new Error(result.error);
-    }
+    // Hard errors
+    if (result?.error) throw new Error(result.error);
     if (result?.ocr_failed) {
       throw new Error(tr(
         'Could not read this document. The file may be blurry, scanned at low resolution, or in an unsupported format.',
@@ -152,22 +275,89 @@ export default function FileUpload() {
       ));
     }
 
-    // Determine if review is needed (OCR mismatch flags)
+    const detectedType = result?.type;
+
+    // Check for OCR mismatch with user-selected channel
+    if (detectedType && detectedType !== channel && detectedType !== 'invoice') {
+      // For bank/card channels, compare directly. Invoices accept both bank_invoice and cash_invoice.
+      const isInvoiceChannel = channel === 'bank_invoice' || channel === 'cash_invoice';
+      const isInvoiceDetected = detectedType === 'invoice';
+      if (!(isInvoiceChannel && isInvoiceDetected)) {
+        const action = await showMismatchDialog({
+          channel: channelDef,
+          detectedType,
+          inferredValues: extractInferredValues(result),
+          fileId,
+          result,
+          fileName: file.name,
+        });
+        if (action === 'switch') {
+          // Switch to detected channel and re-upload
+          const targetChannel = CHANNELS.find(c => c.key === detectedType);
+          if (targetChannel) setChannel(targetChannel.key);
+          throw new Error(tr('Switched channel. Please re-upload.', '已切換頻道。請重新上傳。', '已切换频道。请重新上传。'));
+        }
+        if (action === 'cancel') {
+          throw new Error(tr('Upload cancelled.', '已取消上傳。', '已取消上传。'));
+        }
+        // 'force' — continue with current channel
+      }
+    }
+
     const needsReview = !!(result?.needs_direction_review || result?.company_not_detected);
 
-    // Route based on detected document type
-    const docType = result?.type;
-    if (docType === 'card_statement' && result?.statement_id) {
-      if (skipNavigation && needsReview) { pushToQueue(docType, result.statement_id, file.name, ''); return 'review'; }
+    // Route based on user-selected CHANNEL (not OCR type)
+    if (channel === 'card_statement' && result?.statement_id) {
+      if (skipNavigation && needsReview) { pushToQueue('card_statement', result.statement_id, file.name, ''); return 'review'; }
       return 'ok';
-    } else if (docType === 'bank_statement' && result?.statement_id) {
-      if (skipNavigation && needsReview) { pushToQueue(docType, result.statement_id, file.name, ''); return 'review'; }
+    } else if (channel === 'bank_statement' && result?.statement_id) {
+      if (skipNavigation && needsReview) { pushToQueue('bank_statement', result.statement_id, file.name, ''); return 'review'; }
       return 'ok';
-    } else if (docType === 'invoice' && result?.invoice_id) {
+    } else if ((channel === 'bank_invoice' || channel === 'cash_invoice') && result?.invoice_id) {
       const flags = reviewPageFlags(result);
-      if (skipNavigation && needsReview) { pushToQueue(docType, result.invoice_id, file.name, flags); return 'review'; }
+      if (skipNavigation && needsReview) { pushToQueue('invoice', result.invoice_id, file.name, flags); return 'review'; }
       return 'ok';
-    } else if (!docType) {
+    } else if (channel === 'petty_cash') {
+      // Auto-create journal entry: debit Petty Cash Expenses (67001), credit Cash on Hand (11101)
+      const pettyAmount = result?.amount || result?.total_amount || result?.total || 0;
+      if (pettyAmount > 0) {
+        try {
+          const today = new Date().toISOString().split('T')[0];
+          const entryDate = result?.statement_date || result?.invoice_date || result?.date || today;
+          const desc = result?.description || result?.supplier_name || result?.counterparty_name || file.name;
+          await api('/bookkeeping/entries', {
+            method: 'POST',
+            body: {
+              entry_number: `PC-${Date.now().toString(36).toUpperCase()}`,
+              entry_date: entryDate,
+              description: `Petty Cash: ${desc}`,
+              reference_type: 'petty_cash',
+              reference_id: fileId,
+              lines: [
+                { account_code: '67001', account_name: 'Petty Cash Expenses', debit: pettyAmount, credit: 0, description: desc },
+                { account_code: '11101', account_name: 'Cash on Hand', debit: 0, credit: pettyAmount, description: desc },
+              ],
+            },
+          });
+          toast.success(tr(
+            `Petty Cash expense created: ${pettyAmount.toLocaleString('en-HK', { minimumFractionDigits: 2 })}`,
+            `零用金支出已建立：${pettyAmount.toLocaleString('en-HK', { minimumFractionDigits: 2 })}`,
+            `零用金支出已建立：${pettyAmount.toLocaleString('en-HK', { minimumFractionDigits: 2 })}`,
+          ));
+        } catch (e: any) {
+          console.error('Failed to create petty cash entry:', e);
+          toast.warning(tr(
+            'File saved but could not auto-create expense entry. Please create manually.',
+            '文件已儲存但無法自動建立支出分錄。請手動建立。',
+            '文件已储存但无法自动建立支出分录。请手动建立。',
+          ));
+        }
+      }
+      return 'ok';
+    } else if (channel === 'others') {
+      // Just save to file storage, no special routing
+      return 'ok';
+    } else if (!detectedType) {
       throw new Error(tr(
         'Could not determine document type. Please check the file and try again.',
         '無法識別文件類型。請檢查文件後重試。',
@@ -204,9 +394,7 @@ export default function FileUpload() {
       try {
         setBatchProgress(prev => ({ ...prev, currentFile: file.name }));
         const status = await uploadFile(file, isBatch, idx, files.length);
-        if (status === 'review') {
-          reviewCount++;
-        }
+        if (status === 'review') reviewCount++;
         ok++;
         setFileStatuses(prev => ({ ...prev, [fileIdx]: 'success' }));
       } catch (e: any) {
@@ -214,18 +402,13 @@ export default function FileUpload() {
         setFileStatuses(prev => ({ ...prev, [fileIdx]: 'error' }));
         setFileErrors(prev => ({ ...prev, [fileIdx]: e.message || 'Unknown error' }));
         if (isBatch) { batchRef.current.done++; setBatchProgress(prev => ({ ...prev, done: batchRef.current.done })); }
-        // Stop processing remaining files on hard error (file not saved)
         break;
       }
     }
 
     setUploading(false);
 
-    // On hard error: keep files visible so user can fix and re-upload
-    // Queue may contain review items from files processed before the error
-    if (hasError) {
-      return;
-    }
+    if (hasError) return;
 
     setFiles([]);
     setDescription('');
@@ -237,16 +420,12 @@ export default function FileUpload() {
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
       queryClient.invalidateQueries({ queryKey: ['bookkeeping'] });
 
-      // Auto-generate journal entries from newly imported bank/card transactions
-      // so COA balances and bookkeeping reports are immediately populated
       if (batchRef.current.bank > 0 || batchRef.current.card > 0) {
-        try {
-          await api('/bookkeeping/auto-generate-entries', { method: 'POST' });
-        } catch { /* non-critical — user can generate manually later */ }
+        try { await api('/bookkeeping/auto-generate-entries', { method: 'POST' }); } catch {}
       }
 
+      // Route based on channel after upload
       if (reviewCount > 0) {
-        // Some files need human review — navigate to first queued item
         const raw = sessionStorage.getItem('reviewQueue');
         try {
           const queue = raw ? JSON.parse(raw) : [];
@@ -264,30 +443,62 @@ export default function FileUpload() {
             return;
           }
         } catch {}
-        // Fallback: queue corrupted, go to bookkeeping
         sessionStorage.removeItem('reviewQueue');
         sessionStorage.removeItem('reviewQueueTotal');
       } else {
-        // All clean — clear queue, go to bookkeeping
         sessionStorage.removeItem('reviewQueue');
         sessionStorage.removeItem('reviewQueueTotal');
       }
 
+      // Default redirect based on channel
+      const defaultRoute = channel === 'bank_statement' ? '/bank-statements'
+        : channel === 'card_statement' ? '/card-statements'
+        : channel === 'petty_cash' ? '/expense-receipts'
+        : channel === 'others' ? '/file-storage'
+        : '/invoices';
+
       toast.success(tr(
-        `Successfully processed and saved ${ok} file(s)${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}. Redirecting to Bookkeeping…`,
-        `已成功處理並儲存 ${ok} 個文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。正在跳轉至賬本…`,
-        `已成功处理并储存 ${ok} 个文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。正在跳转至账本…`,
+        `Successfully processed and saved ${ok} file(s)${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}.`,
+        `已成功處理並儲存 ${ok} 個文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。`,
+        `已成功处理并储存 ${ok} 个文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。`,
       ));
-      // Auto-redirect to Bank Statements — skip review step
-      setTimeout(() => nav('/bank-statements'), 800);
+      setTimeout(() => nav(defaultRoute), 800);
     }
   };
 
   return (
-    <div className="p-6 max-w-2xl mx-auto space-y-6">
+    <div className="p-6 max-w-3xl mx-auto space-y-6">
       <h2 className="text-2xl font-bold flex items-center gap-2">
         <Upload className="h-6 w-6" /> {tr('File Upload', '上傳文件', '上传文件')}
       </h2>
+
+      {/* ── Channel tabs ── */}
+      <div className="flex gap-1 border-b overflow-x-auto">
+        {CHANNELS.map(ch => (
+          <button
+            key={ch.key}
+            onClick={() => { setChannel(ch.key); setFiles([]); setFileErrors({}); setFileStatuses({}); }}
+            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+              channel === ch.key
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'
+            }`}
+          >
+            {channelLabel(ch)}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Current channel indicator ── */}
+      <div className="text-xs text-muted-foreground flex items-center gap-1">
+        <span>{tr('Uploading to', '上傳至', '上传至')}</span>
+        <span className="font-medium text-foreground">{channelDef.folder}</span>
+        {channel === 'petty_cash' && (
+          <span className="ml-2 text-amber-600 dark:text-amber-400">
+            {tr('(will auto-create expense under Petty Cash)', '（將自動建立零用金支出）', '（将自动建立零用金支出）')}
+          </span>
+        )}
+      </div>
 
       <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
         className={`bg-card border-2 border-dashed rounded-xl p-8 transition-colors ${dragOver ? 'border-primary bg-primary/5' : 'border-border'}`}>
@@ -317,7 +528,7 @@ export default function FileUpload() {
                   const isProcessing = status === 'processing';
 
                   return (
-                    <div key={i} className={`flex flex-col gap-1 ${isError ? '' : ''}`}>
+                    <div key={i} className="flex flex-col gap-1">
                       <div className={`flex items-center gap-2 text-sm ${isError ? 'text-red-600 dark:text-red-400 font-medium' : isSuccess ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'}`}>
                         {isError ? (
                           <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
@@ -349,11 +560,6 @@ export default function FileUpload() {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3 mt-4 pt-4 border-t">
-              <div>
-                <label className="text-xs text-muted-foreground">{tr('Folder', '文件夾', '文件夹')}</label>
-                <input value={folder} onChange={e => setFolder(e.target.value)} placeholder={tr('e.g. FY2026', '例如：FY2026', '例如：FY2026')}
-                  className="px-3 py-2 border rounded-md bg-background text-sm w-52 focus:outline-none focus:ring-2 focus:ring-ring" />
-              </div>
               <div className="flex-1 min-w-[200px]">
                 <label className="text-xs text-muted-foreground">{tr('Description', '描述', '描述')}</label>
                 <input value={description} onChange={e => setDescription(e.target.value)} placeholder={tr('Optional description', '可選描述', '可选描述')}
@@ -401,6 +607,15 @@ export default function FileUpload() {
         </div>
       )}
 
+      {/* ── OCR mismatch dialog ── */}
+      {mismatch && (
+        <MismatchDialog
+          info={mismatch}
+          onForce={() => { const resolve = mismatchResolveRef.current; setMismatch(null); resolve?.('force'); }}
+          onSwitch={() => { const resolve = mismatchResolveRef.current; setMismatch(null); resolve?.('switch'); }}
+          onClose={() => { const resolve = mismatchResolveRef.current; setMismatch(null); resolve?.('cancel'); }}
+        />
+      )}
     </div>
   );
 }

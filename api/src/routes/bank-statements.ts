@@ -591,9 +591,11 @@ bank.get('/:id', async (c) => {
     `SELECT bt.id, bt.transaction_date, bt.description, bt.deposit_amount, bt.withdrawal_amount,
      bt.balance, bt.account_type, bt.account_code, bt.reference, bt.sort_order,
      bt.invoice_id, bt.match_confidence, bt.match_status, bt.is_edited,
-     i.invoice_number, i.total as invoice_total, i.status as invoice_status
+     i.invoice_number, i.total as invoice_total, i.status as invoice_status,
+     je.entry_number as voucher_number
      FROM bank_transactions bt
      LEFT JOIN invoices i ON bt.invoice_id = i.id
+     LEFT JOIN journal_entries je ON je.reference_id = bt.id AND je.reference_type = 'bank_transaction'
       WHERE bt.bank_statement_id = ? AND bt.deleted_at IS NULL
       ORDER BY bt.sort_order`
   ).bind(c.req.param('id')).all();

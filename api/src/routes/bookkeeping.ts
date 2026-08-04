@@ -1031,6 +1031,23 @@ bookkeeping.get('/ledger', async (c) => {
   return c.json({ accounts: Object.values(groups), source: 'bank', period: { start: startDate, end: endDate } });
 });
 
+// Standardized voucher number generator: {PREFIX}-{YYYYMM}-{SEQ3}
+// e.g., B-HSBC-202607-001, B-HSBC-202607-002
+async function generateVoucher(prefix: string, date: string, db: any, tenantId: string): Promise<string> {
+  const ym = date.slice(0, 7).replace(/-/g, ''); // "2026-07-15" → "202607"
+  const like = `${prefix}-${ym}-%`;
+  const row = await db.prepare(
+    `SELECT entry_number FROM journal_entries WHERE user_id = ? AND entry_number LIKE ? ORDER BY entry_number DESC LIMIT 1`
+  ).bind(tenantId, like).first<{ entry_number: string }>();
+  let seq = 1;
+  if (row?.entry_number) {
+    const parts = row.entry_number.split('-');
+    const lastSeq = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(lastSeq)) seq = lastSeq + 1;
+  }
+  return `${prefix}-${ym}-${String(seq).padStart(3, '0')}`;
+}
+
 // Auto-generate journal entries from bank transactions
 bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
   const user = c.get('user');
@@ -1054,8 +1071,10 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
   const refSet = new Set((existingRefs.results as any[]).map(r => r.reference_id));
 
   const txRows = await db.prepare(
-    `SELECT bt.*, i.invoice_number, i.supplier_id
-     FROM bank_transactions bt LEFT JOIN invoices i ON bt.invoice_id = i.id
+    `SELECT bt.*, i.invoice_number, i.supplier_id, bs.bank_name, bs.account_number
+     FROM bank_transactions bt
+     LEFT JOIN invoices i ON bt.invoice_id = i.id
+     LEFT JOIN bank_statements bs ON bt.statement_id = bs.id
      WHERE bt.user_id = ?
      AND bt.deleted_at IS NULL
      AND bt.description NOT LIKE '%TRANSACTION SUMMARY%'
@@ -1089,7 +1108,10 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
     const desc = tx.description || '';
     const invInfo = tx.invoice_number ? ` (${tx.invoice_number})` : '';
     const entryId = `je-${uuidv4().slice(0, 8)}`;
-    const entryNum = `JE-AUTO-${String(created + 1).padStart(4, '0')}-${uuidv4().slice(0, 4)}`;
+    // Generate standardized voucher: B-{BANK}-{YYYYMM}-{SEQ}
+    const bankCode = (tx.bank_name || 'BANK').replace(/[^A-Z0-9]/gi, '').slice(0, 6).toUpperCase() || 'BANK';
+    const txDate = tx.transaction_date || new Date().toISOString().split('T')[0];
+    const entryNum = await generateVoucher(`B-${bankCode}`, txDate, db, tenantId);
     const lines: { code: string; name: string; debit: number; credit: number }[] = [];
 
     if (tx.deposit_amount > 0) {

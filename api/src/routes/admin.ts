@@ -684,4 +684,56 @@ admin.delete('/tenants/:userId', async (c) => {
   });
 });
 
+// ── Audit statistics ──
+admin.get('/audit-stats', async (c) => {
+  const db = c.env.DB;
+
+  // Total statements and those with source documents (via file_records r2_key match)
+  const bankDocs = await db.prepare(
+    `SELECT COUNT(*) as total, COUNT(fr.id) as with_docs
+     FROM bank_statements bs
+     LEFT JOIN file_records fr ON bs.r2_key = fr.r2_key AND fr.deleted_at IS NULL
+     WHERE bs.deleted_at IS NULL`
+  ).first<{ total: number; with_docs: number }>();
+  const cardDocs = await db.prepare(
+    `SELECT COUNT(*) as total, COUNT(fr.id) as with_docs
+     FROM card_statements cs
+     LEFT JOIN file_records fr ON cs.r2_key = fr.r2_key AND fr.deleted_at IS NULL
+     WHERE cs.deleted_at IS NULL`
+  ).first<{ total: number; with_docs: number }>();
+
+  const totalStatements = (bankDocs?.total || 0) + (cardDocs?.total || 0);
+  const statementsWithDocs = (bankDocs?.with_docs || 0) + (cardDocs?.with_docs || 0);
+  const missingDocPct = totalStatements > 0
+    ? Math.round(((totalStatements - statementsWithDocs) / totalStatements) * 1000) / 10
+    : 0;
+
+  // Receipt vs Expense ratio from journal entries (last 12 months)
+  const receiptExpense = await db.prepare(
+    `SELECT
+       COALESCE(SUM(CASE WHEN a.account_type = 'revenue' THEN jl.credit ELSE 0 END), 0) as total_receipts,
+       COALESCE(SUM(CASE WHEN a.account_type = 'expense' THEN jl.debit ELSE 0 END), 0) as total_expenses
+     FROM journal_lines jl
+     JOIN accounts a ON jl.account_code = a.account_code
+     JOIN journal_entries je ON jl.entry_id = je.id
+     WHERE je.entry_date >= date('now', '-12 months')`
+  ).first<{ total_receipts: number; total_expenses: number }>();
+
+  const totalReceipts = receiptExpense?.total_receipts || 0;
+  const totalExpenses = receiptExpense?.total_expenses || 0;
+  const totalVolume = totalReceipts + totalExpenses;
+  const receiptPct = totalVolume > 0 ? Math.round((totalReceipts / totalVolume) * 1000) / 10 : 50;
+  const expensePct = totalVolume > 0 ? Math.round((totalExpenses / totalVolume) * 1000) / 10 : 50;
+
+  return c.json({
+    missing_doc_pct: missingDocPct,
+    receipt_pct: receiptPct,
+    expense_pct: expensePct,
+    total_statements: totalStatements,
+    statements_with_docs: statementsWithDocs,
+    total_receipts: totalReceipts,
+    total_expenses: totalExpenses,
+  });
+});
+
 export { admin as adminRoutes };

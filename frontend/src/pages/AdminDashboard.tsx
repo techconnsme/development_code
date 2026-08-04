@@ -11,7 +11,7 @@ import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import {
-  Building2, Users, ClipboardCheck, FileText, Activity,
+  Building2, Users, ClipboardCheck, FileText, Activity, AlertCircle, Landmark,
   ChevronRight, ExternalLink, Search, Shield,
 } from 'lucide-react';
 
@@ -45,6 +45,12 @@ export default function AdminDashboard() {
   const { data: usersData, isLoading: usersLoading, error: usersError } = useQuery({
     queryKey: ['admin-users'],
     queryFn: () => api('/admin/users'),
+  });
+
+  const { data: auditStats } = useQuery({
+    queryKey: ['admin-audit-stats'],
+    queryFn: () => api('/admin/audit-stats') as Promise<any>,
+    refetchInterval: 60000,
   });
 
   const { data: appsData } = useQuery({
@@ -125,6 +131,22 @@ export default function AdminDashboard() {
           value={totalInvoices}
           color="text-emerald-600"
           bg="bg-emerald-50 dark:bg-emerald-950/30"
+        />
+        <StatsCard
+          icon={AlertCircle}
+          label={tr('Doc Compliance', '文件合規', '文件合规')}
+          value={`${auditStats?.missing_doc_pct ?? 0}%`}
+          sub={auditStats ? tr(`${auditStats.statements_with_docs}/${auditStats.total_statements} linked`, `${auditStats.statements_with_docs}/${auditStats.total_statements} 已連結`, `${auditStats.statements_with_docs}/${auditStats.total_statements} 已连结`) : ''}
+          color={(auditStats?.missing_doc_pct ?? 0) > 20 ? 'text-red-600' : 'text-green-600'}
+          bg={(auditStats?.missing_doc_pct ?? 0) > 20 ? 'bg-red-50 dark:bg-red-950/30' : 'bg-green-50 dark:bg-green-950/30'}
+        />
+        <StatsCard
+          icon={Landmark}
+          label={tr('Receipt vs Expense', '收入 vs 支出', '收入 vs 支出')}
+          value={`${auditStats?.receipt_pct ?? 50} / ${auditStats?.expense_pct ?? 50}`}
+          sub="%"
+          color="text-indigo-600"
+          bg="bg-indigo-50 dark:bg-indigo-950/30"
         />
       </div>
 
@@ -248,7 +270,7 @@ export default function AdminDashboard() {
 }
 
 function StatsCard({ icon: Icon, label, value, sub, color, bg, onClick }: {
-  icon: any; label: string; value: number; sub?: string; color: string; bg: string; onClick?: () => void;
+  icon: any; label: string; value: number | string; sub?: string; color: string; bg: string; onClick?: () => void;
 }) {
   return (
     <div
