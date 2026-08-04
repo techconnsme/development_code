@@ -19,9 +19,14 @@ DEPLOYMENT_CONTEXT.md
 TeCS_DEVELOPMENT_ROADMAP.md
 demo-redesign.html
 fix-admin-password.sql
+session-*.md
 
 # Test artifacts
 test-results/
 test-samples-generated/
 *.tsbuildinfo
 tests/
+
+# Playwright
+test-drag.spec.ts
+test-*.png

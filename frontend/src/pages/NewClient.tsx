@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -24,6 +24,15 @@ export default function NewClient() {
   const [coaMode, setCoaMode] = useState<CoaMode>('manual');
   const [customAccounts, setCustomAccounts] = useState<CoaAccount[]>([]);
   const [removedCodes, setRemovedCodes] = useState<Set<string>>(new Set());
+
+  // Default COA mode: Industry when an industry classification is selected, Manual otherwise
+  useEffect(() => {
+    if (form.industry) {
+      setCoaMode('industry');
+    } else {
+      setCoaMode('manual');
+    }
+  }, [form.industry]);
 
   const createMut = useMutation({
     mutationFn: () => api('/firms/my/clients', {
@@ -74,7 +83,7 @@ export default function NewClient() {
 
   if (result) {
     return (
-      <div className="p-6 max-w-2xl mx-auto space-y-4">
+      <div className="p-6 w-[95%] mx-auto space-y-4">
         <div className="rounded-lg border border-green-300 bg-green-50 dark:bg-green-950 p-6">
           <h1 className="text-lg font-bold text-green-900 dark:text-green-100 mb-3 flex items-center gap-2">
             ✓ {tr('Client created successfully', '客戶建立成功', '客户建立成功')}
@@ -113,7 +122,7 @@ export default function NewClient() {
   }
 
   return (
-    <div className="p-6 max-w-2xl mx-auto space-y-4">
+    <div className="p-6 w-[95%] mx-auto space-y-4">
       <Link to="/" className="text-sm text-muted-foreground hover:underline flex items-center gap-1">
         <ArrowLeft className="h-4 w-4" /> {tr('Back to Dashboard', '返回儀表板', '返回仪表板')}
       </Link>
