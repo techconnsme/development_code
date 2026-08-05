@@ -82,7 +82,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const endDate = selectedFYOption?.endDate || '';
   const [entryForm, setEntryForm] = useState({
     entry_number: '', entry_date: new Date().toISOString().split('T')[0], description: '',
-    lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0 }],
+    lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0, project: '' }],
   });
 
   const { data: entries } = useQuery({
@@ -95,7 +95,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => api('/bookkeeping/accounts'),
-    enabled: tab === 'accounts' || tab === 'ledger',
+    enabled: tab === 'accounts' || tab === 'ledger' || tab === 'entries',
   });
 
   const { data: trialBalance } = useQuery({
@@ -156,7 +156,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   function addLine() {
     setEntryForm({
       ...entryForm,
-      lines: [...entryForm.lines, { account_code: '', account_name: '', description: '', debit: 0, credit: 0 }],
+      lines: [...entryForm.lines, { account_code: '', account_name: '', description: '', debit: 0, credit: 0, project: '' }],
     });
   }
 
@@ -178,7 +178,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   }, [entryForm.lines]);
   const canSubmit = totals.balanced && entryForm.lines.length >= 2 && !createEntry.isPending;
 
-  function suggestVoucherNumber(entryRows: any[] | undefined, date: string, prefix = 'JE'): string {
+  function suggestVoucherNumber(entryRows: any[] | undefined, date: string, prefix = 'GJ'): string {
     const ym = date.slice(0, 7).replace(/-/g, '');
     const pattern = `${prefix}-${ym}-`;
     let maxSeq = 0;
@@ -199,7 +199,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       entry_number: suggestVoucherNumber(entries?.data, today),
       entry_date: today,
       description: '',
-      lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0 }],
+      lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0, project: '' }],
     });
   }, [showEntryForm]);
 
@@ -231,7 +231,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   }
 
   const tabs = [
-    { id: 'entries', label: '分錄 Entries' },
+    { id: 'entries', label: 'GJE 日誌帳' },
     { id: 'accounts', label: '科目 Accounts' },
     { id: 'ledger', label: '分類帳 Ledger' },
     { id: 'trial', label: '試算 Trial Balance' },
@@ -245,16 +245,16 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       {hideTabs ? (
         <div>
           <h2 className="text-2xl font-bold">
-            {tab === 'entries' ? tr('Entries', '分錄', '分录')
+            {tab === 'entries' ? tr('General Journal Entries (GJE)', '記帳日誌帳 (GJE)', '记账日志帐 (GJE)')
              : tab === 'pl' ? tr('Income Statement', '損益表', '损益表')
              : tab === 'trial' ? tr('Trial Balance', '試算表', '试算表')
              : tab === 'bs' ? tr('Balance Sheet', '資產負債表', '资产负债表')
              : tab === 'ledger' ? tr('General Ledger Report', '總帳報告', '总帐报告')
              : tab === 'export' ? tr('Export', '匯出', '导出')
-             : tr('Entries', '分錄', '分录')}
+             : tr('General Journal Entries (GJE)', '記帳日誌帳 (GJE)', '记账日志帐 (GJE)')}
           </h2>
           <p className="text-muted-foreground mt-1">
-            {tab === 'entries' ? tr('All journal entries supporting the financial statements.', '所有支援財務報表的日記帳分錄。', '所有支援财务报表的日记帐分录。')
+            {tab === 'entries' ? tr('General Journal Entries — record and manage double-entry journal vouchers.', '通用日誌帳 — 記錄及管理複式記帳日誌憑證。', '通用日志帐 — 记录及管理复式记账日志凭证。')
              : tab === 'pl' ? tr('Revenue, expenses, and profit/loss for the selected period.', '所選期間的收入、支出及損益。', '所选期间的收入、支出及损益。')
              : tab === 'trial' ? tr('Debit and credit balances for all accounts at period end.', '期末所有科目的借方及貸方餘額。', '期末所有科目的借方及贷方余额。')
              : tab === 'bs' ? tr('Assets, liabilities, and equity as at the selected date.', '截至選定日期的資產、負債及權益。', '截至选定日期的资产、负债及权益。')
@@ -271,7 +271,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
         </div>
         <button onClick={() => setShowEntryForm(true)}
           className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
-          <Plus className="h-4 w-4" /> 新增分錄
+          <Plus className="h-4 w-4" /> {tr('+ New GJE', '+ 新增日誌帳', '+ 新增日志帐')}
         </button>
       </div>
       )}
@@ -288,8 +288,33 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       </div>
       )}
 
-      {/* Fiscal year filter — same pattern as Chart of Accounts */}
-      {(tab === 'entries' || tab === 'pl' || tab === 'ledger' || tab === 'export') && fyOptions.length > 0 && (
+      {/* Header controls bar for standalone GJE page */}
+      {hideTabs && tab === 'entries' && fyOptions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 bg-card border rounded-xl px-4 py-3">
+          <DropdownSelect
+            value={selectedFY}
+            options={fyOptions.map(o => ({ value: o.label, label: o.label }))}
+            onChange={setSelectedFY}
+            className="min-w-[260px]"
+          />
+          <div className="flex-1" />
+          {!isStaff && (
+            <button onClick={() => setShowEntryForm(true)}
+              className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
+              <Plus className="h-4 w-4" /> {tr('+ New General Journal Entry', '新增日誌帳', '新增日志帐')}
+            </button>
+          )}
+          {!isStaff && (
+            <button onClick={exportCSV}
+              className="flex items-center gap-2 border px-4 py-2 rounded-md text-sm font-medium hover:bg-muted">
+              <Download className="h-4 w-4" /> {tr('Export CSV', '匯出 CSV', '导出 CSV')}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Fiscal year filter — for other tabs (not standalone entries) */}
+      {!hideTabs && (tab === 'entries' || tab === 'pl' || tab === 'ledger' || tab === 'export') && fyOptions.length > 0 && (
         <DropdownSelect
           value={selectedFY}
           options={fyOptions.map(o => ({ value: o.label, label: o.label }))}
@@ -305,13 +330,13 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             <thead>
               <tr className="border-b bg-muted/50">
                 <th className="w-8 p-3"></th>
-                <th className="text-left p-3">號碼 No.</th>
-                <th className="text-left p-3">日期</th>
-                <th className="text-left p-3">描述</th>
-                <th className="text-right p-3">借方 Debit ($Dr$)</th>
-                <th className="text-right p-3">貸方 Credit ($Cr$)</th>
-                <th className="text-left p-3">狀態</th>
-                <th className="text-center p-3 w-[80px]">操作</th>
+                <th className="text-left p-3">{tr('Voucher No.', '總帳 #', '总帐 #')}</th>
+                <th className="text-left p-3">{tr('Date', '日期', '日期')}</th>
+                <th className="text-left p-3">{tr('Description', '備忘', '备记')}</th>
+                <th className="text-right p-3">{tr('Debit ($Dr$)', '借方 ($Dr$)', '借方 ($Dr$)')}</th>
+                <th className="text-right p-3">{tr('Credit ($Cr$)', '貸方 ($Cr$)', '贷方 ($Cr$)')}</th>
+                <th className="text-left p-3">{tr('Status', '狀態', '状态')}</th>
+                <th className="text-center p-3 w-[80px]">{tr('Actions', '操作', '操作')}</th>
               </tr>
             </thead>
             <tbody>
@@ -326,26 +351,18 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                   <td className="p-3 font-medium font-mono text-xs">{e.entry_number}</td>
                   <td className="p-3">{e.entry_date}</td>
                   <td className="p-3 max-w-[200px] truncate" title={e.description}>{e.description}</td>
-                  <td className="p-3 text-right font-mono">{e.total_debit > 0 ? fmtMoney(e.total_debit) : ''}</td>
-                  <td className="p-3 text-right font-mono">{e.total_credit > 0 ? fmtMoney(e.total_credit) : ''}</td>
-                  <td className="p-3">
-                    <div className="flex items-center gap-2">
-                      {statusBadge(e.status)}
-                      {e.status === 'draft' && (
-                        <button onClick={async () => {
-                          await api(`/bookkeeping/entries/${e.id}/status`, { method: 'PATCH', body: { status: 'posted' } });
-                          queryClient.invalidateQueries({ queryKey: ['entries'] });
-                        }} className="text-xs text-primary hover:underline whitespace-nowrap">過帳 Post</button>
-                      )}
-                    </div>
-                  </td>
+                  <td className="p-3 text-right font-mono">{e.total_debit > 0 ? '$' + fmtMoney(e.total_debit) : ''}</td>
+                  <td className="p-3 text-right font-mono">{e.total_credit > 0 ? '$' + fmtMoney(e.total_credit) : ''}</td>
+                  <td className="p-3">{statusBadge(e.status)}</td>
                   <td className="p-3 text-center">
-                    <button onClick={() => {
-                      if (!confirm('確定要刪除此分錄嗎？此操作不可撤銷。')) return;
-                      api(`/bookkeeping/entries/${e.id}`, { method: 'DELETE' }).then(() => {
-                        queryClient.invalidateQueries({ queryKey: ['entries'] });
-                      }).catch(err => toast.info('刪除失敗：' + (err.message || '未知錯誤')));
-                    }} className="text-destructive text-xs hover:underline">刪除</button>
+                    {!isStaff && (
+                      <button onClick={() => {
+                        if (!confirm(tr('Confirm delete? This action cannot be undone.', '確定要刪除此分錄嗎？此操作不可撤銷。', '确定要删除此分录吗？此操作不可撤销。'))) return;
+                        api(`/bookkeeping/entries/${e.id}`, { method: 'DELETE' }).then(() => {
+                          queryClient.invalidateQueries({ queryKey: ['entries'] });
+                        }).catch(err => toast.info(tr('Delete failed: ', '刪除失敗：', '删除失败：') + (err.message || '')));
+                      }} className="text-destructive text-xs hover:underline">{tr('Delete', '刪除', '删除')}</button>
+                    )}
                   </td>
                 </tr>
                 {expandedId === e.id && (
@@ -355,16 +372,17 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                         {loadingDetail === e.id ? (
                           <div className="flex justify-center py-4"><div className="animate-spin h-5 w-5 border-2 border-primary border-t-transparent rounded-full" /></div>
                         ) : (entryDetails[e.id] || []).length === 0 ? (
-                          <p className="text-xs text-muted-foreground py-2">暫無分錄行資料</p>
+                          <p className="text-xs text-muted-foreground py-2">{tr('No line details', '暫無分錄行資料', '暂无分录行资料')}</p>
                         ) : (
                           <table className="w-full text-xs">
                             <thead>
                               <tr className="border-b text-muted-foreground">
                                 <th className="text-left py-1.5 font-medium w-8">#</th>
-                                <th className="text-left py-1.5 font-medium">科目 Account</th>
-                                <th className="text-left py-1.5 font-medium">描述 Description</th>
-                                <th className="text-right py-1.5 font-medium">借方 Debit ($Dr$)</th>
-                                <th className="text-right py-1.5 font-medium">貸方 Credit ($Cr$)</th>
+                                <th className="text-left py-1.5 font-medium">{tr('Account', '科目', '科目')}</th>
+                                <th className="text-left py-1.5 font-medium">{tr('Description', '描述', '描述')}</th>
+                                <th className="text-left py-1.5 font-medium">{tr('Project/Item', '項目', '项目')}</th>
+                                <th className="text-right py-1.5 font-medium">{tr('Debit ($Dr$)', '借方 ($Dr$)', '借方 ($Dr$)')}</th>
+                                <th className="text-right py-1.5 font-medium">{tr('Credit ($Cr$)', '貸方 ($Cr$)', '贷方 ($Cr$)')}</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -373,16 +391,17 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                                   <td className="py-1 px-2 text-muted-foreground">{i + 1}</td>
                                   <td className="py-1 px-2">{l.account_code} – {l.account_name}</td>
                                   <td className="py-1 px-2 max-w-[240px] truncate" title={l.description || ''}>{l.description || '—'}</td>
-                                  <td className="py-1 px-2 text-right font-mono">{l.debit > 0 ? fmtMoney(l.debit) : ''}</td>
-                                  <td className="py-1 px-2 text-right font-mono">{l.credit > 0 ? fmtMoney(l.credit) : ''}</td>
+                                  <td className="py-1 px-2 max-w-[120px] truncate" title={l.project || ''}>{l.project || '—'}</td>
+                                  <td className="py-1 px-2 text-right font-mono">{l.debit > 0 ? '$' + fmtMoney(l.debit) : ''}</td>
+                                  <td className="py-1 px-2 text-right font-mono">{l.credit > 0 ? '$' + fmtMoney(l.credit) : ''}</td>
                                 </tr>
                               ))}
                             </tbody>
                             <tfoot>
                               <tr className="font-medium border-t">
-                                <td colSpan={3} className="py-1.5 px-2">合計 Totals</td>
-                                <td className="py-1.5 px-2 text-right font-mono">{fmtMoney(e.total_debit)}</td>
-                                <td className="py-1.5 px-2 text-right font-mono">{fmtMoney(e.total_credit)}</td>
+                                <td colSpan={4} className="py-1.5 px-2">{tr('Totals', '合計', '合计')}</td>
+                                <td className="py-1.5 px-2 text-right font-mono">${fmtMoney(e.total_debit)}</td>
+                                <td className="py-1.5 px-2 text-right font-mono">${fmtMoney(e.total_credit)}</td>
                               </tr>
                             </tfoot>
                           </table>
@@ -394,7 +413,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                 </React.Fragment>
               ))}
               {(!entries?.data || entries.data.length === 0) && (
-                <tr><td colSpan={8} className="text-center p-6 text-muted-foreground">未有分錄記錄</td></tr>
+                <tr><td colSpan={8} className="text-center p-6 text-muted-foreground">{tr('No journal entries recorded.', '未有日誌帳記錄', '未有日志帐记录')}</td></tr>
               )}
             </tbody>
           </table>
@@ -623,28 +642,37 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
         </div>
       )}
 
-      {/* Entry Form Modal */}
+      {/* Entry Form Modal — GJE 輸入日誌帳 */}
       {showEntryForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto" onClick={() => setShowEntryForm(false)}>
-          <div className="bg-card border rounded-xl p-6 w-full max-w-3xl mx-4 my-8 space-y-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-bold text-lg">新增分錄 General Journal Entry</h3>
+          <div className="bg-card border rounded-xl p-6 w-full max-w-4xl mx-4 my-8 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold text-lg">{tr('Create / Edit Journal Entry', '輸入日誌帳', '输入日志帐')}</h3>
             <form onSubmit={(e) => { e.preventDefault(); createEntry.mutate(entryForm); }} className="space-y-3">
-              {/* Voucher row — manual + generate button */}
+              {/* Header fields: Voucher No., Date, Narration */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="flex items-center gap-2">
-                  <input required value={entryForm.entry_number}
-                    onChange={(e) => setEntryForm({ ...entryForm, entry_number: e.target.value })}
-                    placeholder="分錄號碼 Voucher No. *" className="flex-1 px-3 py-2 border rounded-md bg-background text-sm font-mono" />
-                  <button type="button" title="自動產生下一號碼"
-                    onClick={() => setEntryForm({ ...entryForm, entry_number: suggestVoucherNumber(entries?.data, entryForm.entry_date) })}
-                    className="px-2.5 py-2 border rounded-md text-xs hover:bg-muted flex items-center gap-1 shrink-0">
-                    <RefreshCw className="h-3 w-3" /> 產生
-                  </button>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">{tr('Voucher No.', '總帳 #', '总帐 #')}</label>
+                  <div className="flex items-center gap-2">
+                    <input required value={entryForm.entry_number}
+                      onChange={(e) => setEntryForm({ ...entryForm, entry_number: e.target.value })}
+                      placeholder="GJ000001" className="flex-1 px-3 py-2 border rounded-md bg-background text-sm font-mono" />
+                    <button type="button" title={tr('Auto-Generate', '自動產生', '自动产生')}
+                      onClick={() => setEntryForm({ ...entryForm, entry_number: suggestVoucherNumber(entries?.data, entryForm.entry_date) })}
+                      className="px-2.5 py-2 border rounded-md text-xs hover:bg-muted flex items-center gap-1 shrink-0">
+                      <RefreshCw className="h-3 w-3" /> {tr('Auto', '🔄', '🔄')}
+                    </button>
+                  </div>
                 </div>
-                <input type="date" required value={entryForm.entry_date} onChange={(e) => setEntryForm({ ...entryForm, entry_date: e.target.value })}
-                  className="px-3 py-2 border rounded-md bg-background text-sm" />
-                <input required value={entryForm.description} onChange={(e) => setEntryForm({ ...entryForm, description: e.target.value })}
-                  placeholder="描述 Description *" className="px-3 py-2 border rounded-md bg-background text-sm" />
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">{tr('Date', '日期', '日期')}</label>
+                  <input type="date" required value={entryForm.entry_date} onChange={(e) => setEntryForm({ ...entryForm, entry_date: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">{tr('Narration', '備忘', '备记')}</label>
+                  <input required value={entryForm.description} onChange={(e) => setEntryForm({ ...entryForm, description: e.target.value })}
+                    placeholder={tr('Narration', '備忘', '备记')} className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
+                </div>
               </div>
 
               {/* Lines table */}
@@ -653,10 +681,12 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                   <thead>
                     <tr className="bg-muted/50 border-b text-xs text-muted-foreground">
                       <th className="py-2 px-2 w-8 font-medium">#</th>
-                      <th className="py-2 px-2 text-left font-medium">科目 Account</th>
-                      <th className="py-2 px-2 text-left font-medium">描述 Description</th>
-                      <th className="py-2 px-2 text-right font-medium w-[130px]">借方 Debit ($Dr$)</th>
-                      <th className="py-2 px-2 text-right font-medium w-[130px]">貸方 Credit ($Cr$)</th>
+                      <th className="py-2 px-2 text-left font-medium">{tr('Account #', '科目編號', '科目编号')}</th>
+                      <th className="py-2 px-2 text-left font-medium">{tr('Account Name', '科目名稱', '科目名称')}</th>
+                      <th className="py-2 px-2 text-right font-medium w-[120px]">{tr('Debit ($Dr$)', '借方 ($Dr$)', '借方 ($Dr$)')}</th>
+                      <th className="py-2 px-2 text-right font-medium w-[120px]">{tr('Credit ($Cr$)', '貸方 ($Cr$)', '贷方 ($Cr$)')}</th>
+                      <th className="py-2 px-2 text-left font-medium">{tr('Project/Item', '項目', '项目')}</th>
+                      <th className="py-2 px-2 text-left font-medium">{tr('Line Memo', '記帳備忘', '记帐备记')}</th>
                       <th className="py-2 px-2 w-8"></th>
                     </tr>
                   </thead>
@@ -674,32 +704,32 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                         <tr key={idx} className="border-b border-muted/30 hover:bg-muted/20">
                           <td className="py-1.5 px-2 text-muted-foreground text-xs text-center">{idx + 1}</td>
                           <td className="py-1.5 px-2">
-                            <div className="flex flex-col gap-1">
-                              <div className="flex items-center gap-1.5">
-                                <input required value={line.account_code}
-                                  onChange={(e) => {
-                                    const code = e.target.value;
-                                    updateLine(idx, 'account_code', code);
-                                    const match = (accounts?.data || []).find((a: any) => a.account_code === code);
-                                    if (match) updateLine(idx, 'account_name', match.account_name);
-                                  }}
-                                  placeholder="科目編號"
-                                  list="account-list"
-                                  className="w-[100px] px-2 py-1 border rounded text-xs font-mono" />
-                                <select value={line.account_name}
-                                  onChange={(e) => {
-                                    const name = e.target.value;
-                                    updateLine(idx, 'account_name', name);
-                                    const match = (accounts?.data || []).find((a: any) => a.account_name === name);
-                                    if (match) updateLine(idx, 'account_code', match.account_code);
-                                  }}
-                                  className="flex-1 px-2 py-1 border rounded text-xs bg-background min-w-[140px]">
-                                  <option value="">選擇科目...</option>
-                                  {(accounts?.data || []).map((a: any) => (
-                                    <option key={a.id} value={a.account_name}>{a.account_code} – {a.account_name}</option>
-                                  ))}
-                                </select>
-                              </div>
+                            <input required value={line.account_code}
+                              onChange={(e) => {
+                                const code = e.target.value;
+                                updateLine(idx, 'account_code', code);
+                                const match = (accounts?.data || []).find((a: any) => a.account_code === code);
+                                if (match) updateLine(idx, 'account_name', match.account_name);
+                              }}
+                              placeholder={tr('Account #', '科目編號', '科目编号')}
+                              list="account-list"
+                              className="w-[90px] px-2 py-1 border rounded text-xs font-mono" />
+                          </td>
+                          <td className="py-1.5 px-2">
+                            <div className="flex flex-col gap-0.5">
+                              <select value={line.account_name}
+                                onChange={(e) => {
+                                  const name = e.target.value;
+                                  updateLine(idx, 'account_name', name);
+                                  const match = (accounts?.data || []).find((a: any) => a.account_name === name);
+                                  if (match) updateLine(idx, 'account_code', match.account_code);
+                                }}
+                                className="w-full px-2 py-1 border rounded text-xs bg-background min-w-[130px]">
+                                <option value="">{tr('Select...', '選擇科目...', '选择科目...')}</option>
+                                {(accounts?.data || []).map((a: any) => (
+                                  <option key={a.id} value={a.account_name}>{a.account_code} – {a.account_name}</option>
+                                ))}
+                              </select>
                               {matchedAccount && (
                                 <div className="flex items-center gap-1">
                                   <span className={`text-[10px] px-1 py-0 rounded ${typeBadge}`}>{matchedAccount.account_type}</span>
@@ -707,10 +737,6 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                                 </div>
                               )}
                             </div>
-                          </td>
-                          <td className="py-1.5 px-2">
-                            <input value={line.description} onChange={(e) => updateLine(idx, 'description', e.target.value)}
-                              placeholder="描述" className="w-full px-2 py-1 border rounded text-xs" />
                           </td>
                           <td className="py-1.5 px-2">
                             <input type="number" step="0.01" min="0"
@@ -722,10 +748,18 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                               value={line.credit || ''} onChange={(e) => updateLine(idx, 'credit', parseFloat(e.target.value) || 0)}
                               className="w-full px-2 py-1 border rounded text-xs text-right font-mono" placeholder="0.00" />
                           </td>
+                          <td className="py-1.5 px-2">
+                            <input value={line.project || ''} onChange={(e) => updateLine(idx, 'project', e.target.value)}
+                              placeholder={tr('Optional', '可選', '可选')} className="w-full px-2 py-1 border rounded text-xs" />
+                          </td>
+                          <td className="py-1.5 px-2">
+                            <input value={line.description} onChange={(e) => updateLine(idx, 'description', e.target.value)}
+                              placeholder={tr('Line memo', '記帳備忘', '记帐备记')} className="w-full px-2 py-1 border rounded text-xs" />
+                          </td>
                           <td className="py-1.5 px-2 text-center">
                             <button type="button" onClick={() => {
                               const lines = entryForm.lines.filter((_, i) => i !== idx);
-                              setEntryForm({ ...entryForm, lines: lines.length ? lines : [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0 }] });
+                              setEntryForm({ ...entryForm, lines: lines.length ? lines : [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0, project: '' }] });
                             }} className="text-destructive text-xs hover:bg-destructive/10 rounded p-1">✕</button>
                           </td>
                         </tr>
@@ -734,29 +768,47 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                   </tbody>
                 </table>
                 <div className="px-3 py-2 border-t flex justify-between items-center">
-                  <button type="button" onClick={addLine} className="text-xs text-primary hover:underline">+ 新增行 Add Line</button>
-                  <span className="text-xs text-muted-foreground">{entryForm.lines.length} 行 line(s)</span>
+                  <button type="button" onClick={addLine} className="text-xs text-primary hover:underline">{tr('+ Add Line', '+ 新增行', '+ 新增行')}</button>
+                  <span className="text-xs text-muted-foreground">{entryForm.lines.length} {tr('line(s)', '行', '行')}</span>
                 </div>
               </div>
 
-              {/* Balance validation bar */}
-              <div aria-live="polite" className={`flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 rounded-md text-sm font-medium ${
-                totals.balanced ? 'bg-green-50 dark:bg-green-950/30 text-green-700' : 'bg-red-50 dark:bg-red-950/30 text-red-700'
-              }`}>
-                <span className="flex items-center gap-1">
-                  {totals.balanced ? '✓ 平衡 Balanced' : '⚠ 不平衡 Unbalanced'}
-                </span>
-                <span className="font-mono text-xs">
-                  借方 Debit: {fmtMoney(totals.debit)} &nbsp;|&nbsp; 貸方 Credit: {fmtMoney(totals.credit)}
-                  {!totals.balanced && <>&nbsp;|&nbsp; 差異 Diff: {fmtMoney(Math.abs(totals.diff))}</>}
-                </span>
+              {/* Balance check footer */}
+              <div className="border rounded-md p-4 space-y-2 bg-muted/20">
+                <div className="flex justify-end gap-8 text-sm">
+                  <div className="text-right">
+                    <span className="text-muted-foreground">{tr('Total Debit', '總借項', '总借项')}: </span>
+                    <span className="font-mono font-medium">HK$ {fmtMoney(totals.debit)}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-muted-foreground">{tr('Total Credit', '總貸項', '总贷项')}: </span>
+                    <span className="font-mono font-medium">HK$ {fmtMoney(totals.credit)}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-muted-foreground">{tr('Difference', '差額', '差额')}: </span>
+                    <span className={`font-mono font-medium ${totals.balanced ? 'text-green-600' : 'text-red-600'}`}>HK$ {fmtMoney(Math.abs(totals.diff))}</span>
+                  </div>
+                </div>
+                <div aria-live="polite" className={`flex items-center justify-center gap-2 py-1.5 rounded-md text-sm font-medium ${
+                  totals.balanced ? 'bg-green-100 dark:bg-green-950/40 text-green-700' : 'bg-red-100 dark:bg-red-950/40 text-red-700'
+                }`}>
+                  {totals.balanced ? (
+                    <>{tr('✓ Balanced', '✓ 已平衡', '✓ 已平衡')}</>
+                  ) : (
+                    <>{tr('⚠ Unbalanced — Debits must equal credits', '⚠ 不平衡 — 借貸必須相等', '⚠ 不平衡 — 借贷必须相等')}</>
+                  )}
+                </div>
               </div>
 
-              <div className="flex gap-3 justify-end">
-                <button type="button" onClick={() => setShowEntryForm(false)} className="px-4 py-2 border rounded-md text-sm">取消</button>
+              <div className="flex gap-3 justify-end pt-2">
+                <button type="button" onClick={() => setShowEntryForm(false)} className="px-4 py-2 border rounded-md text-sm">
+                  {tr('Cancel', '取消', '取消')}
+                </button>
                 <button type="submit" disabled={!canSubmit}
-                  title={!totals.balanced ? '借貸不平衡 Debits must equal credits' : entryForm.lines.length < 2 ? '至少需要兩行 At least 2 lines required' : ''}
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm disabled:opacity-50 disabled:cursor-not-allowed">建立 Post Entry</button>
+                  title={!totals.balanced ? tr('Debits must equal credits', '借貸不平衡', '借贷不平衡') : entryForm.lines.length < 2 ? tr('At least 2 lines required', '至少需要兩行', '至少需要两行') : ''}
+                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
+                  {tr('Post Entry', '記錄', '记录')}
+                </button>
               </div>
             </form>
             <datalist id="account-list">

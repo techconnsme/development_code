@@ -89,6 +89,7 @@ const FEATURE_ROUTES: Record<string, string> = {
   '/services': 'services',
   '/invoices': 'invoices',
   '/quotations': 'quotations',
+  '/GJE': 'bookkeeping',
   '/bookkeeping': 'bookkeeping',
   '/bank-statements': 'bankStatements',
   '/card-statements': 'cardStatements',
@@ -172,7 +173,8 @@ function AppRoutes() {
       {/* P1 Stub Pages */}
       <Route path="/new-client" element={<ProtectedRoute><NewClient /></ProtectedRoute>} />
       <Route path="/file-upload" element={<ProtectedRoute><FileUpload /></ProtectedRoute>} />
-      <Route path="/entries" element={<ProtectedRoute><Bookkeeping hideTabs initialTab="entries" /></ProtectedRoute>} />
+      <Route path="/GJE" element={<ProtectedRoute><Bookkeeping hideTabs initialTab="entries" /></ProtectedRoute>} />
+      <Route path="/entries" element={<Navigate to="/GJE" />} />
       <Route path="/income-statement" element={<ProtectedRoute><Bookkeeping hideTabs initialTab="pl" /></ProtectedRoute>} />
       <Route path="/trial-balance" element={<ProtectedRoute><Bookkeeping hideTabs initialTab="trial" /></ProtectedRoute>} />
       <Route path="/balance-sheet" element={<ProtectedRoute><Bookkeeping hideTabs initialTab="bs" /></ProtectedRoute>} />
@@ -186,7 +188,7 @@ function AppRoutes() {
       <Route path="/payroll" element={<ProtectedRoute><StubPage title="Payroll" zhHant="薪資" zhHans="薪资" /></ProtectedRoute>} />
       <Route path="/petty-cash" element={<ProtectedRoute><StubPage title="Petty Cash" zhHant="零用金" zhHans="零用金" /></ProtectedRoute>} />
       <Route path="/mpf" element={<ProtectedRoute><StubPage title="MPF" zhHant="強積金" zhHans="强积金" /></ProtectedRoute>} />
-      <Route path="/financial-statements" element={<ProtectedRoute><Bookkeeping hideTabs initialTab="entries" /></ProtectedRoute>} />
+      <Route path="/financial-statements" element={<Navigate to="/GJE" />} />
       <Route path="/company/br" element={<ProtectedRoute><StubPage title="Business Registration (BR)" zhHant="商業登記證" zhHans="商业登记证" /></ProtectedRoute>} />
       <Route path="/company/ci" element={<ProtectedRoute><StubPage title="Certificate of Incorporation" zhHant="公司註冊證書" zhHans="公司注册证书" /></ProtectedRoute>} />
       <Route path="/company/ei" element={<ProtectedRoute><StubPage title="Employer Information (EI)" zhHant="僱主資料" zhHans="雇主资料" /></ProtectedRoute>} />

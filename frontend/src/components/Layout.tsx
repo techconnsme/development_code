@@ -36,6 +36,7 @@ const navGroups = [
   { key: 'coa', label: 'Chart of Accounts (COA)', icon: List, to: '/coa' },
   { key: 'generalLedger', label: 'General Ledger', icon: BookOpen, to: '/general-ledger' },
   { key: 'bookkeeping', label: 'Bookkeeping', icon: Calculator, expandable: true, children: [
+    { key: 'gje', label: 'General Journal Entries (GJE)', to: '/GJE' },
     { key: 'bankStatements', label: 'Bank Statements', to: '/bank-statements' },
     { key: 'cardStatements', label: 'Card Statements', to: '/card-statements' },
     { key: 'invoices', label: 'Invoices', to: '/invoices' },
@@ -51,7 +52,6 @@ const navGroups = [
     { key: 'fixedAssets', label: 'Fixed Assets', to: '/fixed-assets' },
   ]},
   { key: 'financialStatements', label: 'Financial Statements', icon: FileText, expandable: true, children: [
-    { key: 'entries', label: 'Entries', to: '/entries' },
     { key: 'incomeStatement', label: 'Income Statement', to: '/income-statement' },
     { key: 'trialBalance', label: 'Trial Balance', to: '/trial-balance' },
     { key: 'balanceSheet', label: 'Balance Sheet', to: '/balance-sheet' },
