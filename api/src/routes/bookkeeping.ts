@@ -715,10 +715,45 @@ bookkeeping.get('/income-statement', async (c) => {
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale'`
   ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
 
+  // Account-level breakdown for drill-down (journal-based)
+  const revenueAccounts = await db.prepare(
+    `SELECT jl.account_code, a.account_name,
+            COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount
+     FROM journal_lines jl
+     JOIN journal_entries je ON jl.entry_id = je.id
+     JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
+       AND a.account_type = 'revenue' AND je.status != 'stale'
+     GROUP BY jl.account_code, a.account_name
+     HAVING amount != 0
+     ORDER BY jl.account_code`
+  ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
+
+  const expenseAccounts = await db.prepare(
+    `SELECT jl.account_code, a.account_name,
+            COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount
+     FROM journal_lines jl
+     JOIN journal_entries je ON jl.entry_id = je.id
+     JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
+       AND a.account_type = 'expense' AND je.status != 'stale'
+     GROUP BY jl.account_code, a.account_name
+     HAVING amount != 0
+     ORDER BY jl.account_code`
+  ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
+
   // If journal entries exist, use them
   if ((revenue?.amount || 0) > 0 || (expenses?.amount || 0) > 0) {
     const netIncome = (revenue?.amount || 0) - (expenses?.amount || 0);
-    return c.json({ revenue: revenue?.amount || 0, expenses: expenses?.amount || 0, net_income: netIncome, source: 'journal', period: { start: startDate, end: endDate } });
+    return c.json({
+      revenue: revenue?.amount || 0,
+      expenses: expenses?.amount || 0,
+      net_income: netIncome,
+      source: 'journal',
+      revenue_accounts: revenueAccounts?.results || [],
+      expense_accounts: expenseAccounts?.results || [],
+      period: { start: startDate, end: endDate },
+    });
   }
 
   // Fallback: use bank transactions with account_code categorization
@@ -760,12 +795,40 @@ bookkeeping.get('/income-statement', async (c) => {
      FROM bank_transactions WHERE user_id = ? AND account_code IS NULL AND deleted_at IS NULL`
   ).bind(tenantId).first<{ cnt: number; wit: number; dep: number }>();
 
+  // Account-level breakdown for bank-based path
+  const bankRevenueAccounts = await db.prepare(
+    `SELECT COALESCE(account_code, 'uncategorized') as account_code,
+            'Bank Deposit' as account_name,
+            COALESCE(SUM(deposit_amount), 0) as amount
+     FROM bank_transactions
+     WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ?
+       AND account_code LIKE '4%' AND deleted_at IS NULL
+     GROUP BY account_code
+     HAVING amount > 0
+     ORDER BY account_code`
+  ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
+
+  const bankExpenseAccounts = await db.prepare(
+    `SELECT COALESCE(account_code, 'uncategorized') as account_code,
+            'Bank Withdrawal' as account_name,
+            COALESCE(SUM(withdrawal_amount), 0) as amount
+     FROM bank_transactions
+     WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ?
+       AND (account_code LIKE '5%' OR account_code LIKE '6%' OR account_code LIKE '8%')
+       AND deleted_at IS NULL
+     GROUP BY account_code
+     HAVING amount > 0
+     ORDER BY account_code`
+  ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
+
   const netIncome = (bankRevenue?.amount || 0) - (bankExpenses?.amount || 0);
   return c.json({
     revenue: bankRevenue?.amount || 0,
     expenses: bankExpenses?.amount || 0,
     net_income: netIncome,
     source: 'bank',
+    revenue_accounts: bankRevenueAccounts?.results || [],
+    expense_accounts: bankExpenseAccounts?.results || [],
     breakdown: {
       categorized_revenue: catRevenue?.amount || 0,
       categorized_expenses: catExpenses?.amount || 0,

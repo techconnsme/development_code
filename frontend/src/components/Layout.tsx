@@ -53,8 +53,8 @@ const navGroups = [
   ]},
   { key: 'financialStatements', label: 'Financial Statements', icon: FileText, expandable: true, children: [
     { key: 'incomeStatement', label: 'Income Statement', to: '/income-statement' },
-    { key: 'trialBalance', label: 'Trial Balance', to: '/trial-balance' },
     { key: 'balanceSheet', label: 'Balance Sheet', to: '/balance-sheet' },
+    { key: 'trialBalance', label: 'Trial Balance', to: '/trial-balance' },
     { key: 'glReport', label: 'General Ledger Report', to: '/gl-report' },
     { key: 'export', label: 'Export', to: '/bookkeeping?tab=export' },
   ]},
