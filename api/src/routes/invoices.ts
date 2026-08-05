@@ -27,7 +27,7 @@ invoices.get('/', async (c) => {
   let query = `SELECT i.*, c.name as customer_name, c.company_name as customer_company, s.name as supplier_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ?`;
   if (!showPendingReview) query += " AND i.status != 'pending_review'";
   const params: any[] = [tenantId];
-  if (status) { query += ' AND i.status = ?'; params.push(status); }
+  if (status) { const statuses = status.split(',').filter(Boolean); query += ` AND i.status IN (${statuses.map(() => '?').join(',')})`; params.push(...statuses); }
   if (search) { query += ' AND (i.invoice_number LIKE ? OR c.name LIKE ? OR s.name LIKE ? OR i.vendor_name LIKE ?)'; params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`); }
   // doc_type filter: receipt = has receipt_number, invoice = no receipt_number
   if (docType === 'receipt') { query += ' AND i.receipt_number IS NOT NULL'; }
@@ -41,7 +41,7 @@ invoices.get('/', async (c) => {
   const countRow = await db.prepare(
     `SELECT COUNT(*) as count FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ?` +
     (showPendingReview ? '' : " AND i.status != 'pending_review'") +
-    (status ? ' AND i.status = ?' : '') +
+    (status ? ` AND i.status IN (${status.split(',').filter(Boolean).map(() => '?').join(',')})` : '') +
     (search ? ' AND (i.invoice_number LIKE ? OR c.name LIKE ? OR s.name LIKE ? OR i.vendor_name LIKE ?)' : '') +
     (docType === 'receipt' ? ' AND i.receipt_number IS NOT NULL' : docType === 'invoice' ? ' AND i.receipt_number IS NULL' : '') +
     (direction === 'incoming' ? " AND i.direction = 'incoming'" : direction === 'outgoing' ? " AND i.direction = 'outgoing'" : '')

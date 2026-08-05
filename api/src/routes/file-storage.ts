@@ -210,6 +210,8 @@ ${ocrText.slice(0, 8000)}` }],
     }
   }
 
+  // ── Insert bank statement first (FK constraint: transactions reference this) ──
+  // Start with a tentative status; we'll UPDATE after validating balance
   await db.prepare(
     `INSERT INTO bank_statements (id, user_id, file_name, file_type, r2_key,
      bank_name, account_number, currency,
@@ -219,7 +221,8 @@ ${ocrText.slice(0, 8000)}` }],
   ).bind(stmtId, userId, String(fileRow.original_name || fileRow.filename || 'statement.pdf'), String(fileRow.file_type || 'application/pdf'),
     String(fileRow.r2_key || ''), String(bankName || ''), String(accountNumber || ''), String(currency || 'HKD'),
     stmtYear || null, stmtMonth || null, periodStart || null, periodEnd || null,
-    typeof openingBal === 'number' ? openingBal : null, typeof closingBal === 'number' ? closingBal : null, String(ocrText || ''), 'active'
+    typeof openingBal === 'number' ? openingBal : null, typeof closingBal === 'number' ? closingBal : null, String(ocrText || ''),
+    'active'  // tentative — will update after balance check
   ).run();
 
   let txCount = 0;
@@ -236,6 +239,31 @@ ${ocrText.slice(0, 8000)}` }],
     ).run();
     txCount++;
   }
+
+  // ── Balance validation: verify opening + deposits - withdrawals = closing ──
+  const totalDeposits = transactions.reduce((s: number, tx: any) => s + (Number(tx.deposit_amount) || 0), 0);
+  const totalWithdrawals = transactions.reduce((s: number, tx: any) => s + (Number(tx.withdrawal_amount) || 0), 0);
+  const computedClosing = (openingBal ?? 0) + totalDeposits - totalWithdrawals;
+  let balanceOk = true;
+  let balanceMismatch: { expected: number; actual: number; diff: number } | null = null;
+  if (openingBal != null && closingBal != null && txCount > 0 && Math.abs(computedClosing - closingBal) > 0.01) {
+    balanceOk = false;
+    balanceMismatch = { expected: computedClosing, actual: closingBal, diff: closingBal - computedClosing };
+  }
+
+  // Update status and balance info after transactions are in
+  const finalStatus = (!balanceOk && txCount > 0) ? 'draft' : 'active';
+  console.log(`[IMPORT-BANK] stmtId=${stmtId} userId=${userId} txCount=${txCount} openingBal=${openingBal} closingBal=${closingBal} computedClosing=${computedClosing} balanceOk=${balanceOk} finalStatus=${finalStatus}`);
+  await db.prepare(
+    `UPDATE bank_statements SET status = ?, balance_status = ?, balance_check = ?, updated_at = datetime('now')
+     WHERE id = ? AND user_id = ?`
+  ).bind(finalStatus, balanceOk ? 'ok' : 'mismatch',
+    balanceMismatch ? JSON.stringify(balanceMismatch) : null,
+    stmtId, userId).run();
+  // Verify the row exists
+  const verify = await db.prepare('SELECT id, status FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
+    .bind(stmtId, userId).first();
+  console.log(`[IMPORT-BANK-VERIFY] stmtId=${stmtId} found=${!!verify} status=${(verify as any)?.status || 'N/A'}`);
 
   await db.prepare(
     "UPDATE file_records SET category = 'bank_statement', folder = 'Bank Statements', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
@@ -427,6 +455,9 @@ ${ocrText.slice(0, 8000)}` }],
     is_duplicate: isDuplicate,
     duplicate_status: duplicateStatus,
     duplicate_existing_id: duplicateExistingId,
+    needs_review: !balanceOk && txCount > 0,
+    balance_check: balanceMismatch,
+    balance_status: balanceOk ? 'ok' : 'mismatch',
   };
 }
 
@@ -843,6 +874,12 @@ ${ocrText.slice(0, 8000)}`;
   const subtotal = items.reduce((s: number, it: any) => s + it.amount, 0);
   const total = parsed?.total || subtotal;
 
+  // ── Total validation: check if AI line items sum matches AI total ──
+  let totalMismatch: { expected: number; actual: number; diff: number } | null = null;
+  if (parsed?.total && items.length > 0 && Math.abs(subtotal - parsed.total) > 0.01) {
+    totalMismatch = { expected: subtotal, actual: parsed.total, diff: parsed.total - subtotal };
+  }
+
   // Smart number detection: check if OCR-extracted number matches client's pattern
   const patterns = await db.prepare(
     'SELECT invoice_number_pattern, receipt_number_pattern FROM company_settings WHERE user_id = ?'
@@ -916,6 +953,7 @@ ${ocrText.slice(0, 8000)}`;
   if (needsDirectionReview) reviewFlags.push('direction');
   if (companyNotDetected) reviewFlags.push('company_not_detected');
   if (isDuplicate) reviewFlags.push('duplicate');
+  if (totalMismatch) reviewFlags.push('total');
   const needsReview = reviewFlags.join(',');
 
   const invId = `i-${uuidv4().slice(0, 8)}`;
@@ -973,6 +1011,7 @@ ${ocrText.slice(0, 8000)}`;
     receipt_number: receiptNum,
     needs_direction_review: needsDirectionReview,
     company_not_detected: companyNotDetected,
+    total_mismatch: totalMismatch,
     usage,
     glm_usage: glmUsage,
     deepseek_raw: deepseekRaw,
@@ -2039,24 +2078,24 @@ ${ocrText.slice(0, 12000)}` }],
     } catch (e: any) { console.log('[CARD-PARSE] DeepSeek error:', e.message); }
   }
 
-  // Create draft statement
+  // Insert card statement first (FK constraint: transactions reference this)
   const stmtId = `cs-${crypto.randomUUID().slice(0, 8)}`;
   await db.prepare(
     `INSERT INTO card_statements (id, user_id, file_name, file_type, r2_key, ocr_text,
      card_issuer, card_network, card_number_last4, cardholder_name, currency,
      statement_year, statement_month, period_start, period_end,
      credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(stmtId, userId, fileRow.original_name || fileRow.filename, fileRow.file_type, fileRow.r2_key, ocrText,
     parsed?.card_issuer || null, parsed?.card_network || null, parsed?.card_number_last4 || null,
     parsed?.cardholder_name || null, parsed?.currency || 'HKD',
     parsed?.statement_year || null, parsed?.statement_month || null,
     parsed?.period_start || null, parsed?.period_end || null,
     parsed?.credit_limit ?? null, parsed?.opening_balance ?? null, parsed?.closing_balance ?? null,
-    parsed?.minimum_payment ?? null, parsed?.payment_due_date || null).run();
+    parsed?.minimum_payment ?? null, parsed?.payment_due_date || null, 'active').run();
 
-  // Insert transactions
   let txCount = 0;
+  let netChange = 0;
   if (parsed?.transactions && Array.isArray(parsed.transactions)) {
     for (let i = 0; i < parsed.transactions.length; i++) {
       const tx = parsed.transactions[i];
@@ -2069,10 +2108,37 @@ ${ocrText.slice(0, 12000)}` }],
         tx.amount || 0, tx.transaction_type || null, tx.foreign_currency || null,
         tx.foreign_amount || null, i).run();
       txCount++;
+      // Accumulate net change: purchases increase balance, payments/refunds decrease it
+      const txType = (tx.transaction_type || '').toLowerCase();
+      const amt = Number(tx.amount || 0);
+      netChange += (txType === 'payment' || txType === 'refund') ? -amt : amt;
     }
   }
 
-  return { success: true, statement_id: stmtId, transactions_count: txCount, parsed_via_ai: !!parsed, usage, glm_usage: glmUsage };
+  // ── Balance validation: verify opening + net change = closing ──
+  const csOpening = parsed?.opening_balance ?? null;
+  const csClosing = parsed?.closing_balance ?? null;
+  let csBalanceOk = true;
+  let csBalanceMismatch: { expected: number; actual: number; diff: number } | null = null;
+  if (csOpening != null && csClosing != null && txCount > 0) {
+    const expectedClosing = csOpening + netChange;
+    if (Math.abs(expectedClosing - csClosing) > 0.01) {
+      csBalanceOk = false;
+      csBalanceMismatch = { expected: expectedClosing, actual: csClosing, diff: csClosing - expectedClosing };
+    }
+  }
+
+  // Update status based on balance validation
+  const csFinalStatus = !csBalanceOk ? 'draft' : 'active';
+  await db.prepare(
+    `UPDATE card_statements SET status = ?, balance_status = ?, balance_check = ?, updated_at = datetime('now')
+     WHERE id = ? AND user_id = ?`
+  ).bind(csFinalStatus, csBalanceOk ? 'ok' : 'mismatch',
+    csBalanceMismatch ? JSON.stringify(csBalanceMismatch) : null,
+    stmtId, userId).run();
+
+  return { success: true, statement_id: stmtId, transactions_count: txCount, parsed_via_ai: !!parsed, usage, glm_usage: glmUsage,
+    needs_review: !csBalanceOk, balance_check: csBalanceMismatch, balance_status: csBalanceOk ? 'ok' : 'mismatch' };
 }
 
 // ── Smart document import: detect bank statement vs invoice, dispatch to right importer ──
@@ -2187,7 +2253,22 @@ files.post('/:id/import-document', async (c) => {
   // If filename clearly says invoice → fall through to invoice empty draft below
   // If still no text and filename is ambiguous → create bank statement draft (safer default)
   if (!ocrText || ocrText.length < 10) {
-    if (filenameInvoice > filenameBank) {
+    // If caller forced a type, respect it regardless of filename hints
+    if (forcedType) {
+      if (forcedType === 'card_statement') {
+        const result = await importCardStatementFromFile(
+          fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+        );
+        return c.json({ type: 'card_statement', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice, cardScore: 0 } }, result.success ? 201 : 422 as any);
+      }
+      if (forcedType === 'invoice') {
+        const result = await importInvoiceFromFile(
+          fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+        );
+        return c.json({ type: 'invoice', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice } }, result.success ? 201 : 422 as any);
+      }
+      // forcedType === 'bank_statement' — fall through to default below
+    } else if (filenameInvoice > filenameBank) {
       // Let importInvoiceFromFile handle the empty invoice draft
       const result = await importInvoiceFromFile(
         fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
@@ -2266,9 +2347,13 @@ files.post('/:id/import-document', async (c) => {
   if (/previous\s+balance|new\s+balance|outstanding\s+balance/i.test(ocrText)) { cardScore += 2; bankScore -= 1; }
   if (/(purchase|payment.*received|refund|annual\s+fee)/i.test(ocrText) && /credit\s+card|信用卡|card/i.test(ocrText)) cardScore += 1;
 
-  // 3-way decision
+  const forcedType = c.req.query('type') || '';
+  // 3-way decision (or use forced type from caller)
   let type: string;
-  if (cardScore > bankScore && cardScore > invoiceScore && cardScore >= 5) {
+  if (forcedType === 'bank_statement' || forcedType === 'card_statement' || forcedType === 'invoice') {
+    type = forcedType;
+    console.log(`[SMART-IMPORT] file=${fileId} type forced to ${type} by caller`);
+  } else if (cardScore > bankScore && cardScore > invoiceScore && cardScore >= 5) {
     type = 'card_statement';
   } else if (bankScore > invoiceScore) {
     type = 'bank_statement';
@@ -2298,9 +2383,15 @@ files.post('/:id/import-document', async (c) => {
       const status = result.error === 'File not found' ? 404 : result.error === 'Statement already imported' ? 409 : 422;
       return c.json({ type, error: result.error, statement_id: result.statement_id, duplicate_info: result.duplicate_info, scores: { bankScore, invoiceScore, cardScore } }, status as any);
     }
+    // If type was force-overridden, always mark as draft regardless of balance
+    if (forcedType && result.statement_id) {
+      await db.prepare("UPDATE card_statements SET status = 'draft' WHERE id = ? AND user_id = ?")
+        .bind(result.statement_id, tenantId).run();
+    }
     result.is_duplicate = result.is_duplicate || hashDuplicate;
     if (hashDuplicate && !result.duplicate_status) result.duplicate_status = 'active';
-    return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText }, 201);
+    return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText,
+      needs_review: !!(forcedType || result.needs_review) }, 201);
   }
 
   if (type === 'bank_statement') {
@@ -2311,9 +2402,17 @@ files.post('/:id/import-document', async (c) => {
       const status = result.error === 'File not found' ? 404 : result.error === 'Statement already imported' ? 409 : 422;
       return c.json({ type, error: result.error, statement_id: result.statement_id, duplicate_info: result.duplicate_info, scores: { bankScore, invoiceScore, cardScore } }, status as any);
     }
+    console.log(`[IMPORT-DOC] bank force path: forcedType=${forcedType} statement_id=${result.statement_id} needs_review=${result.needs_review} balance_check=${JSON.stringify(result.balance_check)}`);
+    // If type was force-overridden, always mark as draft regardless of balance
+    if (forcedType && result.statement_id) {
+      console.log(`[IMPORT-DOC] forcing draft status for ${result.statement_id}`);
+      await db.prepare("UPDATE bank_statements SET status = 'draft' WHERE id = ? AND user_id = ?")
+        .bind(result.statement_id, tenantId).run();
+    }
     result.is_duplicate = result.is_duplicate || hashDuplicate;
     if (hashDuplicate && !result.duplicate_status) result.duplicate_status = 'active';
-    return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText }, 201);
+    return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText,
+      needs_review: !!(forcedType || result.needs_review) }, 201);
   } else {
     const result = await importInvoiceFromFile(
       fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
@@ -2322,9 +2421,15 @@ files.post('/:id/import-document', async (c) => {
       const status = result.error === 'File not found' ? 404 : result.error?.includes('already exists') || result.error?.includes('already been imported') ? 409 : 422;
       return c.json({ type, error: result.error, invoice_id: result.invoice_id, duplicate_info: result.duplicate_info, scores: { bankScore, invoiceScore, cardScore } }, status as any);
     }
+    // If type was force-overridden, always mark as draft regardless of total match
+    if (forcedType && result.invoice_id) {
+      await db.prepare("UPDATE invoices SET status = 'draft' WHERE id = ? AND user_id = ?")
+        .bind(result.invoice_id, tenantId).run();
+    }
     result.is_duplicate = result.is_duplicate || hashDuplicate;
     if (hashDuplicate && !result.duplicate_status) result.duplicate_status = 'active';
-    return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText }, 201);
+    return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText,
+      needs_review: !!(forcedType || result.needs_direction_review || result.company_not_detected || result.total_mismatch || result.needs_review) }, 201);
   }
 });
 

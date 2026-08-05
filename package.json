@@ -10,7 +10,15 @@
     "deploy:api": "cd api && npx wrangler deploy",
     "deploy:frontend": "cd frontend && npx wrangler pages deploy dist",
     "db:init": "cd api && npx wrangler d1 execute oppc-crm-db --file=src/db/schema.sql",
-    "db:seed": "cd api && npx wrangler d1 execute oppc-crm-db --file=src/db/seed.sql"
+    "db:seed": "cd api && npx wrangler d1 execute oppc-crm-db --file=src/db/seed.sql",
+    "test": "npx playwright test",
+    "test:ui": "npx playwright test --ui",
+    "test:headed": "npx playwright test --headed",
+    "test:channels": "npx playwright test upload-channels",
+    "test:bank": "npx playwright test bank-statement-import",
+    "test:invoices": "npx playwright test invoice-journal-entry",
+    "test:journal": "npx playwright test journal-entries-expenses",
+    "test:reconciliation": "npx playwright test reconciliation-audit"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.0",

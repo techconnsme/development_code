@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil } from 'lucide-react';
+import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil, CreditCard } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
 import { useAuth } from '../contexts/AuthContext';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
@@ -27,6 +27,11 @@ interface Transaction {
   invoice_number?: string | null;
   invoice_total?: number | null;
   invoice_status?: string | null;
+  card_statement_id?: string | null;
+  card_issuer?: string | null;
+  cs_statement_year?: number | null;
+  cs_statement_month?: number | null;
+  cs_closing_balance?: number | null;
 }
 
 export default function BankStatements() {
@@ -39,6 +44,7 @@ export default function BankStatements() {
   const [supModal, setSupModal] = useState<{ show: boolean; onConfirm: () => void } | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
+  const [cardMatchTxId, setCardMatchTxId] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [edits, setEdits] = useState<Record<string, Partial<Transaction>>>({});
   const [acctModalTx, setAcctModalTx] = useState<Transaction | null>(null);
@@ -151,6 +157,23 @@ export default function BankStatements() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
     },
+  });
+
+  const autoMatchCardsMut = useMutation({
+    mutationFn: () => api('/bank-statements/auto-match-cards', { method: 'POST' }),
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
+      toast.info(tr(`Card auto-match: ${data.matched?.length || 0} suggested, ${data.unmatched_count || 0} unmatched`, `信用卡配對：${data.matched?.length || 0} 筆建議，${data.unmatched_count || 0} 筆未配對`, `信用卡配对：${data.matched?.length || 0} 笔建议，${data.unmatched_count || 0} 笔未配对`));
+    },
+  });
+
+  const cardLinkMut = useMutation({
+    mutationFn: ({ txId, csId, action }: { txId: string; csId?: string; action: 'link' | 'unlink' }) =>
+      api(`/bank-statements/transactions/${txId}/card-link`, {
+        method: 'PATCH',
+        body: { card_statement_id: csId, action },
+      }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] }); },
   });
 
   const statements = (data?.data || []) as any[];
@@ -320,6 +343,12 @@ export default function BankStatements() {
                                 className="px-2 py-1 text-xs rounded border hover:bg-green-100">
                                 {tr('🔍 Reconcile', '🔍 對賬 Reconcile', '🔍 对账 Reconcile')}
                               </button>
+                              <button onClick={() => autoMatchCardsMut.mutate()}
+                                disabled={autoMatchCardsMut.isPending}
+                                className="px-2 py-1 text-xs rounded border hover:bg-purple-100 flex items-center gap-1">
+                                <CreditCard className="h-3 w-3" />
+                                {autoMatchCardsMut.isPending ? '...' : tr('Match Cards', '配對信用卡', '配对信用卡')}
+                              </button>
                             </div>
                           </div>
                         </div>
@@ -455,6 +484,7 @@ export default function BankStatements() {
                                     )}
                                   </td>
                                   <td className="py-1.5 text-center">
+                                    {/* ── Invoice matching (deposits) ── */}
                                     {tx.match_status === 'confirmed' && tx.invoice_number && (
                                       <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 dark:bg-green-900/30 px-2 py-0.5 rounded">
                                         {tx.invoice_number}
@@ -493,6 +523,25 @@ export default function BankStatements() {
                                           disabled={createInvoiceMut.isPending}
                                           className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-0.5" title="Create invoice from this transaction">
                                           <FilePlus className="h-3 w-3" />
+                                        </button>
+                                      </div>
+                                    )}
+                                    {/* ── Card statement matching (withdrawals) ── */}
+                                    {tx.card_statement_id && tx.card_issuer && (
+                                      <span className="inline-flex items-center gap-1 text-xs text-purple-700 bg-purple-100 dark:bg-purple-900/30 px-2 py-0.5 rounded mt-0.5">
+                                        <CreditCard className="h-3 w-3" />
+                                        {tx.card_issuer}
+                                        {tx.cs_statement_year && ` ${tx.cs_statement_year}-${String(tx.cs_statement_month || 1).padStart(2, '0')}`}
+                                        <button onClick={() => cardLinkMut.mutate({ txId: tx.id, action: 'unlink' })} className="hover:text-red-600" title="Unlink card">
+                                          <X className="h-3 w-3" />
+                                        </button>
+                                      </span>
+                                    )}
+                                    {!tx.card_statement_id && tx.withdrawal_amount > 0 && !tx.invoice_number && tx.match_status !== 'suggested' && (
+                                      <div className="flex items-center gap-1 justify-center mt-0.5">
+                                        <button onClick={() => setCardMatchTxId(tx.id)}
+                                          className="text-xs text-purple-500 hover:text-purple-700 flex items-center gap-0.5" title="Link to card statement">
+                                          <CreditCard className="h-3 w-3" />
                                         </button>
                                       </div>
                                     )}
@@ -625,6 +674,17 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
           onMatch={(invoiceId) => {
             confirmMatchMut.mutate({ txId: matchTxId, invoiceId });
             setMatchTxId(null);
+          }}
+        />
+      )}
+
+      {cardMatchTxId && (
+        <CardMatchModal
+          txId={cardMatchTxId}
+          onClose={() => setCardMatchTxId(null)}
+          onMatch={(csId) => {
+            cardLinkMut.mutate({ txId: cardMatchTxId, csId, action: 'link' });
+            setCardMatchTxId(null);
           }}
         />
       )}
@@ -853,7 +913,7 @@ function ManualMatchModal({ txId, onClose, onMatch }: { txId: string; onClose: (
   const [search, setSearch] = useState('');
   const { data } = useQuery({
     queryKey: ['unpaid-invoices', search],
-    queryFn: () => api(`/workbuddy/invoices?status=draft,sent,overdue${search ? `&q=${search}` : ''}`),
+    queryFn: () => api(`/invoices?status=draft,sent,overdue${search ? `&q=${search}` : ''}`),
   });
   const invoices = (data?.data || []) as any[];
 
@@ -874,6 +934,46 @@ function ManualMatchModal({ txId, onClose, onMatch }: { txId: string; onClose: (
                 <span className="ml-2 text-muted-foreground">{inv.customer_name || ''}</span>
               </div>
               <span className="font-mono">${inv.total?.toLocaleString()}</span>
+            </button>
+          ))}
+        </div>
+        <div className="flex justify-end">
+          <button onClick={onClose} className="px-4 py-2 text-sm border rounded-md hover:bg-muted">Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Card Statement Match Modal ──
+function CardMatchModal({ txId, onClose, onMatch }: { txId: string; onClose: () => void; onMatch: (csId: string) => void }) {
+  const [search, setSearch] = useState('');
+  const { data } = useQuery({
+    queryKey: ['card-statements-list', search],
+    queryFn: () => api(`/card-statements?q=${search}`),
+  });
+  const statements = (data?.data || []) as any[];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 space-y-4" onClick={e => e.stopPropagation()}>
+        <h3 className="font-semibold flex items-center gap-2"><CreditCard className="h-4 w-4" /> Link to Card Statement</h3>
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search card statements..."
+          className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
+        <div className="max-h-64 overflow-y-auto space-y-1">
+          {statements.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No card statements found</p>}
+          {statements.map((cs: any) => (
+            <button key={cs.id} onClick={() => onMatch(cs.id)}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-muted text-sm text-left">
+              <div>
+                <span className="font-medium">{cs.card_issuer || 'Card'}</span>
+                {cs.card_number_last4 && <span className="ml-2 text-muted-foreground">··{cs.card_number_last4}</span>}
+                <span className="ml-2 text-muted-foreground">
+                  {cs.statement_year}-{String(cs.statement_month || 1).padStart(2, '0')}
+                </span>
+              </div>
+              <span className="font-mono text-xs">HKD {cs.closing_balance?.toLocaleString() || '-'}</span>
             </button>
           ))}
         </div>

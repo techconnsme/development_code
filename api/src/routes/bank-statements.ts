@@ -299,6 +299,129 @@ bank.post('/auto-match', async (c) => {
   return c.json({ matched, unmatched_count: unmatchedCount });
 });
 
+// ── Auto-match bank withdrawals to card statements ──
+bank.post('/auto-match-cards', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+
+  // Find bank withdrawals that could be credit card payments
+  const withdrawals = await db.prepare(
+    `SELECT id, transaction_date, description, withdrawal_amount
+     FROM bank_transactions
+     WHERE user_id = ? AND deleted_at IS NULL AND withdrawal_amount > 0
+     AND card_statement_id IS NULL
+     ORDER BY transaction_date`
+  ).bind(tenantId).all();
+
+  // Find card statements with known closing balance / minimum payment
+  const cardStmts = await db.prepare(
+    `SELECT id, card_issuer, card_number_last4, statement_year, statement_month,
+     closing_balance, minimum_payment, payment_due_date, period_end
+     FROM card_statements
+     WHERE user_id = ? AND deleted_at IS NULL
+     ORDER BY statement_year DESC, statement_month DESC`
+  ).bind(tenantId).all();
+
+  const matched: any[] = [];
+  const usedCardIds = new Set<string>();
+
+  for (const tx of withdrawals.results as any[]) {
+    let bestMatch: any = null;
+    let bestConfidence = '';
+
+    for (const cs of (cardStmts.results as any[]).filter(c => !usedCardIds.has(c.id))) {
+      const desc = (tx.description || '').toUpperCase();
+      const issuer = (cs.card_issuer || '').toUpperCase();
+
+      // Check if description mentions the card issuer
+      const descHasIssuer = issuer && desc.includes(issuer);
+      // Check if amount matches closing balance or minimum payment
+      const matchesClosing = cs.closing_balance && Math.abs(tx.withdrawal_amount - cs.closing_balance) < 0.01;
+      const matchesMinPayment = cs.minimum_payment && Math.abs(tx.withdrawal_amount - cs.minimum_payment) < 0.01;
+
+      if (descHasIssuer && (matchesClosing || matchesMinPayment)) {
+        bestMatch = cs;
+        bestConfidence = matchesClosing ? 'high' : 'medium';
+        break;
+      }
+
+      if (matchesClosing && !bestMatch) {
+        bestMatch = cs;
+        bestConfidence = 'low';
+      } else if (matchesMinPayment && !bestMatch) {
+        bestMatch = cs;
+        bestConfidence = 'low';
+      }
+    }
+
+    if (bestMatch) {
+      await db.prepare(
+        `UPDATE bank_transactions SET card_statement_id = ?, match_status = 'suggested'
+         WHERE id = ? AND deleted_at IS NULL`
+      ).bind(bestMatch.id, tx.id).run();
+
+      matched.push({
+        transaction_id: tx.id,
+        card_statement_id: bestMatch.id,
+        card_issuer: bestMatch.card_issuer,
+        withdrawal_amount: tx.withdrawal_amount,
+        confidence: bestConfidence,
+        reason: bestConfidence === 'high'
+          ? `Card issuer "${bestMatch.card_issuer}" found in description + amount matches closing balance`
+          : bestConfidence === 'medium'
+          ? `Card issuer "${bestMatch.card_issuer}" found in description + amount matches minimum payment`
+          : `Amount matches card closing balance`,
+      });
+      usedCardIds.add(bestMatch.id);
+    }
+  }
+
+  const unmatchedCount = (withdrawals.results as any[]).length - matched.length;
+  return c.json({ matched, unmatched_count: unmatchedCount });
+});
+
+// ── Manual link/unlink bank transaction to card statement ──
+bank.patch('/transactions/:id/card-link', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const txId = c.req.param('id');
+  const body = await c.req.json();
+  const { action, card_statement_id } = body;
+
+  const tx = await db.prepare(
+    'SELECT id, withdrawal_amount, card_statement_id FROM bank_transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(txId, tenantId).first<{ id: string; withdrawal_amount: number; card_statement_id: string | null }>();
+  if (!tx) return c.json({ error: 'Transaction not found' }, 404);
+
+  if (action === 'link' && card_statement_id) {
+    const cs = await db.prepare(
+      'SELECT id FROM card_statements WHERE id = ? AND user_id = ?'
+    ).bind(card_statement_id, tenantId).first();
+    if (!cs) return c.json({ error: 'Card statement not found' }, 404);
+
+    await db.prepare(
+      `UPDATE bank_transactions SET card_statement_id = ?, match_status = 'confirmed'
+       WHERE id = ? AND deleted_at IS NULL`
+    ).bind(card_statement_id, txId).run();
+
+    await auditLog(db, user.id, 'link_card', 'bank_transaction', txId, { card_statement_id, action: 'link' });
+    return c.json({ success: true, card_statement_id });
+  }
+
+  if (action === 'unlink') {
+    await db.prepare(
+      `UPDATE bank_transactions SET card_statement_id = NULL, match_status = 'unmatched'
+       WHERE id = ? AND deleted_at IS NULL`
+    ).bind(txId).run();
+    await auditLog(db, user.id, 'unlink_card', 'bank_transaction', txId, { action: 'unlink' });
+    return c.json({ success: true });
+  }
+
+  return c.json({ error: 'action must be link or unlink' }, 400);
+});
+
 // ── List match suggestions ──
 bank.get('/match-suggestions', async (c) => {
   const user = c.get('user');
@@ -591,10 +714,14 @@ bank.get('/:id', async (c) => {
     `SELECT bt.id, bt.transaction_date, bt.description, bt.deposit_amount, bt.withdrawal_amount,
      bt.balance, bt.account_type, bt.account_code, bt.reference, bt.sort_order,
      bt.invoice_id, bt.match_confidence, bt.match_status, bt.is_edited,
+     bt.card_statement_id,
      i.invoice_number, i.total as invoice_total, i.status as invoice_status,
+     cs.card_issuer, cs.statement_year as cs_statement_year, cs.statement_month as cs_statement_month,
+     cs.closing_balance as cs_closing_balance,
      je.entry_number as voucher_number
      FROM bank_transactions bt
      LEFT JOIN invoices i ON bt.invoice_id = i.id
+     LEFT JOIN card_statements cs ON bt.card_statement_id = cs.id
      LEFT JOIN journal_entries je ON je.reference_id = bt.id AND je.reference_type = 'bank_transaction'
       WHERE bt.bank_statement_id = ? AND bt.deleted_at IS NULL
       ORDER BY bt.sort_order`
@@ -740,9 +867,11 @@ bank.delete('/:id', async (c) => {
     }, 403);
   }
 
+  console.log(`[DELETE-BANK] looking for id=${stmtId} user_id=${tenantId}`);
   const existing = await db.prepare(
     'SELECT id, file_name, r2_key FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
   ).bind(stmtId, tenantId).first<{ id: string; file_name: string; r2_key: string | null }>();
+  console.log(`[DELETE-BANK] found=${!!existing} id=${stmtId}`);
   if (!existing) return c.json({ error: 'Not found' }, 404);
 
   const now = new Date().toISOString();

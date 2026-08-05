@@ -255,6 +255,10 @@ export default function BankStatementReview() {
       queryClient.invalidateQueries({ queryKey: ['bank-continuity'] });
       setIsSaving(false);
       const next = goNextInQueue();
+      if (!next) {
+        toast.success(tr('Statement discarded.', '月結單已放棄。', '月结单已放弃。'));
+        navigate('/bank-statements');
+      }
     },
     onError: (err: any) => {
       toast.error(`Failed to discard: ${err?.message || err?.error || 'Unknown error'}`);

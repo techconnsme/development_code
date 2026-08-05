@@ -278,8 +278,8 @@ export default function FileUpload() {
     const detectedType = result?.type;
 
     // Check for OCR mismatch with user-selected channel
-    if (detectedType && detectedType !== channel && detectedType !== 'invoice') {
-      // For bank/card channels, compare directly. Invoices accept both bank_invoice and cash_invoice.
+    if (detectedType && detectedType !== channel) {
+      // Compatible: invoice channels accept invoice detection without warning
       const isInvoiceChannel = channel === 'bank_invoice' || channel === 'cash_invoice';
       const isInvoiceDetected = detectedType === 'invoice';
       if (!(isInvoiceChannel && isInvoiceDetected)) {
@@ -292,30 +292,70 @@ export default function FileUpload() {
           fileName: file.name,
         });
         if (action === 'switch') {
-          // Switch to detected channel and re-upload
-          const targetChannel = CHANNELS.find(c => c.key === detectedType);
-          if (targetChannel) setChannel(targetChannel.key);
-          throw new Error(tr('Switched channel. Please re-upload.', '已切換頻道。請重新上傳。', '已切换频道。请重新上传。'));
+          // Accept detected type: redirect to the correct review page
+          if (detectedType === 'bank_statement' && result?.statement_id) {
+            if (skipNavigation) { pushToQueue('bank_statement', result.statement_id, file.name, ''); return 'review'; }
+            nav(`/bank-statements/review/${result.statement_id}`);
+            return 'review';
+          }
+          if (detectedType === 'card_statement' && result?.statement_id) {
+            if (skipNavigation) { pushToQueue('card_statement', result.statement_id, file.name, ''); return 'review'; }
+            nav(`/card-statements/review/${result.statement_id}`);
+            return 'review';
+          }
+          if (detectedType === 'invoice' && result?.invoice_id) {
+            const flags = reviewPageFlags(result);
+            if (skipNavigation) { pushToQueue('invoice', result.invoice_id, file.name, flags); return 'review'; }
+            nav(`/invoices/review/${result.invoice_id}${flags}`);
+            return 'review';
+          }
+          throw new Error(tr('Switched channel but could not find review link.', '已切換頻道但無法找到審核連結。', '已切换频道但无法找到审核连结。'));
         }
         if (action === 'cancel') {
           throw new Error(tr('Upload cancelled.', '已取消上傳。', '已取消上传。'));
         }
-        // 'force' — continue with current channel
+        // 'force' — re-import with user's chosen type, overriding OCR detection
+        if (action === 'force') {
+          setProcessingMsg(tr(`Re-importing as ${channelLabel(channelDef)}…`, `重新匯入為${channelLabel(channelDef)}…`, `重新汇入为${channelLabel(channelDef)}…`));
+          const forceResp = await fetch(
+            `${WORKER_API_BASE}/file-storage/${fileId}/import-document?force=true&type=${encodeURIComponent(channel)}`,
+            { method: 'POST', headers }
+          );
+          const forceResult = await forceResp.json().catch(() => ({}));
+          if (forceResult?.error && forceResp.status !== 201) {
+            throw new Error(forceResult.error || tr('Re-import failed.', '重新匯入失敗。', '重新汇入失败。'));
+          }
+          // Use the forced result going forward
+          Object.assign(result, forceResult);
+          setProcessingMsg(null);
+        }
       }
     }
 
-    const needsReview = !!(result?.needs_direction_review || result?.company_not_detected);
+    const needsReview = !!(result?.needs_direction_review || result?.company_not_detected || result?.needs_review);
 
     // Route based on user-selected CHANNEL (not OCR type)
     if (channel === 'card_statement' && result?.statement_id) {
-      if (skipNavigation && needsReview) { pushToQueue('card_statement', result.statement_id, file.name, ''); return 'review'; }
+      if (needsReview) {
+        if (skipNavigation) { pushToQueue('card_statement', result.statement_id, file.name, ''); return 'review'; }
+        nav(`/card-statements/review/${result.statement_id}`);
+        return 'review';  // prevent handleUpload from doing a default redirect over us
+      }
       return 'ok';
     } else if (channel === 'bank_statement' && result?.statement_id) {
-      if (skipNavigation && needsReview) { pushToQueue('bank_statement', result.statement_id, file.name, ''); return 'review'; }
+      if (needsReview) {
+        if (skipNavigation) { pushToQueue('bank_statement', result.statement_id, file.name, ''); return 'review'; }
+        nav(`/bank-statements/review/${result.statement_id}`);
+        return 'review';  // prevent handleUpload from doing a default redirect over us
+      }
       return 'ok';
     } else if ((channel === 'bank_invoice' || channel === 'cash_invoice') && result?.invoice_id) {
       const flags = reviewPageFlags(result);
-      if (skipNavigation && needsReview) { pushToQueue('invoice', result.invoice_id, file.name, flags); return 'review'; }
+      if (needsReview) {
+        if (skipNavigation) { pushToQueue('invoice', result.invoice_id, file.name, flags); return 'review'; }
+        nav(`/invoices/review/${result.invoice_id}${flags}`);
+        return 'review';  // prevent handleUpload from doing a default redirect over us
+      }
       return 'ok';
     } else if (channel === 'petty_cash') {
       // Auto-create journal entry: debit Petty Cash Expenses (67001), credit Cash on Hand (11101)
@@ -445,6 +485,8 @@ export default function FileUpload() {
         } catch {}
         sessionStorage.removeItem('reviewQueue');
         sessionStorage.removeItem('reviewQueueTotal');
+        // Single-file review: navigation already happened inside uploadFile
+        return;
       } else {
         sessionStorage.removeItem('reviewQueue');
         sessionStorage.removeItem('reviewQueueTotal');
