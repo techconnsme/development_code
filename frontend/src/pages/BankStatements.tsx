@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil, CreditCard } from 'lucide-react';
+import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil, CreditCard, AlertTriangle } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
 import { useAuth } from '../contexts/AuthContext';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
@@ -44,7 +44,6 @@ export default function BankStatements() {
   const [supModal, setSupModal] = useState<{ show: boolean; onConfirm: () => void } | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
-  const [cardMatchTxId, setCardMatchTxId] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [edits, setEdits] = useState<Record<string, Partial<Transaction>>>({});
   const [acctModalTx, setAcctModalTx] = useState<Transaction | null>(null);
@@ -173,6 +172,12 @@ export default function BankStatements() {
         method: 'PATCH',
         body: { card_statement_id: csId, action },
       }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] }); },
+  });
+
+  const skipLinkMut = useMutation({
+    mutationFn: (txId: string) =>
+      api(`/bank-statements/transactions/${txId}/skip-link`, { method: 'PATCH' }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] }); },
   });
 
@@ -365,7 +370,7 @@ export default function BankStatements() {
                                 <th className="py-2 pr-3 font-medium text-right">Withdrawal</th>
                                 <th className="py-2 pr-3 font-medium text-right">Balance</th>
                                 <th className="py-2 pr-3 font-medium min-w-[200px]">Account</th>
-                                <th className="py-2 font-medium text-center">Invoice</th>
+                                <th className="py-2 font-medium text-center">{tr('Linked Document', '連結文件', '连结文件')}</th>
                                 {editMode && <th className="py-2 font-medium text-center w-16">Save</th>}
                               </tr>
                             </thead>
@@ -385,6 +390,12 @@ export default function BankStatements() {
                                   tx.match_status === 'confirmed' ? 'bg-green-50 dark:bg-green-950/20' : ''
                                 }`}>
                                   <td className="py-1.5 pr-3 whitespace-nowrap">
+                                    {/* Flag: unlinked + not skipped → needs attention */}
+                                    {!editMode && !tx.invoice_number && !tx.card_statement_id && tx.match_status !== 'suggested' && tx.match_status !== 'skipped' && (
+                                      <span className="inline-flex items-center mr-1 text-amber-500" title="This transaction needs a linked document or to be marked as skipped">
+                                        <AlertTriangle className="h-3 w-3" />
+                                      </span>
+                                    )}
                                     {editMode ? (
                                       <input value={date || ''} onChange={e => setEdits(prev => ({...prev, [tx.id]: {...prev[tx.id], transaction_date: e.target.value}}))}
                                         className="w-24 px-1 py-0.5 border rounded text-xs bg-background" />
@@ -397,7 +408,7 @@ export default function BankStatements() {
                                       <input value={desc || ''} onChange={e => setEdits(prev => ({...prev, [tx.id]: {...prev[tx.id], description: e.target.value}}))}
                                         className="w-full px-1 py-0.5 border rounded text-xs bg-background" />
                                     ) : (
-                                      <span className="truncate block">{tx.description}</span>
+                                      <span className="truncate block" title={tx.description}>{tx.description}</span>
                                     )}
                                   </td>
                                   <td className="py-1.5 pr-3 max-w-[120px]">
@@ -484,51 +495,31 @@ export default function BankStatements() {
                                     )}
                                   </td>
                                   <td className="py-1.5 text-center">
-                                    {/* ── Invoice matching (deposits) ── */}
-                                    {tx.match_status === 'confirmed' && tx.invoice_number && (
-                                      <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 dark:bg-green-900/30 px-2 py-0.5 rounded">
+                                    {/* ── Invoice linked ── */}
+                                    {tx.invoice_number && (
+                                      <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded ${tx.match_status === 'suggested' ? 'text-yellow-700 bg-yellow-100 dark:bg-yellow-900/30' : 'text-green-700 bg-green-100 dark:bg-green-900/30'}`}>
                                         {tx.invoice_number}
-                                        <button onClick={() => unlinkMut.mutate(tx.id)} className="hover:text-red-600" title="Unlink">
-                                          <X className="h-3 w-3" />
-                                        </button>
+                                        {tx.match_status === 'suggested' ? (
+                                          <>
+                                            <button onClick={() => confirmMatchMut.mutate({ txId: tx.id, invoiceId: tx.invoice_id! })}
+                                              className="p-0.5 text-green-600 hover:bg-green-100 rounded" title="Confirm">
+                                              <Check className="h-3.5 w-3.5" />
+                                            </button>
+                                            <button onClick={() => unlinkMut.mutate(tx.id)}
+                                              className="p-0.5 text-red-500 hover:bg-red-100 rounded" title="Reject">
+                                              <X className="h-3.5 w-3.5" />
+                                            </button>
+                                          </>
+                                        ) : (
+                                          <button onClick={() => unlinkMut.mutate(tx.id)} className="hover:text-red-600" title="Unlink">
+                                            <X className="h-3 w-3" />
+                                          </button>
+                                        )}
                                       </span>
                                     )}
-                                    {tx.match_status === 'suggested' && tx.invoice_number && (
-                                      <span className="inline-flex items-center gap-1">
-                                        <span className="text-xs text-yellow-700 bg-yellow-100 dark:bg-yellow-900/30 px-2 py-0.5 rounded">
-                                          {tx.invoice_number}
-                                        </span>
-                                        <button onClick={() => confirmMatchMut.mutate({ txId: tx.id, invoiceId: tx.invoice_id! })}
-                                          className="p-0.5 text-green-600 hover:bg-green-100 rounded" title="Confirm">
-                                          <Check className="h-3.5 w-3.5" />
-                                        </button>
-                                        <button onClick={() => unlinkMut.mutate(tx.id)}
-                                          className="p-0.5 text-red-500 hover:bg-red-100 rounded" title="Reject">
-                                          <X className="h-3.5 w-3.5" />
-                                        </button>
-                                      </span>
-                                    )}
-                                    {tx.match_status === 'unmatched' && tx.deposit_amount > 0 && (
-                                      <div className="flex items-center gap-1 justify-center">
-                                        <button onClick={() => setMatchTxId(tx.id)}
-                                          className="text-xs text-muted-foreground hover:text-primary flex items-center gap-0.5" title="Link to existing invoice">
-                                          <Link2 className="h-3 w-3" />
-                                        </button>
-                                        <button
-                                          onClick={() => {
-                                            if (window.confirm(`Create a draft invoice for HKD ${tx.deposit_amount.toLocaleString()} from:\n"${tx.description}"?\n\nYou can edit it in the Invoices page.`)) {
-                                              createInvoiceMut.mutate(tx.id);
-                                            }
-                                          }}
-                                          disabled={createInvoiceMut.isPending}
-                                          className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-0.5" title="Create invoice from this transaction">
-                                          <FilePlus className="h-3 w-3" />
-                                        </button>
-                                      </div>
-                                    )}
-                                    {/* ── Card statement matching (withdrawals) ── */}
+                                    {/* ── Card statement linked ── */}
                                     {tx.card_statement_id && tx.card_issuer && (
-                                      <span className="inline-flex items-center gap-1 text-xs text-purple-700 bg-purple-100 dark:bg-purple-900/30 px-2 py-0.5 rounded mt-0.5">
+                                      <span className="inline-flex items-center gap-1 text-xs text-purple-700 bg-purple-100 dark:bg-purple-900/30 px-2 py-0.5 rounded">
                                         <CreditCard className="h-3 w-3" />
                                         {tx.card_issuer}
                                         {tx.cs_statement_year && ` ${tx.cs_statement_year}-${String(tx.cs_statement_month || 1).padStart(2, '0')}`}
@@ -537,11 +528,24 @@ export default function BankStatements() {
                                         </button>
                                       </span>
                                     )}
-                                    {!tx.card_statement_id && tx.withdrawal_amount > 0 && !tx.invoice_number && tx.match_status !== 'suggested' && (
-                                      <div className="flex items-center gap-1 justify-center mt-0.5">
-                                        <button onClick={() => setCardMatchTxId(tx.id)}
-                                          className="text-xs text-purple-500 hover:text-purple-700 flex items-center gap-0.5" title="Link to card statement">
-                                          <CreditCard className="h-3 w-3" />
+                                    {/* ── Skipped (no link needed) ── */}
+                                    {!tx.card_statement_id && !tx.invoice_number && tx.match_status === 'skipped' && (
+                                      <span className="inline-flex items-center gap-1 text-xs text-gray-500 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded cursor-pointer"
+                                        onClick={() => skipLinkMut.mutate(tx.id)}
+                                        title="Click to undo — this transaction needs a link">
+                                        Skipped <X className="h-2.5 w-2.5" />
+                                      </span>
+                                    )}
+                                    {/* ── Unlinked (needs action) ── */}
+                                    {!tx.card_statement_id && !tx.invoice_number && tx.match_status !== 'suggested' && tx.match_status !== 'skipped' && (
+                                      <div className="flex items-center gap-1 justify-center">
+                                        <button onClick={() => setMatchTxId(tx.id)}
+                                          className="text-xs text-muted-foreground hover:text-primary" title="Link to invoice or card statement">
+                                          <Link2 className="h-3.5 w-3.5" />
+                                        </button>
+                                        <button onClick={() => skipLinkMut.mutate(tx.id)}
+                                          className="text-[10px] text-muted-foreground hover:text-amber-600" title="Mark as no link needed">
+                                          Skip
                                         </button>
                                       </div>
                                     )}
@@ -666,25 +670,18 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
         />
       )}
 
-      {/* Manual match modal */}
+      {/* Unified link document modal */}
       {matchTxId && (
-        <ManualMatchModal
+        <LinkedDocModal
           txId={matchTxId}
           onClose={() => setMatchTxId(null)}
-          onMatch={(invoiceId) => {
+          onLinkInvoice={(invoiceId) => {
             confirmMatchMut.mutate({ txId: matchTxId, invoiceId });
             setMatchTxId(null);
           }}
-        />
-      )}
-
-      {cardMatchTxId && (
-        <CardMatchModal
-          txId={cardMatchTxId}
-          onClose={() => setCardMatchTxId(null)}
-          onMatch={(csId) => {
-            cardLinkMut.mutate({ txId: cardMatchTxId, csId, action: 'link' });
-            setCardMatchTxId(null);
+          onLinkCard={(csId) => {
+            cardLinkMut.mutate({ txId: matchTxId, csId, action: 'link' });
+            setMatchTxId(null);
           }}
         />
       )}
@@ -909,25 +906,49 @@ function AccountModal({ tx, allTx, accounts, onClose, onApply }: {
   );
 }
 
-function ManualMatchModal({ txId, onClose, onMatch }: { txId: string; onClose: () => void; onMatch: (id: string) => void }) {
+// ── Unified Link Document Modal (Invoice + Card Statement) ──
+function LinkedDocModal({ txId, onClose, onLinkInvoice, onLinkCard }: {
+  txId: string; onClose: () => void; onLinkInvoice: (id: string) => void; onLinkCard: (csId: string) => void;
+}) {
   const [search, setSearch] = useState('');
-  const { data } = useQuery({
+  const [tab, setTab] = useState<'invoice' | 'card'>('invoice');
+
+  const { data: invData } = useQuery({
     queryKey: ['unpaid-invoices', search],
     queryFn: () => api(`/invoices?status=draft,sent,overdue${search ? `&q=${search}` : ''}`),
+    enabled: tab === 'invoice',
   });
-  const invoices = (data?.data || []) as any[];
+  const invoices = (invData?.data || []) as any[];
+
+  const { data: cardData } = useQuery({
+    queryKey: ['card-statements-list', search],
+    queryFn: () => api(`/card-statements?q=${search}`),
+    enabled: tab === 'card',
+  });
+  const cardStmts = (cardData?.data || []) as any[];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 space-y-4" onClick={e => e.stopPropagation()}>
-        <h3 className="font-semibold">Link to Invoice</h3>
+        <h3 className="font-semibold flex items-center gap-2"><Link2 className="h-4 w-4" /> Link Document</h3>
+        {/* Tab switcher */}
+        <div className="flex gap-1 border-b">
+          <button onClick={() => setTab('invoice')}
+            className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === 'invoice' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+            <FileText className="h-3.5 w-3.5 inline mr-1" />Invoices
+          </button>
+          <button onClick={() => setTab('card')}
+            className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === 'card' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+            <CreditCard className="h-3.5 w-3.5 inline mr-1" />Card Statements
+          </button>
+        </div>
         <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search invoices..."
+          placeholder={tab === 'invoice' ? 'Search invoices...' : 'Search card statements...'}
           className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
         <div className="max-h-64 overflow-y-auto space-y-1">
-          {invoices.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No unpaid invoices</p>}
-          {invoices.map((inv: any) => (
-            <button key={inv.id} onClick={() => onMatch(inv.id)}
+          {tab === 'invoice' && invoices.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No unpaid invoices</p>}
+          {tab === 'invoice' && invoices.map((inv: any) => (
+            <button key={inv.id} onClick={() => onLinkInvoice(inv.id)}
               className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-muted text-sm text-left">
               <div>
                 <span className="font-medium">{inv.invoice_number || inv.id}</span>
@@ -936,35 +957,9 @@ function ManualMatchModal({ txId, onClose, onMatch }: { txId: string; onClose: (
               <span className="font-mono">${inv.total?.toLocaleString()}</span>
             </button>
           ))}
-        </div>
-        <div className="flex justify-end">
-          <button onClick={onClose} className="px-4 py-2 text-sm border rounded-md hover:bg-muted">Cancel</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Card Statement Match Modal ──
-function CardMatchModal({ txId, onClose, onMatch }: { txId: string; onClose: () => void; onMatch: (csId: string) => void }) {
-  const [search, setSearch] = useState('');
-  const { data } = useQuery({
-    queryKey: ['card-statements-list', search],
-    queryFn: () => api(`/card-statements?q=${search}`),
-  });
-  const statements = (data?.data || []) as any[];
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 space-y-4" onClick={e => e.stopPropagation()}>
-        <h3 className="font-semibold flex items-center gap-2"><CreditCard className="h-4 w-4" /> Link to Card Statement</h3>
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search card statements..."
-          className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
-        <div className="max-h-64 overflow-y-auto space-y-1">
-          {statements.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No card statements found</p>}
-          {statements.map((cs: any) => (
-            <button key={cs.id} onClick={() => onMatch(cs.id)}
+          {tab === 'card' && cardStmts.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No card statements found</p>}
+          {tab === 'card' && cardStmts.map((cs: any) => (
+            <button key={cs.id} onClick={() => onLinkCard(cs.id)}
               className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-muted text-sm text-left">
               <div>
                 <span className="font-medium">{cs.card_issuer || 'Card'}</span>

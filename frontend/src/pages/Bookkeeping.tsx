@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
+import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import DropdownSelect from '../components/DropdownSelect';
@@ -325,7 +325,28 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       )}
 
       {/* Entries Tab */}
-      {tab === 'entries' && (
+      {tab === 'entries' && (() => {
+        const draftCount = (entries?.data || []).filter((e: any) => e.status === 'draft' || e.status === 'stale').length;
+        return (
+        <div className="space-y-4">
+          {draftCount > 0 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                    {draftCount} unposted journal {draftCount === 1 ? 'entry' : 'entries'}
+                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    These affect your trial balance and financial statements. Review and post them to finalize.
+                  </p>
+                </div>
+              </div>
+              <a href="/review-queue" className="px-3 py-1.5 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 shrink-0">
+                Review →
+              </a>
+            </div>
+          )}
         <div className="bg-card border rounded-xl overflow-hidden">
           <table className="w-full text-sm">
             <thead>
@@ -343,7 +364,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             <tbody>
               {(entries?.data || []).map((e: any) => (
                 <React.Fragment key={e.id}>
-                <tr className={`border-b hover:bg-muted/30 ${expandedId === e.id ? 'bg-muted/40' : ''}`}>
+                <tr className={`border-b hover:bg-muted/30 ${expandedId === e.id ? 'bg-muted/40' : ''} ${e.status === 'draft' ? 'bg-amber-50 dark:bg-amber-950/20' : ''} ${e.status === 'stale' ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>
                   <td className="p-3">
                     <button onClick={() => toggleEntryDetail(e.id)} className="p-0.5 hover:bg-muted rounded">
                       {expandedId === e.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
@@ -419,7 +440,9 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             </tbody>
           </table>
         </div>
-      )}
+        </div>
+        );
+        })()}
 
       {/* Accounts Tab */}
       {tab === 'accounts' && <AccountsTab accounts={accounts?.data || []} />}

@@ -36,6 +36,7 @@ const navGroups = [
   { key: 'coa', label: 'Chart of Accounts (COA)', icon: List, to: '/coa' },
   { key: 'generalLedger', label: 'General Ledger', icon: BookOpen, to: '/general-ledger' },
   { key: 'bookkeeping', label: 'Bookkeeping', icon: Calculator, expandable: true, children: [
+    { key: 'reviewQueue', label: 'Pending Review', to: '/review-queue' },
     { key: 'gje', label: 'General Journal Entries (GJE)', to: '/GJE' },
     { key: 'bankStatements', label: 'Bank Statements', to: '/bank-statements' },
     { key: 'cardStatements', label: 'Card Statements', to: '/card-statements' },
@@ -119,6 +120,7 @@ const NAV_FEATURE_MAP: Record<string, string> = {
   invoices: 'invoices',
   quotations: 'quotations',
   bookkeeping: 'bookkeeping',
+  reviewQueue: 'bookkeeping',
   bankStatements: 'bankStatements',
   cardStatements: 'cardStatements',
   expenseReceipts: 'expenseReceipts',
@@ -197,6 +199,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     refetchInterval: 60000,
   });
   const issueCount = (fileIssues?.issues as number) || 0;
+
+  const { data: reviewQueue } = useQuery({
+    queryKey: ['review-queue-count'],
+    queryFn: () => api('/review-queue/count'),
+    refetchInterval: 10000,
+  });
+  const reviewCount = (reviewQueue?.total as number) || 0;
 
   // Parse features from live company data (or fallback to AuthContext)
   const features: Record<string, boolean> = React.useMemo(() => {
@@ -313,6 +322,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                             <span className="flex-1 truncate">{t(`nav.${child.key}`) as string}</span>
                             {child.sub && !collapsed && (
                               <span className="text-[10px] text-muted-foreground/40">{subT(child.sub)}</span>
+                            )}
+                            {child.key === 'reviewQueue' && reviewCount > 0 && !collapsed && (
+                              <span className="flex items-center gap-0.5 bg-orange-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">
+                                {reviewCount}
+                              </span>
                             )}
                           </Link>
                         );

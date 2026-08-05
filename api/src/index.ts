@@ -41,6 +41,7 @@ import { complianceRoutes } from './routes/compliance';
 import { plansRoutes } from './routes/plans';
 import { emailDashRoutes } from './routes/email-dash';
 import { waitlistRoutes } from './routes/waitlist';
+import { reviewQueueRoutes } from './routes/review-queue';
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -186,6 +187,7 @@ app.route('/api/compliance', complianceRoutes);
 app.route('/api/plans', plansRoutes);
 app.route('/api/email-dash', emailDashRoutes);
 app.route('/api/waitlist', waitlistRoutes);
+app.route('/api/review-queue', reviewQueueRoutes);
 
 // 404
 app.notFound((c) => c.json({ error: 'Not found' }, 404));

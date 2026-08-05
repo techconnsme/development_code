@@ -422,6 +422,27 @@ bank.patch('/transactions/:id/card-link', async (c) => {
   return c.json({ error: 'action must be link or unlink' }, 400);
 });
 
+// ── Toggle "no link needed" on a transaction ──
+bank.patch('/transactions/:id/skip-link', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const txId = c.req.param('id');
+
+  const tx = await db.prepare(
+    'SELECT id, match_status FROM bank_transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(txId, tenantId).first<{ id: string; match_status: string | null }>();
+  if (!tx) return c.json({ error: 'Transaction not found' }, 404);
+
+  const newStatus = tx.match_status === 'skipped' ? 'unmatched' : 'skipped';
+  await db.prepare(
+    'UPDATE bank_transactions SET match_status = ? WHERE id = ? AND deleted_at IS NULL'
+  ).bind(newStatus, txId).run();
+
+  await auditLog(db, user.id, newStatus === 'skipped' ? 'skip_link' : 'unskip_link', 'bank_transaction', txId, {});
+  return c.json({ success: true, match_status: newStatus });
+});
+
 // ── List match suggestions ──
 bank.get('/match-suggestions', async (c) => {
   const user = c.get('user');

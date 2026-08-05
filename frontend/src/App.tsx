@@ -20,6 +20,7 @@ import Quotations from './pages/Quotations';
 import PurchaseOrders from './pages/PurchaseOrders';
 import ServiceOrders from './pages/ServiceOrders';
 import Bookkeeping from './pages/Bookkeeping';
+import ReviewQueue from './pages/ReviewQueue';
 import FileUpload from './pages/FileUpload';
 import FixedAssets from './pages/FixedAssets';
 import ImportData from './pages/ImportData';
@@ -90,6 +91,7 @@ const FEATURE_ROUTES: Record<string, string> = {
   '/invoices': 'invoices',
   '/quotations': 'quotations',
   '/GJE': 'bookkeeping',
+  '/review-queue': 'bookkeeping',
   '/bookkeeping': 'bookkeeping',
   '/bank-statements': 'bankStatements',
   '/card-statements': 'cardStatements',
@@ -174,6 +176,7 @@ function AppRoutes() {
       <Route path="/new-client" element={<ProtectedRoute><NewClient /></ProtectedRoute>} />
       <Route path="/file-upload" element={<ProtectedRoute><FileUpload /></ProtectedRoute>} />
       <Route path="/GJE" element={<ProtectedRoute><Bookkeeping hideTabs initialTab="entries" /></ProtectedRoute>} />
+      <Route path="/review-queue" element={<ProtectedRoute><FeatureGuard><ReviewQueue /></FeatureGuard></ProtectedRoute>} />
       <Route path="/entries" element={<Navigate to="/GJE" />} />
       <Route path="/income-statement" element={<ProtectedRoute><Bookkeeping hideTabs initialTab="pl" /></ProtectedRoute>} />
       <Route path="/trial-balance" element={<ProtectedRoute><Bookkeeping hideTabs initialTab="trial" /></ProtectedRoute>} />
