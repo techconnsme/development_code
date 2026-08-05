@@ -185,6 +185,21 @@ export default function InvoiceReview() {
     },
   });
 
+  const postGlMut = useMutation({
+    mutationFn: () => api(`/bookkeeping/post-invoice/${id}`, { method: 'POST' }),
+    onSuccess: () => {
+      toast.success(tr('Posted to General Ledger!', '已過賬至總賬！', '已过账至总账！'));
+      queryClient.invalidateQueries({ queryKey: ['entries'] });
+    },
+    onError: (err: any) => {
+      if (/already posted/i.test(err?.message || err?.error || '')) {
+        toast.info(tr('Already posted to GL.', '已過賬至總賬。', '已过账至总账。'));
+      } else {
+        toast.info(`Post failed: ${err?.message || err?.error || 'Unknown error'}`);
+      }
+    },
+  });
+
   const discardMut = useMutation({
     mutationFn: () => {
       return api(`/invoices/${id}`, { method: 'DELETE' });
@@ -519,6 +534,22 @@ export default function InvoiceReview() {
                       {tr('AP — Billed us', 'AP 應付 — Billed us', 'AP 应付 — Billed us')}
                     </button>
                   </div>
+                  {/* ── Expense Category (AP/incoming only) ── */}
+                  {isIncomingInvoice && (
+                    <div className="pt-1">
+                      <label className="text-xs text-muted-foreground block mb-1">{tr('Expense Category', '支出類別', '支出类别')}</label>
+                      <select
+                        value={form?.expense_category || ''}
+                        onChange={(e) => setForm({ ...form, expense_category: e.target.value || null })}
+                        className="px-3 py-2 border rounded-md bg-background text-sm w-48"
+                      >
+                        <option value="">{tr('(none)', '（無）', '（无）')}</option>
+                        <option value="cash">{tr('Cash Expenses', '現金支出', '现金支出')}</option>
+                        <option value="reimburse">{tr('Employee Reimb.', '員工報銷', '员工报销')}</option>
+                        <option value="director">{tr('Director Expenses', '董事支出', '董事支出')}</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -668,7 +699,7 @@ export default function InvoiceReview() {
                 <Trash2 className="h-4 w-4" /> {tr('Discard', 'Discard 放棄', 'Discard 放弃')}
               </button>
               <button onClick={handleSave} disabled={confirmMut.isPending || saved}
-                className="flex-2 flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 disabled:opacity-60">
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 disabled:opacity-60">
                 <Save className="h-4 w-4" />
                 {saved
                   ? (tr('✓ Saved', '已儲存 ✓', '已储存 ✓'))
@@ -676,6 +707,14 @@ export default function InvoiceReview() {
                     ? (tr('Saving…', '儲存中…', '储存中…'))
                     : (tr(`Save ${docLabel}`, `儲存${docLabel}`, `储存${docLabel}`))}
               </button>
+              {saved && (
+                <button onClick={() => postGlMut.mutate()} disabled={postGlMut.isPending}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-green-600 text-white rounded-md text-sm hover:bg-green-700 disabled:opacity-60">
+                  {postGlMut.isPending
+                    ? (tr('Posting…', '過賬中…', '过账中…'))
+                    : (tr('📒 Post to GL', '📒 過賬至總賬', '📒 过账至总账'))}
+                </button>
+              )}
             </div>
 
           </div>

@@ -54,6 +54,7 @@ import AiMemory from './pages/AiMemory';
 import PricingPage from './pages/PricingPage';
 import SubscriptionPage from './pages/SubscriptionPage';
 import StubPage from './pages/StubPage';
+import PettyCash from './pages/PettyCash';
 import ChartOfAccounts from './pages/ChartOfAccounts';
 import CardStatements from './pages/CardStatements';
 import CardStatementReview from './pages/CardStatementReview';
@@ -189,7 +190,7 @@ function AppRoutes() {
       <Route path="/ap" element={<ProtectedRoute><AP /></ProtectedRoute>} />
       <Route path="/ar" element={<ProtectedRoute><AR /></ProtectedRoute>} />
       <Route path="/payroll" element={<ProtectedRoute><StubPage title="Payroll" zhHant="薪資" zhHans="薪资" /></ProtectedRoute>} />
-      <Route path="/petty-cash" element={<ProtectedRoute><StubPage title="Petty Cash" zhHant="零用金" zhHans="零用金" /></ProtectedRoute>} />
+      <Route path="/petty-cash" element={<ProtectedRoute><FeatureGuard><PettyCash /></FeatureGuard></ProtectedRoute>} />
       <Route path="/mpf" element={<ProtectedRoute><StubPage title="MPF" zhHant="強積金" zhHans="强积金" /></ProtectedRoute>} />
       <Route path="/financial-statements" element={<Navigate to="/GJE" />} />
       <Route path="/company/br" element={<ProtectedRoute><StubPage title="Business Registration (BR)" zhHant="商業登記證" zhHans="商业登记证" /></ProtectedRoute>} />

@@ -21,6 +21,7 @@ invoices.get('/', async (c) => {
   const offset = (page - 1) * limit;
   const docType = c.req.query('doc_type') || ''; // 'receipt' | 'invoice' | ''
   const direction = c.req.query('direction') || ''; // 'incoming' | 'outgoing' | ''
+  const expenseCategory = c.req.query('expense_category') || ''; // 'cash' | 'reimburse' | 'director' | ''
 
   // Default: exclude pending_review unless explicitly requested
   const showPendingReview = status === 'pending_review';
@@ -34,6 +35,7 @@ invoices.get('/', async (c) => {
   else if (docType === 'invoice') { query += ' AND i.receipt_number IS NULL'; }
   if (direction === 'incoming') { query += " AND i.direction = 'incoming'"; }
   else if (direction === 'outgoing') { query += " AND i.direction = 'outgoing'"; }
+  if (expenseCategory) { query += ' AND i.expense_category = ?'; params.push(expenseCategory); }
   query += ' ORDER BY i.created_at DESC LIMIT ? OFFSET ?';
   params.push(limit, offset);
 
@@ -44,8 +46,9 @@ invoices.get('/', async (c) => {
     (status ? ` AND i.status IN (${status.split(',').filter(Boolean).map(() => '?').join(',')})` : '') +
     (search ? ' AND (i.invoice_number LIKE ? OR c.name LIKE ? OR s.name LIKE ? OR i.vendor_name LIKE ?)' : '') +
     (docType === 'receipt' ? ' AND i.receipt_number IS NOT NULL' : docType === 'invoice' ? ' AND i.receipt_number IS NULL' : '') +
-    (direction === 'incoming' ? " AND i.direction = 'incoming'" : direction === 'outgoing' ? " AND i.direction = 'outgoing'" : '')
-  ).bind(...params.slice(0, -2)).first<{ count: number }>();
+    (direction === 'incoming' ? " AND i.direction = 'incoming'" : direction === 'outgoing' ? " AND i.direction = 'outgoing'" : '') +
+    (expenseCategory ? ' AND i.expense_category = ?' : '')
+  ).bind(...(expenseCategory ? [...params.slice(0, -2), expenseCategory] : params.slice(0, -2))).first<{ count: number }>();
   return c.json({ data: rows.results, total: countRow?.count || 0, page, limit });
 });
 
@@ -96,6 +99,7 @@ const createSchema = z.object({
   receipt_number: z.string().optional(), paid_date: z.string().optional(),
   attn: z.string().optional(), customer_phone: z.string().optional(),
   customer_email: z.string().optional(), customer_address: z.string().optional(),
+  expense_category: z.enum(['cash', 'reimburse', 'director']).optional(),
   items: z.array(itemSchema).min(1),
 });
 
@@ -126,8 +130,8 @@ invoices.post('/', zValidator('json', createSchema), async (c) => {
   const brNumber = company?.br_number || null;
 
   await db.prepare(
-    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, tax_rate, tax_amount, discount_amount, total, currency, notes, terms, receipt_number, paid_date, direction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, tenantId, invoice_number, data.customer_id, data.supplier_id || null, data.status || 'draft', data.issue_date, data.due_date, subtotal, taxRate, taxAmount, discount, total, data.currency || 'HKD', data.notes || null, data.terms || null, data.receipt_number || null, data.paid_date || null, data.direction || 'outgoing').run();
+    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, tax_rate, tax_amount, discount_amount, total, currency, notes, terms, receipt_number, paid_date, direction, expense_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, tenantId, invoice_number, data.customer_id, data.supplier_id || null, data.status || 'draft', data.issue_date, data.due_date, subtotal, taxRate, taxAmount, discount, total, data.currency || 'HKD', data.notes || null, data.terms || null, data.receipt_number || null, data.paid_date || null, data.direction || 'outgoing', data.expense_category || null).run();
 
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i];
@@ -277,6 +281,7 @@ invoices.post('/:id/confirm', async (c) => {
   const sets: string[] = ["status = 'draft'", "updated_at = datetime('now')"];
   const params: any[] = [];
   const fieldMap: Record<string, any> = {
+    expense_category: body.expense_category,
     // For receipts: invoice_number stays as REC-xxx (never update it — avoid UNIQUE clash).
     // Instead store the human receipt number in receipt_number column.
     ...(isReceipt

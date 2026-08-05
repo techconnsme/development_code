@@ -39,7 +39,7 @@ export default function AP() {
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
-  const [form, setForm] = useState({ invoice_number: '', customer_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
+  const [form, setForm] = useState({ invoice_number: '', supplier_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   const [productSearch, setProductSearch] = useState<Record<number, string>>({});
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
@@ -222,18 +222,18 @@ export default function AP() {
                     placeholder={tr("Bill No. (auto if blank)", "帳單號碼（留空自動產生）", "账单号码（留空自动产生）")} className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
                   {!form.invoice_number && <p className="text-[10px] text-muted-foreground mt-0.5">{tr('Leave blank to auto-generate', '留空則根據設定格式自動產生號碼', '留空则根据设定格式自动产生号码')}</p>}
                 </div>
-                <select required value={form.customer_id} onChange={(e) => {
-                  const cid = e.target.value;
-                  const cust = (suppliers?.data || []).find((c: any) => c.id === cid);
+                <select required value={form.supplier_id} onChange={(e) => {
+                  const sid = e.target.value;
+                  const supp = (suppliers?.data || []).find((s: any) => s.id === sid);
                   setForm({
-                    ...form, customer_id: cid,
-                    attn: cust?.name || '', customer_phone: cust?.phone || '',
-                    customer_email: cust?.email || '', customer_address: cust?.address || '',
+                    ...form, supplier_id: sid,
+                    attn: supp?.name || '', customer_phone: supp?.phone || '',
+                    customer_email: supp?.email || '', customer_address: supp?.address || '',
                   });
                 }}
                   className="px-3 py-2 border rounded-md bg-background text-sm">
                   <option value="">{tr('Select Supplier *', '選擇供應商 *', '选择供应商 *')}</option>
-                  {(suppliers?.data || []).map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  {(suppliers?.data || []).map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
               </div>
               <div className="grid grid-cols-3 gap-3">

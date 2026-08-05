@@ -1141,6 +1141,7 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
      LEFT JOIN bank_statements bs ON bt.statement_id = bs.id
      WHERE bt.user_id = ?
      AND bt.deleted_at IS NULL
+     AND bt.match_status != 'confirmed'
      AND bt.description NOT LIKE '%TRANSACTION SUMMARY%'
      AND bt.description NOT LIKE '%CARRIED FORWARD%'
      AND bt.description NOT LIKE '%今期結餘%'
@@ -1256,7 +1257,7 @@ bookkeeping.post('/post-invoice/:id', bookkeeperMiddleware, async (c) => {
 
   const inv = await db.prepare(
     'SELECT * FROM invoices WHERE id = ? AND user_id = ?'
-  ).bind(invoiceId, tenantId).first<{ id: string; invoice_number: string; issue_date: string; total: number; customer_id: string; notes: string }>();
+  ).bind(invoiceId, tenantId).first<{ id: string; invoice_number: string; issue_date: string; total: number; customer_id: string; direction: string; expense_category: string; notes: string }>();
   if (!inv) return c.json({ error: 'Invoice not found' }, 404);
 
   // Check not already posted
@@ -1265,28 +1266,58 @@ bookkeeping.post('/post-invoice/:id', bookkeeperMiddleware, async (c) => {
   ).bind(invoiceId, tenantId).first();
   if (existing) return c.json({ error: 'Invoice already posted to GL', entry_id: (existing as any).id }, 409);
 
-  // Ensure AR and Revenue accounts exist via dynamic missing-account creation
-  await ensureMissingAccounts(db, tenantId, ['11201', '41101'], [0]);
-
   const jeId = `je-${uuidv4().slice(0, 8)}`;
   const jeNum = `JE-INV-${inv.invoice_number}`;
-  await db.prepare(
-    'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
-  ).bind(jeId, tenantId, jeNum, inv.issue_date, `Invoice ${inv.invoice_number}: ${inv.notes || 'Services'}`, 'invoice', invoiceId).run();
-  // Dr AR
-  await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', inv.invoice_number, inv.total, 0, null, 0).run();
-  // Cr Revenue
-  await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '41101', 'Professional Services 專業服務收入', inv.invoice_number, 0, inv.total, null, 1).run();
+  const isIncoming = inv.direction === 'incoming';
+  const expenseCat = inv.expense_category || 'general';
 
-  await auditLog(db, user.id, 'post_invoice', 'invoice', invoiceId, { invoice_number: inv.invoice_number, total: inv.total });
-  return c.json({ entry_id: jeId, entry_number: jeNum, invoice_id: invoiceId }, 201);
+  // Map expense_category to expense account
+  const expenseAccountMap: Record<string, string> = {
+    cash: '67001',       // Petty Cash Expenses
+    reimburse: '61203',  // Employee Reimbursements
+    director: '21201',   // Director Loan / Current Account
+  };
+  const expenseAccount = isIncoming ? (expenseAccountMap[expenseCat] || '66203') : '11201';
+  const expenseAccountName = isIncoming
+    ? (expenseCat === 'cash' ? 'Petty Cash Expenses' : expenseCat === 'reimburse' ? 'Employee Reimbursements' : expenseCat === 'director' ? 'Director Current Account' : 'Miscellaneous Expenses')
+    : 'Trade Debtors 應收賬款';
+
+  if (isIncoming) {
+    // AP invoice: Dr Expense / Cr Trade Creditors
+    await ensureMissingAccounts(db, tenantId, [expenseAccount, '21101'], [0]);
+    await db.prepare(
+      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
+    ).bind(jeId, tenantId, jeNum, inv.issue_date, `AP Invoice ${inv.invoice_number}: ${inv.notes || 'Supplier bill'}`, 'invoice', invoiceId).run();
+    // Dr Expense
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, expenseAccount, expenseAccountName, inv.invoice_number, inv.total, 0, null, 0).run();
+    // Cr AP
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '21101', 'Trade Creditors 應付賬款', inv.invoice_number, 0, inv.total, null, 1).run();
+  } else {
+    // AR invoice: Dr AR / Cr Revenue
+    await ensureMissingAccounts(db, tenantId, ['11201', '41101'], [0]);
+    await db.prepare(
+      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
+    ).bind(jeId, tenantId, jeNum, inv.issue_date, `Invoice ${inv.invoice_number}: ${inv.notes || 'Services'}`, 'invoice', invoiceId).run();
+    // Dr AR
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', inv.invoice_number, inv.total, 0, null, 0).run();
+    // Cr Revenue
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '41101', 'Professional Services 專業服務收入', inv.invoice_number, 0, inv.total, null, 1).run();
+  }
+
+  await auditLog(db, user.id, 'post_invoice', 'invoice', invoiceId, { invoice_number: inv.invoice_number, total: inv.total, direction: inv.direction });
+  return c.json({ entry_id: jeId, entry_number: jeNum, invoice_id: invoiceId, direction: inv.direction }, 201);
 });
 
-// When an invoice payment is matched, create the receipt entry (Dr Cash, Cr AR)
+// When an invoice payment is matched, create the receipt/payment entry
+// Deposit (AR): Dr Cash / Cr AR   |   Withdrawal (AP): Dr AP / Cr Cash
 bookkeeping.post('/post-payment/:transactionId', bookkeeperMiddleware, async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
@@ -1295,10 +1326,13 @@ bookkeeping.post('/post-payment/:transactionId', bookkeeperMiddleware, async (c)
   if (!txId) return c.json({ error: 'transactionId required' }, 400);
 
   const tx = await db.prepare(
-    `SELECT bt.*, i.invoice_number, i.total as invoice_total
-     FROM bank_transactions bt LEFT JOIN invoices i ON bt.invoice_id = i.id
+    `SELECT bt.*, i.invoice_number, i.total as invoice_total, i.direction,
+     bs.account_code as bank_account_code
+     FROM bank_transactions bt
+     LEFT JOIN invoices i ON bt.invoice_id = i.id
+     LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
      WHERE bt.id = ? AND bt.user_id = ? AND bt.match_status = 'confirmed' AND bt.deleted_at IS NULL`
-  ).bind(txId, tenantId).first<{ id: string; transaction_date: string; deposit_amount: number; invoice_id: string; invoice_number: string; invoice_total: number }>();
+  ).bind(txId, tenantId).first<{ id: string; transaction_date: string; deposit_amount: number; withdrawal_amount: number; invoice_id: string; invoice_number: string; invoice_total: number; direction: string; bank_account_code: string | null }>();
   if (!tx || !tx.invoice_id) return c.json({ error: 'Transaction not found or not matched to an invoice' }, 404);
 
   // Check not already posted
@@ -1307,22 +1341,38 @@ bookkeeping.post('/post-payment/:transactionId', bookkeeperMiddleware, async (c)
   ).bind(txId, tenantId).first();
   if (existing) return c.json({ error: 'Payment already posted to GL', entry_id: (existing as any).id }, 409);
 
+  const isDeposit = tx.deposit_amount > 0;
+  const amount = isDeposit ? tx.deposit_amount : tx.withdrawal_amount;
+  const bankAccount = tx.bank_account_code || '11101';
   const jeId = `je-${uuidv4().slice(0, 8)}`;
   const jeNum = `JE-PMT-${tx.invoice_number || txId.slice(0, 8)}`;
-  await db.prepare(
-    'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
-  ).bind(jeId, tenantId, jeNum, tx.transaction_date, `Payment for invoice ${tx.invoice_number || ''}`, 'payment', txId).run();
-  // Dr Cash
-  await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11101', 'Cash on Hand 庫存現金', tx.invoice_number || '', tx.deposit_amount, 0, null, 0).run();
-  // Cr AR
-  await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', tx.invoice_number || '', 0, tx.deposit_amount, null, 1).run();
 
-  await auditLog(db, user.id, 'post_payment', 'payment', txId, { invoice_number: tx.invoice_number, amount: tx.deposit_amount });
-  return c.json({ entry_id: jeId, entry_number: jeNum, transaction_id: txId }, 201);
+  if (isDeposit) {
+    // AR: customer paid us → Dr Bank / Cr AR
+    await db.prepare(
+      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
+    ).bind(jeId, tenantId, jeNum, tx.transaction_date, `Payment received for invoice ${tx.invoice_number || ''}`, 'payment', txId).run();
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, bankAccount, 'Bank', tx.invoice_number || '', amount, 0, null, 0).run();
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', tx.invoice_number || '', 0, amount, null, 1).run();
+  } else {
+    // AP: we paid supplier → Dr AP / Cr Bank
+    await db.prepare(
+      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
+    ).bind(jeId, tenantId, jeNum, tx.transaction_date, `Payment for AP invoice ${tx.invoice_number || ''}`, 'payment', txId).run();
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '21101', 'Trade Creditors 應付賬款', tx.invoice_number || '', amount, 0, null, 0).run();
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, bankAccount, 'Bank', tx.invoice_number || '', 0, amount, null, 1).run();
+  }
+
+  await auditLog(db, user.id, 'post_payment', 'payment', txId, { invoice_number: tx.invoice_number, amount });
+  return c.json({ entry_id: jeId, entry_number: jeNum, transaction_id: txId, direction: isDeposit ? 'AR' : 'AP' }, 201);
 });
 
 // Year-End Close: transfer P&L to Retained Earnings and roll forward

@@ -36,7 +36,7 @@ export default function Invoices() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
-  const [expenseCategory, setExpenseCategory] = useState<'all' | 'cash_expenses' | 'employee_reimbursements' | 'director_expenses'>('all');
+  const [expenseCategory, setExpenseCategory] = useState<'all' | 'cash' | 'reimburse' | 'director' | 'ap'>('all');
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
@@ -46,8 +46,16 @@ export default function Invoices() {
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
 
   const { data, isLoading } = useQuery({
-    queryKey: ['invoices', search, status, page],
-    queryFn: () => api(`/invoices?q=${search}&status=${status}&page=${page}&limit=20&doc_type=invoice`),
+    queryKey: ['invoices', search, status, page, expenseCategory],
+    queryFn: () => {
+      const params = new URLSearchParams({ q: search, status, page: String(page), limit: '20', doc_type: 'invoice' });
+      if (expenseCategory === 'ap') {
+        params.set('direction', 'incoming');
+      } else if (expenseCategory !== 'all') {
+        params.set('expense_category', expenseCategory);
+      }
+      return api(`/invoices?${params.toString()}`);
+    },
   });
 
   const { data: customers } = useQuery({
@@ -104,9 +112,7 @@ export default function Invoices() {
     createMut.mutate(form);
   }
 
-  const allInvoices = data?.data || [];
-  const invoices = expenseCategory === 'all' ? allInvoices
-    : allInvoices.filter((inv: any) => inv.expense_category === expenseCategory);
+  const invoices = data?.data || [];
   const statusLabel = (s: string) => {
     const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '已發送', '已发送'), paid: tr('Paid', '已付', '已付'), overdue: tr('Overdue', '逾期', '逾期'), cancelled: tr('Cancelled', '已取消', '已取消'), pending_review: tr('⏳ Pending', '⏳ 待審', '⏳ 待审') };
     return labels[s] || s;
@@ -132,10 +138,11 @@ export default function Invoices() {
       {/* Expense category tabs */}
       <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit flex-wrap">
         {([
-          { key: 'all', label: tr('All Invoices', '全部', '全部') },
-          { key: 'cash_expenses', label: tr('Cash Expenses', '現金支出', '现金支出') },
-          { key: 'employee_reimbursements', label: tr('Employee Reimb.', '員工報銷', '员工报销') },
-          { key: 'director_expenses', label: tr('Director Expenses', '董事支出', '董事支出') },
+          { key: 'all', label: tr('All', '全部', '全部') },
+          { key: 'ap', label: tr('Accounts Payable (AP)', '應付帳款 (AP)', '应付账款 (AP)') },
+          { key: 'cash', label: tr('Cash Expenses', '現金支出', '现金支出') },
+          { key: 'reimburse', label: tr('Employee Reimb.', '員工報銷', '员工报销') },
+          { key: 'director', label: tr('Director Expenses', '董事支出', '董事支出') },
         ] as const).map(t => (
           <button
             key={t.key}
@@ -147,11 +154,6 @@ export default function Invoices() {
             }`}
           >
             {t.label}
-            {t.key !== 'all' && (
-              <span className="ml-1.5 text-xs text-muted-foreground">
-                ({allInvoices.filter((inv: any) => inv.expense_category === t.key).length})
-              </span>
-            )}
           </button>
         ))}
       </div>
@@ -215,9 +217,9 @@ export default function Invoices() {
                   <td className="p-3">
                     {(() => {
                       const cat = inv.expense_category;
-                      if (cat === 'cash_expenses') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-700">{tr('Cash', '現金', '现金')}</span>;
-                      if (cat === 'employee_reimbursements') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-700">{tr('Reimb.', '報銷', '报销')}</span>;
-                      if (cat === 'director_expenses') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-teal-100 text-teal-700">{tr('Director', '董事', '董事')}</span>;
+                      if (cat === 'cash') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-700">{tr('Cash', '現金', '现金')}</span>;
+                      if (cat === 'reimburse') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-700">{tr('Reimb.', '報銷', '报销')}</span>;
+                      if (cat === 'director') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-teal-100 text-teal-700">{tr('Director', '董事', '董事')}</span>;
                       return (
                         <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
                           inv.direction === 'incoming'

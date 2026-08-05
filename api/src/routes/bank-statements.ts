@@ -223,12 +223,13 @@ bank.patch('/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// ── Auto-match bank deposits to invoices ──
+// ── Auto-match bank transactions to invoices (deposits→AR, withdrawals→AP) ──
 bank.post('/auto-match', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
 
+  // Fetch unmatched deposits and withdrawals
   const deposits = await db.prepare(
     `SELECT id, transaction_date, description, deposit_amount, reference
      FROM bank_transactions
@@ -236,31 +237,42 @@ bank.post('/auto-match', async (c) => {
      ORDER BY transaction_date`
   ).bind(tenantId).all();
 
-  const invoices = await db.prepare(
-    `SELECT id, invoice_number, total, currency, issue_date, due_date, customer_id
+  const withdrawals = await db.prepare(
+    `SELECT id, transaction_date, description, withdrawal_amount, reference
+     FROM bank_transactions
+     WHERE user_id = ? AND deleted_at IS NULL AND withdrawal_amount > 0 AND match_status = 'unmatched'
+     AND card_statement_id IS NULL
+     ORDER BY transaction_date`
+  ).bind(tenantId).all();
+
+  // Fetch unpaid invoices with direction
+  const allInvoices = await db.prepare(
+    `SELECT id, invoice_number, total, currency, issue_date, due_date, direction
      FROM invoices
      WHERE user_id = ? AND status NOT IN ('paid', 'cancelled')`
   ).bind(tenantId).all();
 
+  // Split by direction
+  const arInvoices = (allInvoices.results as any[]).filter(i => i.direction !== 'incoming');  // outgoing or null → AR
+  const apInvoices = (allInvoices.results as any[]).filter(i => i.direction === 'incoming');   // incoming → AP
+
   const matched: any[] = [];
   const usedInvoiceIds = new Set<string>();
 
-  for (const tx of deposits.results as any[]) {
+  // Helper: match transactions to invoices
+  function findBestMatch(tx: any, invoices: any[], amountKey: string): { bestMatch: any; bestConfidence: string } | null {
     let bestMatch: any = null;
     let bestConfidence = '';
+    const txAmount = tx[amountKey];
 
-    for (const inv of (invoices.results as any[]).filter(i => !usedInvoiceIds.has(i.id))) {
-      const amountMatch = Math.abs(tx.deposit_amount - inv.total) < 0.01;
+    for (const inv of invoices.filter(i => !usedInvoiceIds.has(i.id))) {
+      const amountMatch = Math.abs(txAmount - inv.total) < 0.01;
       if (!amountMatch) continue;
 
-      const descHasInv = tx.description.toUpperCase().includes(inv.invoice_number.toUpperCase())
-        || (tx.reference && tx.reference.toUpperCase().includes(inv.invoice_number.toUpperCase()));
+      const descHasInv = (tx.description || '').toUpperCase().includes((inv.invoice_number || '').toUpperCase())
+        || ((tx.reference || '').toUpperCase().includes((inv.invoice_number || '').toUpperCase()));
 
-      if (descHasInv) {
-        bestMatch = inv;
-        bestConfidence = 'high';
-        break;
-      }
+      if (descHasInv) { bestMatch = inv; bestConfidence = 'high'; break; }
 
       const txDate = new Date(tx.transaction_date);
       const issueDate = new Date(inv.issue_date);
@@ -268,40 +280,60 @@ bank.post('/auto-match', async (c) => {
       dueDate.setDate(dueDate.getDate() + 7);
 
       if (txDate >= issueDate && txDate <= dueDate) {
-        if (!bestMatch || bestConfidence !== 'high') {
-          bestMatch = inv;
-          bestConfidence = 'medium';
-        }
+        if (!bestMatch || bestConfidence !== 'high') { bestMatch = inv; bestConfidence = 'medium'; }
       } else if (!bestMatch) {
-        bestMatch = inv;
-        bestConfidence = 'low';
+        bestMatch = inv; bestConfidence = 'low';
       }
     }
+    return bestMatch ? { bestMatch, bestConfidence } : null;
+  }
 
-    if (bestMatch) {
+  // Match deposits → AR invoices
+  for (const tx of deposits.results as any[]) {
+    const result = findBestMatch(tx, arInvoices, 'deposit_amount');
+    if (result) {
+      const { bestMatch, bestConfidence } = result;
       const reason = bestConfidence === 'high'
-        ? `金額 $${tx.deposit_amount} 相符且描述含發票號 ${bestMatch.invoice_number}`
+        ? `Deposit $${tx.deposit_amount} matches invoice ${bestMatch.invoice_number} in description`
         : bestConfidence === 'medium'
-        ? `金額 $${tx.deposit_amount} 相符且日期在發票期間內`
-        : `金額 $${tx.deposit_amount} 相符`;
+        ? `Deposit $${tx.deposit_amount} matches invoice amount + date range`
+        : `Deposit $${tx.deposit_amount} matches invoice amount`;
 
       await db.prepare(
         `UPDATE bank_transactions SET invoice_id = ?, match_confidence = ?, match_status = 'suggested' WHERE id = ? AND deleted_at IS NULL`
       ).bind(bestMatch.id, bestConfidence, tx.id).run();
 
-      matched.push({
-        transaction_id: tx.id,
-        invoice_id: bestMatch.id,
-        invoice_number: bestMatch.invoice_number,
-        amount: tx.deposit_amount,
-        confidence: bestConfidence,
-        reason,
-      });
+      matched.push({ transaction_id: tx.id, invoice_id: bestMatch.id,
+        invoice_number: bestMatch.invoice_number, amount: tx.deposit_amount,
+        confidence: bestConfidence, reason, direction: 'deposit→AR' });
       usedInvoiceIds.add(bestMatch.id);
     }
   }
 
-  const unmatchedCount = (deposits.results as any[]).length - matched.length;
+  // Match withdrawals → AP invoices
+  for (const tx of withdrawals.results as any[]) {
+    const result = findBestMatch(tx, apInvoices, 'withdrawal_amount');
+    if (result) {
+      const { bestMatch, bestConfidence } = result;
+      const reason = bestConfidence === 'high'
+        ? `Withdrawal $${tx.withdrawal_amount} matches invoice ${bestMatch.invoice_number} in description`
+        : bestConfidence === 'medium'
+        ? `Withdrawal $${tx.withdrawal_amount} matches invoice amount + date range`
+        : `Withdrawal $${tx.withdrawal_amount} matches invoice amount`;
+
+      await db.prepare(
+        `UPDATE bank_transactions SET invoice_id = ?, match_confidence = ?, match_status = 'suggested' WHERE id = ? AND deleted_at IS NULL`
+      ).bind(bestMatch.id, bestConfidence, tx.id).run();
+
+      matched.push({ transaction_id: tx.id, invoice_id: bestMatch.id,
+        invoice_number: bestMatch.invoice_number, amount: tx.withdrawal_amount,
+        confidence: bestConfidence, reason, direction: 'withdrawal→AP' });
+      usedInvoiceIds.add(bestMatch.id);
+    }
+  }
+
+  const totalUnmatched = (deposits.results as any[]).length + (withdrawals.results as any[]).length;
+  const unmatchedCount = totalUnmatched - matched.length;
   return c.json({ matched, unmatched_count: unmatchedCount });
 });
 
