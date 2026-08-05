@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS journal_lines (
   description TEXT,
   debit REAL NOT NULL DEFAULT 0,
   credit REAL NOT NULL DEFAULT 0,
+  project TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
 

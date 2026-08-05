@@ -124,6 +124,7 @@ bookkeeping.get('/entries/:id', async (c) => {
 const lineSchema = z.object({
   account_code: z.string().min(1).max(20), account_name: z.string().min(1).max(200),
   description: z.string().max(500).optional(), debit: z.number().min(0).max(999999999).optional(), credit: z.number().min(0).max(999999999).optional(),
+  project: z.string().max(200).optional(),
 });
 
 const entrySchema = z.object({
@@ -163,8 +164,8 @@ bookkeeping.post('/entries', bookkeeperMiddleware, zValidator('json', entrySchem
   for (let i = 0; i < data.lines.length; i++) {
     const line = data.lines[i];
     await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, id, line.account_code, line.account_name, line.description || null, line.debit || 0, line.credit || 0, i).run();
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, id, line.account_code, line.account_name, line.description || null, line.debit || 0, line.credit || 0, line.project || null, i).run();
   }
 
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(id).first();
@@ -241,9 +242,9 @@ bookkeeping.post('/entries/:id/reverse', bookkeeperMiddleware, async (c) => {
   for (let i = 0; i < (lines.results as any[]).length; i++) {
     const line = (lines.results as any[])[i];
     await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).bind(`jl-${uuidv4().slice(0, 8)}`, revId, line.account_code, line.account_name,
-      `Reversal: ${line.description || ''}`, line.credit, line.debit, i).run();
+      `Reversal: ${line.description || ''}`, line.credit, line.debit, line.project || null, i).run();
   }
 
   const revEntry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(revId).first();
@@ -1171,8 +1172,8 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
       await db.prepare(
-        'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).bind(`jl-${uuidv4().slice(0, 8)}`, entryId, l.code, l.name, desc + invInfo, l.debit, l.credit, i).run();
+        'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(`jl-${uuidv4().slice(0, 8)}`, entryId, l.code, l.name, desc + invInfo, l.debit, l.credit, l.project || null, i).run();
     }
     created++;
   }
@@ -1211,12 +1212,12 @@ bookkeeping.post('/post-invoice/:id', bookkeeperMiddleware, async (c) => {
   ).bind(jeId, tenantId, jeNum, inv.issue_date, `Invoice ${inv.invoice_number}: ${inv.notes || 'Services'}`, 'invoice', invoiceId).run();
   // Dr AR
   await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', inv.invoice_number, inv.total, 0, 0).run();
+    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', inv.invoice_number, inv.total, 0, null, 0).run();
   // Cr Revenue
   await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '41101', 'Professional Services 專業服務收入', inv.invoice_number, 0, inv.total, 1).run();
+    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '41101', 'Professional Services 專業服務收入', inv.invoice_number, 0, inv.total, null, 1).run();
 
   await auditLog(db, user.id, 'post_invoice', 'invoice', invoiceId, { invoice_number: inv.invoice_number, total: inv.total });
   return c.json({ entry_id: jeId, entry_number: jeNum, invoice_id: invoiceId }, 201);
@@ -1250,12 +1251,12 @@ bookkeeping.post('/post-payment/:transactionId', bookkeeperMiddleware, async (c)
   ).bind(jeId, tenantId, jeNum, tx.transaction_date, `Payment for invoice ${tx.invoice_number || ''}`, 'payment', txId).run();
   // Dr Cash
   await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11101', 'Cash on Hand 庫存現金', tx.invoice_number || '', tx.deposit_amount, 0, 0).run();
+    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11101', 'Cash on Hand 庫存現金', tx.invoice_number || '', tx.deposit_amount, 0, null, 0).run();
   // Cr AR
   await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', tx.invoice_number || '', 0, tx.deposit_amount, 1).run();
+    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', tx.invoice_number || '', 0, tx.deposit_amount, null, 1).run();
 
   await auditLog(db, user.id, 'post_payment', 'payment', txId, { invoice_number: tx.invoice_number, amount: tx.deposit_amount });
   return c.json({ entry_id: jeId, entry_number: jeNum, transaction_id: txId }, 201);
@@ -1308,8 +1309,8 @@ bookkeeping.post('/year-end-close', bookkeeperMiddleware, async (c) => {
   for (const row of revAccounts.results as any[]) {
     if (Math.abs(row.balance || 0) < 0.01) continue;
     await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, row.account_code, row.account_name, `Close to RE`, Math.abs(row.balance), 0, sortOrder++).run();
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, row.account_code, row.account_name, `Close to RE`, Math.abs(row.balance), 0, null, sortOrder++).run();
   }
 
   // Close each Expense account individually (Credit expense to zero, Debit Retained Earnings)
@@ -1324,19 +1325,19 @@ bookkeeping.post('/year-end-close', bookkeeperMiddleware, async (c) => {
   for (const row of expAccounts.results as any[]) {
     if (Math.abs(row.balance || 0) < 0.01) continue;
     await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, row.account_code, row.account_name, `Close to RE`, 0, Math.abs(row.balance), sortOrder++).run();
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, row.account_code, row.account_name, `Close to RE`, 0, Math.abs(row.balance), null, sortOrder++).run();
   }
 
   // Net to Retained Earnings (balancing entry)
   if (netIncome > 0) {
     await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '32101', 'Retained Earnings b/f 上年度保留盈利', `Year ${fiscal_end_date.slice(0,4)} net income`, 0, netIncome, sortOrder++).run();
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '32101', 'Retained Earnings b/f 上年度保留盈利', `Year ${fiscal_end_date.slice(0,4)} net income`, 0, netIncome, null, sortOrder++).run();
   } else if (netIncome < 0) {
     await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '32101', 'Retained Earnings b/f 上年度保留盈利', `Year ${fiscal_end_date.slice(0,4)} net loss`, Math.abs(netIncome), 0, sortOrder++).run();
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '32101', 'Retained Earnings b/f 上年度保留盈利', `Year ${fiscal_end_date.slice(0,4)} net loss`, Math.abs(netIncome), 0, null, sortOrder++).run();
   }
 
   // Update opening balances for balance sheet accounts for new fiscal year
@@ -1408,12 +1409,12 @@ bookkeeping.post('/profits-tax-provision', bookkeeperMiddleware, async (c) => {
   ).bind(jeId, tenantId, jeNum, fiscal_end_date, `Profits Tax provision ${fiscal_end_date.slice(0,4)}`, 'tax_provision').run();
 
   await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '81101', 'Current Year Profits Tax 本年度利得稅', `Tax provision @${rate}%`, Math.round(taxAmount * 100) / 100, 0, 0).run();
+    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '81101', 'Current Year Profits Tax 本年度利得稅', `Tax provision @${rate}%`, Math.round(taxAmount * 100) / 100, 0, null, 0).run();
 
   await db.prepare(
-    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
-  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '21301', 'Profits Tax Payable 應付利得稅', `Tax provision @${rate}%`, 0, Math.round(taxAmount * 100) / 100, 1).run();
+    'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+  ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '21301', 'Profits Tax Payable 應付利得稅', `Tax provision @${rate}%`, 0, Math.round(taxAmount * 100) / 100, null, 1).run();
 
   await auditLog(db, user.id, 'tax_provision', 'tax', jeId, { fiscal_end_date, net_income: netIncome, tax_rate: rate, tax_amount: Math.round(taxAmount * 100) / 100 });
 
