@@ -1764,33 +1764,28 @@ files.post('/auto-match-invoices', async (c) => {
   const matched: any[] = [];
   const usedTxIds = new Set<string>();
 
+  // Match files to bank transactions by amount — return candidates only (user confirms)
   for (const file of docFiles.results as any[]) {
-    // Receipts always match deposits (money in)
     const isReceiptDoc = file.category === 'receipt';
     const isOutgoing = !isReceiptDoc && (file.direction === 'outgoing' || !file.direction);
     const candidates = (isReceiptDoc || isOutgoing) ? deposits.results : withdrawals.results;
     const amountKey = (isReceiptDoc || isOutgoing) ? 'deposit_amount' : 'withdrawal_amount';
-    const newStatus = (isReceiptDoc || isOutgoing) ? 'received' : 'paid';
+
+    // Find matching invoice for this file
+    let linkedInvoice: any = null;
+    if (isReceiptDoc) {
+      linkedInvoice = await db.prepare(
+        'SELECT id, invoice_number, total, direction FROM invoices WHERE file_id = ? AND user_id = ?'
+      ).bind(file.id, tenantId).first();
+    }
+    const invForFile = await db.prepare(
+      'SELECT id, invoice_number, total, direction FROM invoices WHERE file_id = ? AND user_id = ?'
+    ).bind(file.id, tenantId).first<{ id: string; invoice_number: string; total: number; direction: string }>();
 
     for (const tx of candidates as any[]) {
       if (usedTxIds.has(tx.id)) continue;
       if (Math.abs(file.amount - tx[amountKey]) < 0.01) {
         usedTxIds.add(tx.id);
-        await db.prepare(
-          `UPDATE file_records SET payment_status = ? WHERE id = ? AND deleted_at IS NULL`
-        ).bind(newStatus, file.id).run();
-
-        // Also update linked invoice's file_record status for receipt-invoice pairs
-        if (isReceiptDoc) {
-          const linked = await db.prepare(
-            'SELECT file_id FROM invoices WHERE id = (SELECT linked_invoice_id FROM invoices WHERE file_id = ?)'
-          ).bind(file.id).first<{ file_id: string | null }>();
-          if (linked?.file_id) {
-            await db.prepare("UPDATE file_records SET payment_status = 'received' WHERE id = ? AND deleted_at IS NULL")
-              .bind(linked.file_id).run();
-          }
-        }
-
         matched.push({
           file_id: file.id,
           filename: file.original_name || file.filename,
@@ -1799,7 +1794,10 @@ files.post('/auto-match-invoices', async (c) => {
           amount: file.amount,
           transaction_id: tx.id,
           transaction_date: tx.transaction_date,
-          new_status: newStatus,
+          transaction_desc: tx.description?.slice(0, 60),
+          is_deposit: !!(isReceiptDoc || isOutgoing),
+          invoice_id: invForFile?.id || null,
+          invoice_number: invForFile?.invoice_number || null,
         });
         break;
       }
@@ -1807,6 +1805,40 @@ files.post('/auto-match-invoices', async (c) => {
   }
 
   return c.json({ matched, total_docs: (docFiles.results as any[]).length });
+});
+
+// ── Confirm a file→bank match: link the bank transaction to the invoice ──
+files.post('/confirm-match', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const body = await c.req.json();
+  const { transaction_id, file_id, invoice_id } = body;
+  if (!transaction_id || !file_id) return c.json({ error: 'transaction_id and file_id required' }, 400);
+
+  // Update file payment status
+  await db.prepare(
+    "UPDATE file_records SET payment_status = 'matched', updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
+  ).bind(file_id, tenantId).run();
+
+  // Link bank transaction to invoice if we have one
+  if (invoice_id) {
+    const inv = await db.prepare('SELECT id FROM invoices WHERE id = ? AND user_id = ?')
+      .bind(invoice_id, tenantId).first();
+    if (inv) {
+      await db.prepare(
+        `UPDATE bank_transactions SET invoice_id = ?, match_status = 'confirmed', match_confidence = 'manual'
+         WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+      ).bind(invoice_id, transaction_id, tenantId).run();
+
+      // Mark invoice as paid
+      await db.prepare(
+        "UPDATE invoices SET status = 'paid', paid_date = (SELECT transaction_date FROM bank_transactions WHERE id = ?), updated_at = datetime('now') WHERE id = ?"
+      ).bind(transaction_id, invoice_id).run();
+    }
+  }
+
+  return c.json({ success: true, transaction_id, file_id, invoice_id });
 });
 
 // ── Update file direction manually ──
