@@ -1,3 +1,11 @@
+/**
+ * OBSOLETE — Retired 2026-08-05.
+ * Bank→invoice linking has been merged into the Bank Statements page
+ * (unified LinkedDocModal with invoice + card statement tabs, per-statement
+ * unlinked counts, skip-link opt-out, and ⚠ flags).
+ * This file is kept for reference in case the standalone reconciliation
+ * view is needed again.
+ */
 import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';

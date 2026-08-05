@@ -131,11 +131,17 @@ bank.get('/', async (c) => {
   const year = c.req.query('year') || '';
   const showDrafts = c.req.query('show_drafts') === '1';
   const onlyDrafts = c.req.query('only_drafts') === '1';
-  let q = `SELECT id, file_name, bank_name, account_number, branch, currency, account_type,
-           statement_year, statement_month, period_start, period_end,
-           opening_balance, closing_balance, page_count, ocr_text, status,
-           balance_status, balance_check, created_at
-           FROM bank_statements WHERE user_id = ? AND deleted_at IS NULL`;
+  let q = `SELECT bs.id, bs.file_name, bs.bank_name, bs.account_number, bs.branch, bs.currency, bs.account_type,
+           bs.statement_year, bs.statement_month, bs.period_start, bs.period_end,
+           bs.opening_balance, bs.closing_balance, bs.page_count, bs.ocr_text, bs.status,
+           bs.balance_status, bs.balance_check, bs.created_at,
+           (SELECT COUNT(*) FROM bank_transactions bt
+            WHERE bt.bank_statement_id = bs.id AND bt.deleted_at IS NULL
+            AND bt.invoice_id IS NULL AND bt.card_statement_id IS NULL
+            AND (bt.match_status IS NULL OR bt.match_status NOT IN ('skipped','suggested'))) as unlinked_count,
+           (SELECT COUNT(*) FROM bank_transactions bt
+            WHERE bt.bank_statement_id = bs.id AND bt.deleted_at IS NULL) as tx_count
+           FROM bank_statements bs WHERE bs.user_id = ? AND bs.deleted_at IS NULL`;
   const p: any[] = [tenantId];
   if (onlyDrafts) {
     q += " AND status = 'draft'";
@@ -539,7 +545,7 @@ bank.patch('/transactions/:id/match', async (c) => {
     if (!inv) return c.json({ error: 'Invoice not found' }, 404);
 
     await db.prepare(
-      `UPDATE bank_transactions SET invoice_id = ?, match_confidence = 'manual', match_status = 'matched' WHERE id = ? AND deleted_at IS NULL`
+      `UPDATE bank_transactions SET invoice_id = ?, match_confidence = 'manual', match_status = 'confirmed' WHERE id = ? AND deleted_at IS NULL`
     ).bind(invoice_id, txId).run();
 
     await db.prepare(

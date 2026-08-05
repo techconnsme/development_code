@@ -42,7 +42,6 @@ const navGroups = [
     { key: 'cardStatements', label: 'Card Statements', to: '/card-statements' },
     { key: 'invoices', label: 'Invoices', to: '/invoices' },
     { key: 'receipts', label: 'Receipts', to: '/expense-receipts' },
-    { key: 'reconciliation', label: 'Bank Reconciliation', to: '/reconciliation' },
     { key: 'ap', label: 'Accounts Payable (AP)', to: '/ap' },
     { key: 'ar', label: 'Accounts Receivable (AR)', to: '/ar' },
     { key: 'payroll', label: 'Payroll', to: '/payroll' },

@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil, CreditCard, AlertTriangle } from 'lucide-react';
+import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil, CreditCard, AlertTriangle, Ban, Sparkles, CheckCircle2 } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
 import { useAuth } from '../contexts/AuthContext';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
@@ -50,6 +50,7 @@ export default function BankStatements() {
   const [aiLoading, setAiLoading] = useState<string | null>(null);
   const [reconData, setReconData] = useState<any>(null);
   const [hideReconciledCoa, setHideReconciledCoa] = useState(true);
+  const [autoMatchResults, setAutoMatchResults] = useState<any[] | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['bank-statements'],
@@ -101,7 +102,11 @@ export default function BankStatements() {
     mutationFn: () => api('/bank-statements/auto-match', { method: 'POST' }),
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
-      toast.info(tr(`Auto-match done: ${data.matched?.length || 0} suggested, ${data.unmatched_count || 0} unmatched`, `配對完成：${data.matched?.length || 0} 筆建議，${data.unmatched_count || 0} 筆未配對`, `配对完成：${data.matched?.length || 0} 笔建议，${data.unmatched_count || 0} 笔未配对`));
+      if (data.matched?.length > 0) {
+        setAutoMatchResults(data.matched);
+      } else {
+        toast.info(tr('No matches found. All deposits are either already matched or have no invoice candidates.', '沒有找到配對。所有存款要麼已配對，要麼沒有發票候選。', '没有找到配对。所有存款要么已配对，要么没有发票候选。'));
+      }
     },
   });
 
@@ -237,6 +242,14 @@ export default function BankStatements() {
                           {s.closing_balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </span>
                       )}
+                      {s.tx_count > 0 && s.unlinked_count > 0 && (
+                        <span className="text-xs text-amber-600 font-medium">
+                          ⚠ {s.unlinked_count}/{s.tx_count} unlinked ({Math.round(s.unlinked_count / s.tx_count * 100)}%)
+                        </span>
+                      )}
+                      {s.tx_count > 0 && s.unlinked_count === 0 && (
+                        <span className="text-xs text-green-600 font-medium">✓ All linked</span>
+                      )}
                     </div>
                   </div>
                   <div className="flex gap-2 flex-shrink-0 ml-2 items-center" onClick={e => e.stopPropagation()}>
@@ -347,6 +360,12 @@ export default function BankStatements() {
                               }}
                                 className="px-2 py-1 text-xs rounded border hover:bg-green-100">
                                 {tr('🔍 Reconcile', '🔍 對賬 Reconcile', '🔍 对账 Reconcile')}
+                              </button>
+                              <button onClick={() => autoMatchMut.mutate()}
+                                disabled={autoMatchMut.isPending}
+                                className="px-2 py-1 text-xs rounded border hover:bg-blue-100 flex items-center gap-1">
+                                <Sparkles className="h-3 w-3" />
+                                {autoMatchMut.isPending ? '...' : tr('Auto-Match Invoices', '自動配對發票', '自动配对发票')}
                               </button>
                               <button onClick={() => autoMatchCardsMut.mutate()}
                                 disabled={autoMatchCardsMut.isPending}
@@ -528,24 +547,23 @@ export default function BankStatements() {
                                         </button>
                                       </span>
                                     )}
-                                    {/* ── Skipped (no link needed) ── */}
+                                    {/* ── Opted out (no link needed) ── */}
                                     {!tx.card_statement_id && !tx.invoice_number && tx.match_status === 'skipped' && (
-                                      <span className="inline-flex items-center gap-1 text-xs text-gray-500 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded cursor-pointer"
-                                        onClick={() => skipLinkMut.mutate(tx.id)}
-                                        title="Click to undo — this transaction needs a link">
-                                        Skipped <X className="h-2.5 w-2.5" />
-                                      </span>
+                                      <button onClick={() => skipLinkMut.mutate(tx.id)}
+                                        className="text-gray-400 hover:text-amber-500" title="Undo — mark as needing a link">
+                                        <Ban className="h-3.5 w-3.5" />
+                                      </button>
                                     )}
-                                    {/* ── Unlinked (needs action) ── */}
+                                    {/* ── Two-icon row: link or opt-out ── */}
                                     {!tx.card_statement_id && !tx.invoice_number && tx.match_status !== 'suggested' && tx.match_status !== 'skipped' && (
-                                      <div className="flex items-center gap-1 justify-center">
+                                      <div className="flex items-center gap-1.5 justify-center">
                                         <button onClick={() => setMatchTxId(tx.id)}
-                                          className="text-xs text-muted-foreground hover:text-primary" title="Link to invoice or card statement">
+                                          className="text-muted-foreground hover:text-primary" title="Link to invoice or card statement">
                                           <Link2 className="h-3.5 w-3.5" />
                                         </button>
                                         <button onClick={() => skipLinkMut.mutate(tx.id)}
-                                          className="text-[10px] text-muted-foreground hover:text-amber-600" title="Mark as no link needed">
-                                          Skip
+                                          className="text-muted-foreground hover:text-gray-500" title="No link needed — opt out">
+                                          <Ban className="h-3.5 w-3.5" />
                                         </button>
                                       </div>
                                     )}
@@ -682,6 +700,23 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
           onLinkCard={(csId) => {
             cardLinkMut.mutate({ txId: matchTxId, csId, action: 'link' });
             setMatchTxId(null);
+          }}
+        />
+      )}
+
+      {/* Auto-Match Review Modal */}
+      {autoMatchResults && (
+        <AutoMatchReviewModal
+          matches={autoMatchResults}
+          onConfirm={(txId, invoiceId) => {
+            confirmMatchMut.mutate({ txId, invoiceId });
+          }}
+          onReject={(txId) => {
+            unlinkMut.mutate(txId);
+          }}
+          onClose={() => {
+            setAutoMatchResults(null);
+            queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
           }}
         />
       )}
@@ -975,6 +1010,90 @@ function LinkedDocModal({ txId, onClose, onLinkInvoice, onLinkCard }: {
         <div className="flex justify-end">
           <button onClick={onClose} className="px-4 py-2 text-sm border rounded-md hover:bg-muted">Cancel</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Auto-Match Review Modal ──
+function AutoMatchReviewModal({ matches, onConfirm, onReject, onClose }: {
+  matches: any[];
+  onConfirm: (txId: string, invoiceId: string) => void;
+  onReject: (txId: string) => void;
+  onClose: () => void;
+}) {
+  const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
+  const [rejected, setRejected] = useState<Set<string>>(new Set());
+  const [processing, setProcessing] = useState<string | null>(null);
+
+  const pending = matches.filter(m => !confirmed.has(m.transaction_id) && !rejected.has(m.transaction_id));
+
+  const handleConfirm = async (txId: string, invoiceId: string) => {
+    setProcessing(txId);
+    onConfirm(txId, invoiceId);
+    setConfirmed(prev => new Set(prev).add(txId));
+    setProcessing(null);
+  };
+
+  const handleReject = (txId: string) => {
+    onReject(txId);
+    setRejected(prev => new Set(prev).add(txId));
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="bg-card border rounded-xl p-6 w-full max-w-2xl mx-4 space-y-4 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-blue-600" />
+            Auto-Match Suggestions ({confirmed.size + rejected.size}/{matches.length})
+          </h3>
+          <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="h-4 w-4" /></button>
+        </div>
+
+        {pending.length === 0 ? (
+          <div className="text-center py-8 space-y-2">
+            <CheckCircle2 className="h-8 w-8 text-green-500 mx-auto" />
+            <p className="text-sm font-medium">{tr('All suggestions reviewed!', '所有建議已審核！', '所有建议已审核！')}</p>
+            <button onClick={onClose} className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm">
+              {tr('Close', '關閉', '关闭')}
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="text-xs text-muted-foreground">
+              {tr('Review each suggestion below. Confirm to link, or reject to skip.', '請逐一審核以下建議。確認以連結，或拒絕以跳過。', '请逐一审核以下建议。确认以连结，或拒绝以跳过。')}
+            </div>
+            <div className="space-y-2 overflow-y-auto flex-1">
+              {pending.map(m => (
+                <div key={m.transaction_id} className={`border rounded-lg p-3 flex items-center gap-4 ${processing === m.transaction_id ? 'opacity-50' : ''}`}>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        m.confidence === 'high' ? 'bg-green-100 text-green-700' :
+                        m.confidence === 'medium' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
+                      }`}>{m.confidence?.toUpperCase() || 'LOW'}</span>
+                      <span className="text-sm font-medium truncate">{m.invoice_number}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5 truncate">{m.reason}</p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => handleConfirm(m.transaction_id, m.invoice_id)}
+                      disabled={processing === m.transaction_id}
+                      className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-50">
+                      ✓ Confirm
+                    </button>
+                    <button onClick={() => handleReject(m.transaction_id)}
+                      disabled={processing === m.transaction_id}
+                      className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-xs hover:bg-red-50 disabled:opacity-50">
+                      ✗ Reject
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

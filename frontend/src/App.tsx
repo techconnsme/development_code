@@ -37,7 +37,7 @@ import UserManagement from './pages/UserManagement';
 import AdminApplications from './pages/AdminApplications';
 import AdminCompanyView from './pages/AdminCompanyView';
 import AuditLog from './pages/AuditLog';
-import Reconciliation from './pages/Reconciliation';
+// import Reconciliation from './pages/Reconciliation'; // OBSOLETE — merged into Bank Statements
 import RecycleBin from './pages/RecycleBin';
 import ExpenseReceipts from './pages/ExpenseReceipts';
 import Modules from './pages/Modules';
@@ -153,7 +153,7 @@ function AppRoutes() {
               <Route path="/fixed-assets" element={<ProtectedRoute><FeatureGuard><FixedAssets /></FeatureGuard></ProtectedRoute>} />
       <Route path="/bank-statements" element={<ProtectedRoute><FeatureGuard><BankStatements /></FeatureGuard></ProtectedRoute>} />
       <Route path="/bank-statements/review/:id" element={<ProtectedRoute><FeatureGuard><BankStatementReview /></FeatureGuard></ProtectedRoute>} />
-      <Route path="/reconciliation" element={<ProtectedRoute><FeatureGuard><Reconciliation /></FeatureGuard></ProtectedRoute>} />
+{/* <Route path="/reconciliation" element={<ProtectedRoute><FeatureGuard><Reconciliation /></FeatureGuard></ProtectedRoute>} /> OBSOLETE — merged into Bank Statements */}
       <Route path="/recycle-bin" element={<ProtectedRoute><FeatureGuard><RecycleBin /></FeatureGuard></ProtectedRoute>} />
       <Route path="/todos" element={<ProtectedRoute><Todos /></ProtectedRoute>} />
       <Route path="/expense-receipts" element={<ProtectedRoute><FeatureGuard><ExpenseReceipts /></FeatureGuard></ProtectedRoute>} />
