@@ -75,12 +75,12 @@ function getDepthBgClass(code: string): string {
   if (!code) return '';
   if (isParentCode(code)) {
     const depth = getDepth(code);
-    if (depth === 0) return 'bg-slate-300 dark:bg-slate-600';
-    if (depth === 1) return 'bg-slate-200 dark:bg-slate-700';
-    if (depth === 2) return 'bg-slate-100 dark:bg-slate-800';
+    if (depth === 0) return 'bg-slate-100';
+    if (depth === 1) return 'bg-slate-50';
+    if (depth === 2) return 'bg-white';
     return '';
   }
-  return 'bg-slate-50 dark:bg-slate-800/50';
+  return 'bg-white';
 }
 
 /** Collect all descendant codes (children, grandchildren, etc.) for cascade operations */

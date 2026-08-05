@@ -221,7 +221,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   function statusBadge(s: string) {
     const styles: Record<string, string> = {
       draft: 'bg-muted text-muted-foreground',
-      posted: 'bg-green-100 text-green-700 dark:bg-green-950/40',
+      posted: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
       reconciled: 'bg-blue-100 text-blue-700 dark:bg-blue-950/40',
       stale: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40',
     };
@@ -536,7 +536,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
               <span className="flex-1 font-medium text-sm">
                 {tr('Revenue', '收入', '收入')}
               </span>
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-950/40">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-200">
                 {(incomeStatement.revenue_accounts || []).length} {tr('COA Accounts', '科目', '科目')}
               </span>
               <span className="font-semibold text-green-600 text-sm ml-2">
@@ -589,7 +589,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
               <span className="flex-1 font-medium text-sm">
                 {tr('Expenses', '支出', '支出')}
               </span>
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 dark:bg-red-950/40">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800 border border-rose-200">
                 {(incomeStatement.expense_accounts || []).length} {tr('COA Accounts', '科目', '科目')}
               </span>
               <span className="font-semibold text-red-600 text-sm ml-2">
@@ -649,7 +649,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
 
           {/* Assets */}
           <div className="bg-card border rounded-xl overflow-hidden">
-            <div className="px-4 py-2.5 bg-blue-50 dark:bg-blue-950/30 border-b font-semibold text-blue-700 dark:text-blue-300">
+            <div className="px-4 py-2.5 bg-blue-50 text-blue-900 font-bold border-b">
               資產 Assets
             </div>
             <table className="w-full text-sm">
@@ -670,7 +670,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
 
           {/* Liabilities */}
           <div className="bg-card border rounded-xl overflow-hidden">
-            <div className="px-4 py-2.5 bg-red-50 dark:bg-red-950/30 border-b font-semibold text-red-700 dark:text-red-300">
+            <div className="px-4 py-2.5 bg-rose-50 text-rose-900 font-bold border-b">
               負債 Liabilities
             </div>
             <table className="w-full text-sm">
@@ -695,7 +695,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
 
           {/* Equity */}
           <div className="bg-card border rounded-xl overflow-hidden">
-            <div className="px-4 py-2.5 bg-green-50 dark:bg-green-950/30 border-b font-semibold text-green-700 dark:text-green-300">
+            <div className="px-4 py-2.5 bg-emerald-50 text-emerald-900 font-bold border-b">
               股東權益 Equity
             </div>
             <table className="w-full text-sm">
