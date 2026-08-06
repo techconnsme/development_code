@@ -581,16 +581,14 @@ export default function BankStatementReview() {
               <label className="block">
                 <span className="text-xs text-muted-foreground flex items-center justify-between">
                   <span>{tr('Closing Balance', 'Closing Balance 期末餘額', 'Closing Balance 期末余额')}</span>
-                  {totals.closingMismatch && (
-                    <button
-                      type="button"
-                      onClick={() => { setClosingManuallyEdited(false); upd('closing_balance', totals.computedClosing); }}
-                      className="text-[10px] text-blue-600 underline"
-                      title="Set to computed value (opening + deposits − withdrawals)"
-                    >
-                      use computed
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => { setClosingManuallyEdited(false); upd('closing_balance', totals.computedClosing); }}
+                    className={`text-xs underline ${totals.closingMismatch ? 'text-blue-600 font-medium' : 'text-muted-foreground hover:text-blue-600'}`}
+                    title={tr('Set to computed value (opening + deposits − withdrawals)', '設定為計算值（期初 + 存入 - 支出）', '设定为计算值（期初 + 存入 - 支出）')}
+                  >
+                    {totals.computedClosing !== 0 ? `= ${money(totals.computedClosing)}` : tr('auto-fill', '自動填寫', '自动填写')}
+                  </button>
                 </span>
                 <MoneyInput
                   value={merged.closing_balance ?? null}
