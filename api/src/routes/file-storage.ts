@@ -1197,7 +1197,7 @@ files.get('/', async (c) => {
     FROM file_records fr
     LEFT JOIN invoices i ON i.file_id = fr.id AND i.user_id = fr.user_id
     LEFT JOIN bank_statements bs ON bs.r2_key = fr.r2_key AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
-    LEFT JOIN card_statements cs ON cs.file_id = fr.id AND cs.user_id = fr.user_id
+    LEFT JOIN card_statements cs ON cs.r2_key = fr.r2_key AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
     WHERE fr.user_id = ? AND fr.deleted_at IS NULL`;
   const params: unknown[] = [tenantId];
 
