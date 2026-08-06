@@ -384,46 +384,49 @@ invoices.delete('/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// ── Auto-match receipts to AP invoices ──
+// ── Auto-match receipts to invoices (returns suggestions, does NOT link) ──
+// ?direction=incoming (AP: receipt proves you paid a supplier bill)
+// ?direction=outgoing (AR: receipt proves customer paid you)
 invoices.post('/auto-match-receipts', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
+  const direction = c.req.query('direction') || 'incoming';
 
-  // Find unmatched receipts (have receipt_number, are incoming/AP direction)
+  // Find unmatched receipts (have receipt_number, not yet linked, have total > 0)
+  // Receipts can be either direction — they are the "proof of payment" document
   const receipts = await db.prepare(
-    `SELECT id, invoice_number, receipt_number, total, vendor_name, paid_date
+    `SELECT id, invoice_number, receipt_number, total, vendor_name, customer_name, paid_date, direction
      FROM invoices WHERE user_id = ? AND receipt_number IS NOT NULL
-     AND linked_invoice_id IS NULL AND total > 0`
+     AND linked_invoice_id IS NULL AND total > 0 AND deleted_at IS NULL`
   ).bind(tenantId).all();
 
-  // Find unpaid AP invoices
-  const apInvoices = await db.prepare(
-    `SELECT id, invoice_number, total, vendor_name, status
-     FROM invoices WHERE user_id = ? AND direction = 'incoming'
-     AND receipt_number IS NULL AND status NOT IN ('paid', 'cancelled') AND total > 0`
-  ).bind(tenantId).all();
+  // Find unpaid invoices for the target direction
+  const targetDirection = direction === 'outgoing' ? 'outgoing' : 'incoming';
+  const unpaidInvoices = await db.prepare(
+    `SELECT id, invoice_number, total, vendor_name, customer_name, status, issue_date
+     FROM invoices WHERE user_id = ? AND direction = ?
+     AND receipt_number IS NULL AND status NOT IN ('paid', 'cancelled') AND total > 0 AND deleted_at IS NULL`
+  ).bind(tenantId, targetDirection).all();
 
   const matched: any[] = [];
-  const usedApIds = new Set<string>();
+  const usedInvoiceIds = new Set<string>();
 
   for (const receipt of (receipts.results as any[])) {
-    for (const ap of (apInvoices.results as any[])) {
-      if (usedApIds.has(ap.id)) continue;
-      if (Math.abs(receipt.total - ap.total) < 0.02) {
-        // Link receipt → AP invoice (receipt proves payment of supplier bill)
-        await db.prepare('UPDATE invoices SET linked_invoice_id = ? WHERE id = ? AND user_id = ?')
-          .bind(ap.id, receipt.id, tenantId).run();
-        await db.prepare("UPDATE invoices SET status = 'paid', paid_date = ?, linked_invoice_id = ? WHERE id = ? AND user_id = ?")
-          .bind(receipt.paid_date || receipt.issue_date || new Date().toISOString().split('T')[0], receipt.id, ap.id, tenantId).run();
-        usedApIds.add(ap.id);
+    for (const inv of (unpaidInvoices.results as any[])) {
+      if (usedInvoiceIds.has(inv.id)) continue;
+      if (Math.abs(receipt.total - inv.total) < 0.02) {
+        usedInvoiceIds.add(inv.id);
         matched.push({
           receipt_id: receipt.id,
           receipt_number: receipt.receipt_number || receipt.invoice_number,
           receipt_total: receipt.total,
-          invoice_id: ap.id,
-          invoice_number: ap.invoice_number,
-          invoice_total: ap.total,
+          receipt_vendor: receipt.vendor_name || receipt.customer_name || '',
+          invoice_id: inv.id,
+          invoice_number: inv.invoice_number,
+          invoice_total: inv.total,
+          invoice_vendor: inv.vendor_name || inv.customer_name || '',
+          direction: targetDirection,
         });
         break;
       }
@@ -433,8 +436,41 @@ invoices.post('/auto-match-receipts', async (c) => {
   return c.json({
     matched,
     total_receipts: (receipts.results as any[]).length,
-    total_ap: (apInvoices.results as any[]).length,
+    total_invoices: (unpaidInvoices.results as any[]).length,
   });
+});
+
+// ── Confirm a receipt-to-invoice match ──
+invoices.post('/confirm-receipt-match', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const { receipt_id, invoice_id } = await c.req.json();
+
+  if (!receipt_id || !invoice_id) {
+    return c.json({ error: 'receipt_id and invoice_id are required' }, 400);
+  }
+
+  // Verify both exist and belong to this tenant
+  const receipt = await db.prepare(
+    'SELECT id, paid_date, issue_date FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(receipt_id, tenantId).first<any>();
+
+  const invoice = await db.prepare(
+    'SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(invoice_id, tenantId).first<any>();
+
+  if (!receipt || !invoice) {
+    return c.json({ error: 'Receipt or invoice not found' }, 404);
+  }
+
+  // Link receipt → invoice (receipt proves payment)
+  await db.prepare('UPDATE invoices SET linked_invoice_id = ? WHERE id = ? AND user_id = ?')
+    .bind(invoice_id, receipt_id, tenantId).run();
+  await db.prepare("UPDATE invoices SET status = 'paid', paid_date = ?, linked_invoice_id = ? WHERE id = ? AND user_id = ?")
+    .bind(receipt.paid_date || receipt.issue_date || new Date().toISOString().split('T')[0], receipt_id, invoice_id, tenantId).run();
+
+  return c.json({ success: true, receipt_id, invoice_id });
 });
 
 export { invoices as invoiceRoutes };

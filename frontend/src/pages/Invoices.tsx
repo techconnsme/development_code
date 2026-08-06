@@ -6,6 +6,7 @@ import { api, WORKER_API_BASE } from '../lib/api';
 import { Plus, Search, FileText, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Link2 } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 import { useToast } from '../components/Toast';
+import { ReceiptMatchReviewModal } from './AP';
 
 // Authenticated PDF download: fetches with Bearer token, opens as blob URL
 async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
@@ -42,6 +43,7 @@ export default function Invoices() {
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
+  const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
   const [form, setForm] = useState({ invoice_number: '', customer_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   const [productSearch, setProductSearch] = useState<Record<number, string>>({});
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
@@ -94,6 +96,11 @@ export default function Invoices() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices'] }),
   });
 
+  const confirmReceiptMatchMut = useMutation({
+    mutationFn: (body: { receipt_id: string; invoice_id: string }) => api('/invoices/confirm-receipt-match', { method: 'POST', body }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices'] }),
+  });
+
   function addItem() {
     setForm({ ...form, items: [...form.items, { description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   }
@@ -134,8 +141,7 @@ export default function Invoices() {
             try {
               const result = await api('/invoices/auto-match-receipts', { method: 'POST' });
               if (result.matched?.length > 0) {
-                toast.success(`${result.matched.length} receipt(s) matched to AP invoices`);
-                queryClient.invalidateQueries({ queryKey: ['invoices'] });
+                setReceiptMatchResults(result.matched);
               } else {
                 toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
               }
@@ -451,6 +457,20 @@ export default function Invoices() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Receipt Match Review Modal */}
+      {receiptMatchResults && (
+        <ReceiptMatchReviewModal
+          matches={receiptMatchResults}
+          onConfirm={(receiptId, invoiceId) => {
+            confirmReceiptMatchMut.mutate({ receipt_id: receiptId, invoice_id: invoiceId });
+          }}
+          onClose={() => {
+            setReceiptMatchResults(null);
+            queryClient.invalidateQueries({ queryKey: ['invoices'] });
+          }}
+        />
       )}
     </div>
   );

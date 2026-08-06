@@ -51,6 +51,7 @@ export default function BankStatements() {
   const [reconData, setReconData] = useState<any>(null);
   const [hideReconciledCoa, setHideReconciledCoa] = useState(true);
   const [autoMatchResults, setAutoMatchResults] = useState<any[] | null>(null);
+  const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['bank-statements'],
@@ -167,7 +168,11 @@ export default function BankStatements() {
     mutationFn: () => api('/bank-statements/auto-match-cards', { method: 'POST' }),
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
-      toast.info(tr(`Card auto-match: ${data.matched?.length || 0} suggested, ${data.unmatched_count || 0} unmatched`, `信用卡配對：${data.matched?.length || 0} 筆建議，${data.unmatched_count || 0} 筆未配對`, `信用卡配对：${data.matched?.length || 0} 笔建议，${data.unmatched_count || 0} 笔未配对`));
+      if (data.matched?.length > 0) {
+        setCardMatchResults(data.matched);
+      } else {
+        toast.info(tr('No card matches found.', '沒有找到信用卡配對。', '没有找到信用卡配对。'));
+      }
     },
   });
 
@@ -721,6 +726,23 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
         />
       )}
 
+      {/* Card Match Review Modal */}
+      {cardMatchResults && (
+        <CardMatchReviewModal
+          matches={cardMatchResults}
+          onConfirm={(txId, csId) => {
+            cardLinkMut.mutate({ txId, csId, action: 'link' });
+          }}
+          onReject={(txId) => {
+            skipLinkMut.mutate(txId);
+          }}
+          onClose={() => {
+            setCardMatchResults(null);
+            queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
+          }}
+        />
+      )}
+
       {/* Bank Reconciliation Modal */}
       {reconData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setReconData(null)}>
@@ -1107,8 +1129,21 @@ function AutoMatchReviewModal({ matches, onConfirm, onReject, onClose }: {
           </div>
         ) : (
           <>
-            <div className="text-xs text-muted-foreground">
-              {tr('Review each suggestion below. Confirm to link, or reject to skip.', '請逐一審核以下建議。確認以連結，或拒絕以跳過。', '请逐一审核以下建议。确认以连结，或拒绝以跳过。')}
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {tr('Review each suggestion below. Confirm to link, or reject to skip.', '請逐一審核以下建議。確認以連結，或拒絕以跳過。', '请逐一审核以下建议。确认以连结，或拒绝以跳过。')}
+              </span>
+              <button
+                onClick={() => {
+                  pending.forEach(m => {
+                    onConfirm(m.transaction_id, m.invoice_id);
+                    setConfirmed(prev => new Set(prev).add(m.transaction_id));
+                  });
+                }}
+                className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700"
+              >
+                {tr('Accept All', '全部接受', '全部接受')} ({pending.length})
+              </button>
             </div>
             <div className="space-y-2 overflow-y-auto flex-1">
               {pending.map(m => (
@@ -1132,6 +1167,95 @@ function AutoMatchReviewModal({ matches, onConfirm, onReject, onClose }: {
                     <button onClick={() => handleReject(m.transaction_id)}
                       disabled={processing === m.transaction_id}
                       className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-xs hover:bg-red-50 disabled:opacity-50">
+                      ✗ Reject
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Card Match Review Modal ──
+function CardMatchReviewModal({ matches, onConfirm, onReject, onClose }: {
+  matches: any[];
+  onConfirm: (txId: string, csId: string) => void;
+  onReject: (txId: string) => void;
+  onClose: () => void;
+}) {
+  const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
+  const [rejected, setRejected] = useState<Set<string>>(new Set());
+
+  const pending = matches.filter(m => !confirmed.has(m.transaction_id) && !rejected.has(m.transaction_id));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="bg-card border rounded-xl p-6 w-full max-w-2xl mx-4 space-y-4 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold flex items-center gap-2">
+            <CreditCard className="h-5 w-5 text-purple-600" />
+            Card Match Suggestions ({confirmed.size + rejected.size}/{matches.length})
+          </h3>
+          <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="h-4 w-4" /></button>
+        </div>
+
+        {pending.length === 0 ? (
+          <div className="text-center py-8 space-y-2">
+            <CheckCircle2 className="h-8 w-8 text-green-500 mx-auto" />
+            <p className="text-sm font-medium">{tr('All suggestions reviewed!', '所有建議已審核！', '所有建议已审核！')}</p>
+            <button onClick={onClose} className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm">
+              {tr('Close', '關閉', '关闭')}
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {tr('Review each match. Confirm to link the bank transaction to a card statement.', '審核每個配對。確認後將銀行交易連結至信用卡月結單。', '审核每个配对。确认后将银行交易连结至信用卡月结单。')}
+              </span>
+              <button
+                onClick={() => {
+                  pending.forEach(m => {
+                    onConfirm(m.transaction_id, m.card_statement_id);
+                    setConfirmed(prev => new Set(prev).add(m.transaction_id));
+                  });
+                }}
+                className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700"
+              >
+                {tr('Accept All', '全部接受', '全部接受')} ({pending.length})
+              </button>
+            </div>
+            <div className="space-y-2 overflow-y-auto flex-1">
+              {pending.map(m => (
+                <div key={m.transaction_id} className="border rounded-lg p-3 flex items-center gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        m.confidence === 'high' ? 'bg-green-100 text-green-700' :
+                        m.confidence === 'medium' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
+                      }`}>{m.confidence?.toUpperCase() || 'MEDIUM'}</span>
+                      <span className="text-sm font-medium truncate">{m.card_issuer}</span>
+                      {m.card_last4 && <span className="text-xs text-muted-foreground">*{m.card_last4}</span>}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5 truncate">{m.reason}</p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => {
+                      onConfirm(m.transaction_id, m.card_statement_id);
+                      setConfirmed(prev => new Set(prev).add(m.transaction_id));
+                    }}
+                      className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700">
+                      ✓ Confirm
+                    </button>
+                    <button onClick={() => {
+                      onReject(m.transaction_id);
+                      setRejected(prev => new Set(prev).add(m.transaction_id));
+                    }}
+                      className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-xs hover:bg-red-50">
                       ✗ Reject
                     </button>
                   </div>

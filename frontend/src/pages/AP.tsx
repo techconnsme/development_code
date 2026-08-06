@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
-import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy } from 'lucide-react';
+import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Link2 } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
+import { useToast } from '../components/Toast';
 
 // Authenticated PDF download: fetches with Bearer token, opens as blob URL
 async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
@@ -32,6 +33,7 @@ async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
 
 export default function AP() {
   const { i18n } = useTranslation();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
@@ -39,6 +41,7 @@ export default function AP() {
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
+  const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
   const [form, setForm] = useState({ invoice_number: '', supplier_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   const [productSearch, setProductSearch] = useState<Record<number, string>>({});
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
@@ -85,6 +88,11 @@ export default function AP() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices-ap'] }),
   });
 
+  const confirmReceiptMatchMut = useMutation({
+    mutationFn: (body: { receipt_id: string; invoice_id: string }) => api('/invoices/confirm-receipt-match', { method: 'POST', body }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices-ap'] }),
+  });
+
   function addItem() {
     setForm({ ...form, items: [...form.items, { description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   }
@@ -122,10 +130,25 @@ export default function AP() {
           <h2 className="text-2xl font-bold">{tr('Accounts Payable (AP)', '應付帳款 AP', '应付账款 AP')}</h2>
           <p className="text-muted-foreground mt-1">{tr('Manage supplier bills and payments', '管理供應商帳單和付款', '管理供应商账单和付款')}</p>
         </div>
-        <button onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
-          <Plus className="h-4 w-4" /> {tr('Create Bill', '建立帳單', '建立账单')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={async () => {
+            try {
+              const result = await api('/invoices/auto-match-receipts?direction=incoming', { method: 'POST' });
+              if (result.matched?.length > 0) {
+                setReceiptMatchResults(result.matched);
+              } else {
+                toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
+              }
+            } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+          }}
+            className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
+            <Link2 className="h-4 w-4" /> {tr('Match Receipts', '配對收據', '配对收据')}
+          </button>
+          <button onClick={() => setShowForm(true)}
+            className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
+            <Plus className="h-4 w-4" /> {tr('Create Bill', '建立帳單', '建立账单')}
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-3">
@@ -460,6 +483,108 @@ export default function AP() {
           </div>
         </div>
       )}
+
+      {/* Receipt Match Review Modal */}
+      {receiptMatchResults && (
+        <ReceiptMatchReviewModal
+          matches={receiptMatchResults}
+          onConfirm={(receiptId, invoiceId) => {
+            confirmReceiptMatchMut.mutate({ receipt_id: receiptId, invoice_id: invoiceId });
+          }}
+          onClose={() => {
+            setReceiptMatchResults(null);
+            queryClient.invalidateQueries({ queryKey: ['invoices-ap'] });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Receipt Match Review Modal (shared across AP, Invoices, AR) ──
+export function ReceiptMatchReviewModal({ matches, onConfirm, onClose }: {
+  matches: any[];
+  onConfirm: (receiptId: string, invoiceId: string) => void;
+  onClose: () => void;
+}) {
+  const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
+  const [rejected, setRejected] = useState<Set<string>>(new Set());
+
+  const pending = matches.filter(m => !confirmed.has(m.receipt_id) && !rejected.has(m.receipt_id));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="bg-card border rounded-xl p-6 w-full max-w-2xl mx-4 space-y-4 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold flex items-center gap-2">
+            <Link2 className="h-5 w-5 text-blue-600" />
+            Receipt Match Suggestions ({confirmed.size + rejected.size}/{matches.length})
+          </h3>
+          <button onClick={onClose} className="p-1 hover:bg-muted rounded">✕</button>
+        </div>
+
+        {pending.length === 0 ? (
+          <div className="text-center py-8 space-y-2">
+            <span className="text-3xl">✓</span>
+            <p className="text-sm font-medium">{tr('All suggestions reviewed!', '所有建議已審核！', '所有建议已审核！')}</p>
+            <button onClick={onClose} className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm">
+              {tr('Close', '關閉', '关闭')}
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {tr('Review each match. Confirm to link the receipt to its invoice.', '審核每個配對。確認後將收據連結至發票。', '审核每个配对。确认后将收据连结至发票。')}
+              </span>
+              <button
+                onClick={() => {
+                  pending.forEach(m => {
+                    onConfirm(m.receipt_id, m.invoice_id);
+                    setConfirmed(prev => new Set(prev).add(m.receipt_id));
+                  });
+                }}
+                className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700"
+              >
+                {tr('Accept All', '全部接受', '全部接受')} ({pending.length})
+              </button>
+            </div>
+            <div className="space-y-2 overflow-y-auto flex-1">
+              {pending.map(m => (
+                <div key={m.receipt_id} className="border rounded-lg p-3 flex items-center gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">
+                        {m.direction === 'outgoing' ? 'AR' : 'AP'}
+                      </span>
+                      <span className="text-sm font-medium">Receipt #{m.receipt_number}</span>
+                      <span className="text-xs text-muted-foreground">→</span>
+                      <span className="text-sm font-medium">Invoice #{m.invoice_number}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      HKD {m.receipt_total?.toLocaleString()} → HKD {m.invoice_total?.toLocaleString()}
+                      {m.receipt_vendor ? ` · ${m.receipt_vendor}` : ''}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => {
+                      onConfirm(m.receipt_id, m.invoice_id);
+                      setConfirmed(prev => new Set(prev).add(m.receipt_id));
+                    }}
+                      className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700">
+                      ✓ Confirm
+                    </button>
+                    <button onClick={() => setRejected(prev => new Set(prev).add(m.receipt_id))}
+                      className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-xs hover:bg-red-50">
+                      ✗ Reject
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

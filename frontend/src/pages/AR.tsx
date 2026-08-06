@@ -3,8 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
-import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Receipt } from 'lucide-react';
+import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Receipt, Link2 } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
+import { useToast } from '../components/Toast';
+import { ReceiptMatchReviewModal } from './AP';
 
 // Authenticated PDF download: fetches with Bearer token, opens as blob URL
 async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
@@ -32,6 +34,7 @@ async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
 
 export default function AR() {
   const { i18n } = useTranslation();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
@@ -39,6 +42,7 @@ export default function AR() {
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
+  const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
   const [form, setForm] = useState({ invoice_number: '', customer_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   const [productSearch, setProductSearch] = useState<Record<number, string>>({});
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
@@ -85,6 +89,11 @@ export default function AR() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices-ar'] }),
   });
 
+  const confirmReceiptMatchMut = useMutation({
+    mutationFn: (body: { receipt_id: string; invoice_id: string }) => api('/invoices/confirm-receipt-match', { method: 'POST', body }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices-ar'] }),
+  });
+
   function addItem() {
     setForm({ ...form, items: [...form.items, { description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   }
@@ -122,10 +131,25 @@ export default function AR() {
           <h2 className="text-2xl font-bold">{tr('Accounts Receivable (AR)', '應收帳款 AR', '应收账款 AR')}</h2>
           <p className="text-muted-foreground mt-1">{tr('Manage sales invoices and customer payments', '管理銷售發票和客戶付款', '管理销售发票和客户付款')}</p>
         </div>
-        <button onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
-          <Plus className="h-4 w-4" /> {tr('Create Invoice', '建立發票', '建立发票')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={async () => {
+            try {
+              const result = await api('/invoices/auto-match-receipts?direction=outgoing', { method: 'POST' });
+              if (result.matched?.length > 0) {
+                setReceiptMatchResults(result.matched);
+              } else {
+                toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
+              }
+            } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+          }}
+            className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
+            <Link2 className="h-4 w-4" /> {tr('Match Receipts', '配對收據', '配对收据')}
+          </button>
+          <button onClick={() => setShowForm(true)}
+            className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
+            <Plus className="h-4 w-4" /> {tr('Create Invoice', '建立發票', '建立发票')}
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-3">
@@ -464,6 +488,20 @@ export default function AR() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Receipt Match Review Modal */}
+      {receiptMatchResults && (
+        <ReceiptMatchReviewModal
+          matches={receiptMatchResults}
+          onConfirm={(receiptId, invoiceId) => {
+            confirmReceiptMatchMut.mutate({ receipt_id: receiptId, invoice_id: invoiceId });
+          }}
+          onClose={() => {
+            setReceiptMatchResults(null);
+            queryClient.invalidateQueries({ queryKey: ['invoices-ar'] });
+          }}
+        />
       )}
     </div>
   );
