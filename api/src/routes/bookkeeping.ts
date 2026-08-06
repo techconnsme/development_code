@@ -1138,7 +1138,7 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
     `SELECT bt.*, i.invoice_number, i.supplier_id, bs.bank_name, bs.account_number
      FROM bank_transactions bt
      LEFT JOIN invoices i ON bt.invoice_id = i.id
-     LEFT JOIN bank_statements bs ON bt.statement_id = bs.id
+     LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
      WHERE bt.user_id = ?
      AND bt.deleted_at IS NULL
      AND bt.match_status != 'confirmed'

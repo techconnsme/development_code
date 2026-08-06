@@ -564,7 +564,7 @@ bank.patch('/transactions/:id', async (c) => {
     const fullTx = await db.prepare(
       `SELECT bt.*, bs.bank_name, bs.account_number
        FROM bank_transactions bt
-       LEFT JOIN bank_statements bs ON bt.statement_id = bs.id
+       LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
        WHERE bt.id = ? AND bt.user_id = ? AND bt.deleted_at IS NULL`
     ).bind(txId, tenantId).first<any>();
 
