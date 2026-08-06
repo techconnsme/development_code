@@ -139,6 +139,25 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['entries'] }); setShowEntryForm(false); },
   });
 
+  const autoGenerateMut = useMutation({
+    mutationFn: () => api('/bookkeeping/auto-generate-entries', { method: 'POST' }),
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ['entries'] });
+      if (data.created > 0) {
+        toast.info(tr(
+          `${data.created} journal entries generated, ${data.skipped || 0} skipped, ${data.stale_deleted || 0} stale cleaned up.`,
+          `已產生 ${data.created} 筆日誌分錄，跳過 ${data.skipped || 0} 筆，清理 ${data.stale_deleted || 0} 筆過時記錄。`,
+          `已产生 ${data.created} 笔日志分录，跳过 ${data.skipped || 0} 笔，清理 ${data.stale_deleted || 0} 笔过时记录。`,
+        ));
+      } else {
+        toast.info(tr('All transactions already have journal entries.', '所有交易已有日誌分錄。', '所有交易已有日志分录。'));
+      }
+    },
+    onError: (err: any) => {
+      toast.info(tr('Auto-generate failed: ', '自動產生失敗：', '自动产生失败：') + (err?.message || err?.error || 'Unknown'));
+    },
+  });
+
   const exportCSV = async () => {
     try {
       const token = localStorage.getItem('token') || '';
@@ -303,6 +322,14 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             <button onClick={() => setShowEntryForm(true)}
               className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
               <Plus className="h-4 w-4" /> {tr('+ New General Journal Entry', '新增日誌帳', '新增日志帐')}
+            </button>
+          )}
+          {!isStaff && (
+            <button onClick={() => autoGenerateMut.mutate()}
+              disabled={autoGenerateMut.isPending}
+              className="flex items-center gap-2 border px-4 py-2 rounded-md text-sm font-medium hover:bg-muted disabled:opacity-50">
+              <RefreshCw className={`h-4 w-4 ${autoGenerateMut.isPending ? 'animate-spin' : ''}`} />
+              {autoGenerateMut.isPending ? tr('Generating...', '產生中...', '产生中...') : tr('+ Auto-Generate Journal Entries', '+ 自動產生日誌分錄', '+ 自动产生日志分录')}
             </button>
           )}
           {!isStaff && (
