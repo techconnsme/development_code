@@ -38,7 +38,7 @@ export default function Invoices() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
-  const [expenseCategory, setExpenseCategory] = useState<'all' | 'cash' | 'reimburse' | 'director' | 'ap'>('all');
+  const [expenseCategory, setExpenseCategory] = useState<'all' | 'cash' | 'reimburse' | 'director'>('all');
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
@@ -51,9 +51,7 @@ export default function Invoices() {
     queryKey: ['invoices', search, status, page, expenseCategory],
     queryFn: () => {
       const params = new URLSearchParams({ q: search, status, page: String(page), limit: '20', doc_type: 'invoice' });
-      if (expenseCategory === 'ap') {
-        params.set('direction', 'incoming');
-      } else if (expenseCategory !== 'all') {
+      if (expenseCategory !== 'all') {
         params.set('expense_category', expenseCategory);
       }
       return api(`/invoices?${params.toString()}`);
@@ -157,7 +155,6 @@ export default function Invoices() {
       <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit flex-wrap">
         {([
           { key: 'all', label: tr('All', '全部', '全部') },
-          { key: 'ap', label: tr('Accounts Payable (AP)', '應付帳款 (AP)', '应付账款 (AP)') },
           { key: 'cash', label: tr('Cash Expenses', '現金支出', '现金支出') },
           { key: 'reimburse', label: tr('Employee Reimb.', '員工報銷', '员工报销') },
           { key: 'director', label: tr('Director Expenses', '董事支出', '董事支出') },
