@@ -245,19 +245,22 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       stale: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40',
     };
     const labels: Record<string, string> = {
-      draft: '草稿 Draft', posted: '已過帳 Posted', reconciled: '已對帳 Reconciled', stale: '⚠ 過時 Stale',
+      draft: tr('Draft', '草稿 Draft', '草稿 Draft'),
+      posted: tr('Posted', '已過帳 Posted', '已过帐 Posted'),
+      reconciled: tr('Reconciled', '已對帳 Reconciled', '已对帐 Reconciled'),
+      stale: tr('⚠ Stale', '⚠ 過時 Stale', '⚠ 过时 Stale'),
     };
     return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${styles[s] || 'bg-muted text-muted-foreground'}`}>{labels[s] || s}</span>;
   }
 
   const tabs = [
-    { id: 'entries', label: 'GJE 日誌帳' },
-    { id: 'accounts', label: '科目 Accounts' },
-    { id: 'pl', label: '損益 P&L' },
-    { id: 'bs', label: '資產負債 Balance Sheet' },
-    { id: 'trial', label: '試算 Trial Balance' },
-    { id: 'ledger', label: '分類帳 Ledger' },
-    { id: 'export', label: '導出 Export' },
+    { id: 'entries', label: tr('GJE', 'GJE 日誌帳', 'GJE 日志帐') },
+    { id: 'accounts', label: tr('Accounts', '科目 Accounts', '科目 Accounts') },
+    { id: 'pl', label: tr('P&L', '損益 P&L', '损益 P&L') },
+    { id: 'bs', label: tr('Balance Sheet', '資產負債 Balance Sheet', '资产负债表 Balance Sheet') },
+    { id: 'trial', label: tr('Trial Balance', '試算 Trial Balance', '试算 Trial Balance') },
+    { id: 'ledger', label: tr('Ledger', '分類帳 Ledger', '分类帐 Ledger') },
+    { id: 'export', label: tr('Export', '導出 Export', '导出 Export') },
   ] as const;
 
   return (
@@ -510,7 +513,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
               key={`ledger-acct-${accounts?.data?.length || 0}`}
               value={ledgerAccount}
               options={[
-                { value: '', label: '所有科目' },
+                { value: '', label: tr('All Accounts', '所有科目', '所有科目') },
                 ...(accounts?.data || []).map((a: any) => ({ value: a.account_code, label: `${a.account_code} – ${a.account_name}` })),
               ]}
               onChange={setLedgerAccount}
@@ -695,7 +698,9 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       {/* Balance Sheet Tab */}
       {tab === 'bs' && balanceSheet && (
         <div className="space-y-4">
-          <p className="text-xs text-muted-foreground">截至 As of: {balanceSheet.as_of} | 來源 Source: {balanceSheet.source === 'journal' ? '分錄' : '銀行交易估算'}</p>
+          <p className="text-xs text-muted-foreground">
+            {tr('As of', '截至', '截至')}: {balanceSheet.as_of} | {tr('Source', '來源', '来源')}: {balanceSheet.source === 'journal' ? tr('Journal', '分錄', '分录') : tr('Bank Estimate', '銀行交易估算', '银行交易估算')}
+          </p>
 
           {/* Assets */}
           <div className="bg-card border rounded-xl overflow-hidden">
@@ -1035,7 +1040,7 @@ function AccountsTab({ accounts }: { accounts: any[] }) {
           className="px-2 py-1 border rounded text-sm bg-background" />
         <button onClick={saveFiscal}
           className={`px-3 py-1 rounded text-xs font-medium ${fiscalSaved ? 'bg-green-100 text-green-700' : 'bg-primary text-primary-foreground hover:opacity-90'}`}>
-          {fiscalSaved ? '✓ 已儲存' : '儲存'}
+          {fiscalSaved ? tr('✓ Saved', '✓ 已儲存', '✓ 已储存') : tr('Save', '儲存', '储存')}
         </button>
       </div>
 
@@ -1044,48 +1049,68 @@ function AccountsTab({ accounts }: { accounts: any[] }) {
         <span className="text-sm font-medium">會計操作 Actions</span>
         <div className="flex flex-wrap gap-2">
           <button onClick={async () => {
-            const start = prompt('關帳期間起 (YYYY-MM-DD)：');
-            const end = prompt('關帳期間至 (YYYY-MM-DD)：');
+            const start = prompt(tr('Close period start (YYYY-MM-DD):', '關帳期間起 (YYYY-MM-DD)：', '关帐期间起 (YYYY-MM-DD)：'));
+            const end = prompt(tr('Close period end (YYYY-MM-DD):', '關帳期間至 (YYYY-MM-DD)：', '关帐期间至 (YYYY-MM-DD)：'));
             if (!start || !end) return;
             await api('/bookkeeping/close-period', { method: 'POST', body: { period_start: start, period_end: end } });
             fetchClosedPeriods();
-            toast.info('已關帳');
+            toast.info(tr('Period closed', '已關帳', '已关帐'));
           }} className="px-3 py-1.5 bg-amber-100 text-amber-800 rounded text-xs font-medium hover:bg-amber-200">
-            關帳 Close Period
+            {tr('Close Period', '關帳 Close Period', '关帐 Close Period')}
           </button>
           <button onClick={async () => {
-            if (!confirm('確定要執行年結嗎？這會將所有收入/費用科目結轉至保留盈餘，並更新承上結餘。')) return;
-            const date = prompt('財政年度結束日 (YYYY-MM-DD)：', fiscalEnd || '');
+            if (!confirm(tr(
+              'Execute year-end close? This will transfer all revenue/expense accounts to retained earnings and update opening balances.',
+              '確定要執行年結嗎？這會將所有收入/費用科目結轉至保留盈餘，並更新承上結餘。',
+              '确定要执行年结吗？这会将所有收入/费用科目结转至保留盈余，并更新承上结余。',
+            ))) return;
+            const date = prompt(tr('Fiscal year end date (YYYY-MM-DD):', '財政年度結束日 (YYYY-MM-DD)：', '财政年度结束日 (YYYY-MM-DD)：'), fiscalEnd || '');
             if (!date) return;
             const res = await api('/bookkeeping/year-end-close', { method: 'POST', body: { fiscal_end_date: date } });
-            toast.info(`年結完成！\n收入：HKD ${res.revenue?.toLocaleString()}\n支出：HKD ${res.expenses?.toLocaleString()}\n淨利：HKD ${res.net_income?.toLocaleString()}`);
+            toast.info(tr(
+              `Year-end close complete!\nRevenue: HKD ${res.revenue?.toLocaleString()}\nExpenses: HKD ${res.expenses?.toLocaleString()}\nNet Income: HKD ${res.net_income?.toLocaleString()}`,
+              `年結完成！\n收入：HKD ${res.revenue?.toLocaleString()}\n支出：HKD ${res.expenses?.toLocaleString()}\n淨利：HKD ${res.net_income?.toLocaleString()}`,
+              `年结完成！\n收入：HKD ${res.revenue?.toLocaleString()}\n支出：HKD ${res.expenses?.toLocaleString()}\n净利：HKD ${res.net_income?.toLocaleString()}`,
+            ));
             queryClient.invalidateQueries({ queryKey: ['entries'] });
             queryClient.invalidateQueries({ queryKey: ['accounts'] });
           }} className="px-3 py-1.5 bg-blue-100 text-blue-800 rounded text-xs font-medium hover:bg-blue-200">
-            年結 Year-End Close
+            {tr('Year-End Close', '年結 Year-End Close', '年结 Year-End Close')}
           </button>
           <button onClick={async () => {
-            if (!confirm('確定要計算利得稅撥備嗎？（預設稅率 16.5%，首 $2M 為 8.25%）')) return;
-            const date = prompt('財政年度結束日 (YYYY-MM-DD)：', fiscalEnd || '');
+            if (!confirm(tr(
+              'Calculate profits tax provision? (Default rate 16.5%, first $2M at 8.25%)',
+              '確定要計算利得稅撥備嗎？（預設稅率 16.5%，首 $2M 為 8.25%）',
+              '确定要计算利得税拨备吗？（预设税率 16.5%，首 $2M 为 8.25%）',
+            ))) return;
+            const date = prompt(tr('Fiscal year end date (YYYY-MM-DD):', '財政年度結束日 (YYYY-MM-DD)：', '财政年度结束日 (YYYY-MM-DD)：'), fiscalEnd || '');
             if (!date) return;
             const res = await api('/bookkeeping/profits-tax-provision', { method: 'POST', body: { fiscal_end_date: date } });
-            toast.info(`利得稅撥備完成！\n應評稅利潤：HKD ${res.net_income?.toLocaleString()}\n稅款：HKD ${res.tax_amount?.toLocaleString()}`);
+            toast.info(tr(
+              `Profits tax provision complete!\nAssessable profit: HKD ${res.net_income?.toLocaleString()}\nTax: HKD ${res.tax_amount?.toLocaleString()}`,
+              `利得稅撥備完成！\n應評稅利潤：HKD ${res.net_income?.toLocaleString()}\n稅款：HKD ${res.tax_amount?.toLocaleString()}`,
+              `利得税拨备完成！\n应评税利润：HKD ${res.net_income?.toLocaleString()}\n税款：HKD ${res.tax_amount?.toLocaleString()}`,
+            ));
             queryClient.invalidateQueries({ queryKey: ['entries'] });
           }} className="px-3 py-1.5 bg-red-100 text-red-800 rounded text-xs font-medium hover:bg-red-200">
-            利得稅撥備 Tax Provision
+            {tr('Profits Tax Provision', '利得稅撥備 Tax Provision', '利得税拨备 Tax Provision')}
           </button>
         </div>
         {closedPeriods.length > 0 && (
           <div className="space-y-1">
-            <span className="text-xs text-muted-foreground">已關帳期間 Closed Periods</span>
+            <span className="text-xs text-muted-foreground">{tr('Closed Periods', '已關帳期間 Closed Periods', '已关帐期间 Closed Periods')}</span>
             {closedPeriods.map((cp: any) => (
               <div key={cp.id} className="flex items-center justify-between bg-muted/30 rounded px-3 py-1.5">
                 <span className="text-xs">{cp.period_start} ~ {cp.period_end}</span>
                 <button onClick={async () => {
-                  if (!confirm(`確定要重開 ${cp.period_start} ~ ${cp.period_end} 的關帳嗎？`)) return;
+                  if (!confirm(tr(
+                    `Reopen period ${cp.period_start} ~ ${cp.period_end}?`,
+                    `確定要重開 ${cp.period_start} ~ ${cp.period_end} 的關帳嗎？`,
+                    `确定要重开 ${cp.period_start} ~ ${cp.period_end} 的关帐吗？`,
+                  ))) return;
                   await api(`/bookkeeping/close-period/${cp.id}`, { method: 'DELETE' });
                   fetchClosedPeriods();
-                }} className="text-xs text-destructive hover:underline">重開 Reopen</button>
+                }} className="text-xs text-destructive hover:underline">{tr('Reopen', '重開 Reopen', '重开 Reopen')}</button>
               </div>
             ))}
           </div>

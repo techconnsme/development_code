@@ -2,11 +2,30 @@ import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { ChevronLeft, ChevronRight, Plus, X, CalendarDays, Columns, Clock, CalendarRange, Download } from 'lucide-react';
+import { tr } from '../lib/i18nHelpers';
 
-const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
 const COLORS = ['#2563eb','#dc2626','#16a34a','#ca8a04','#9333ea','#0891b2','#db2777','#4f46e5'];
-const EVENT_TYPES: Record<string, string> = { appointment: '約會', meeting: '會議', deadline: '截止', reminder: '提醒', invoice_due: '發票到期' };
 const HOURS = Array.from({ length: 15 }, (_, i) => i + 7); // 7am - 9pm
+
+function weekdayLabel(i: number): string {
+  const labels = [
+    ['Sun', '日', '日'], ['Mon', '一', '一'], ['Tue', '二', '二'],
+    ['Wed', '三', '三'], ['Thu', '四', '四'], ['Fri', '五', '五'], ['Sat', '六', '六'],
+  ];
+  return tr(labels[i][0], labels[i][1], labels[i][2]);
+}
+
+function eventTypeLabel(type: string): string {
+  const labels: Record<string, [string, string, string]> = {
+    appointment: ['Appointment', '約會', '约会'],
+    meeting:      ['Meeting', '會議', '会议'],
+    deadline:     ['Deadline', '截止', '截止'],
+    reminder:     ['Reminder', '提醒', '提醒'],
+    invoice_due:  ['Invoice Due', '發票到期', '发票到期'],
+  };
+  const l = labels[type];
+  return l ? tr(l[0], l[1], l[2]) : type;
+}
 
 function fmt(d: Date) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function fmtTime(d: Date) { return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
@@ -128,7 +147,7 @@ export default function CalendarPage() {
     ? `${year} 年 ${month + 1} 月`
     : view === 'week'
     ? `${fmt(weekStart)} — ${fmt(new Date(new Date(weekStart).setDate(weekStart.getDate()+6)))}`
-    : `${dayDate.getFullYear()} 年 ${dayDate.getMonth()+1} 月 ${dayDate.getDate()} 日 ${WEEKDAYS[dayDate.getDay()]}`;
+    : `${dayDate.getFullYear()} 年 ${dayDate.getMonth()+1} 月 ${dayDate.getDate()} 日 ${weekdayLabel(dayDate.getDay())}`;
 
   // ── Month helpers ──
   const lastDay = new Date(year, month + 1, 0).getDate();
@@ -216,9 +235,9 @@ export default function CalendarPage() {
             return (
               <div key={mi} className="bg-card border rounded-xl p-3 cursor-pointer hover:shadow-sm transition-shadow"
                 onClick={() => { setMonth(mi); setView('month'); }}>
-                <div className="text-sm font-semibold text-center mb-2">{mi + 1} 月</div>
+                <div className="text-sm font-semibold text-center mb-2">{tr(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][mi], `${mi + 1} 月`, `${mi + 1} 月`)}</div>
                 <div className="grid grid-cols-7 gap-px text-center">
-                  {WEEKDAYS.map(w => <div key={w} className="text-[9px] text-muted-foreground">{w}</div>)}
+                  {[0,1,2,3,4,5,6].map(i => <div key={i} className="text-[9px] text-muted-foreground">{weekdayLabel(i)}</div>)}
                   {Array.from({ length: 42 }, (_, di) => {
                     const dn = di - mFirstDow + 1;
                     const inM = dn >= 1 && dn <= mLastDay;
@@ -252,8 +271,8 @@ export default function CalendarPage() {
       {view === 'month' && (
         <div className="bg-card border rounded-xl overflow-hidden">
           <div className="grid grid-cols-7">
-            {WEEKDAYS.map(w => (
-              <div key={w} className="p-2 text-center text-xs font-medium text-muted-foreground border-b bg-muted/30">{w}</div>
+            {[0,1,2,3,4,5,6].map(i => (
+              <div key={i} className="p-2 text-center text-xs font-medium text-muted-foreground border-b bg-muted/30">{weekdayLabel(i)}</div>
             ))}
           </div>
           <div className="grid grid-cols-7">
@@ -294,7 +313,7 @@ export default function CalendarPage() {
               const ad = weekAllDay(d);
               return (
                 <div key={i} className={`p-2 text-center border-r last:border-r-0 ${isToday ? 'bg-primary/5' : ''}`}>
-                  <div className="text-xs text-muted-foreground">{WEEKDAYS[d.getDay()]}</div>
+                  <div className="text-xs text-muted-foreground">{weekdayLabel(d.getDay())}</div>
                   <div className={`text-lg font-semibold ${isToday ? 'text-primary' : ''}`}>{d.getDate()}</div>
                   {ad.length > 0 && (
                     <div className="mt-0.5 space-y-0.5">
@@ -343,7 +362,7 @@ export default function CalendarPage() {
           {/* Day header */}
           <div className="grid grid-cols-2 border-b bg-muted/30">
             <div className="p-3 text-center border-r">
-              <div className="text-xs text-muted-foreground">{WEEKDAYS[dayDate.getDay()]}</div>
+              <div className="text-xs text-muted-foreground">{weekdayLabel(dayDate.getDay())}</div>
               <div className={`text-2xl font-bold ${fmt(dayDate) === fmt(today) ? 'text-primary' : ''}`}>{dayDate.getDate()}</div>
               {weekAllDay(dayDate).map((e: any) => (
                 <div key={e.id} title={e.title} className="text-xs mt-1 truncate rounded px-2 py-0.5 cursor-pointer hover:opacity-80" style={{ backgroundColor: e.color + '30', color: e.color }} onClick={(ev) => handleEventClick(e, ev)}>{e.title}</div>
@@ -398,7 +417,7 @@ export default function CalendarPage() {
               <div className="grid grid-cols-2 gap-3">
                 <select value={form.event_type} onChange={e => setForm({ ...form, event_type: e.target.value })}
                   className="px-3 py-2 border rounded-md bg-background text-sm">
-                  {Object.entries(EVENT_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  {['appointment','meeting','deadline','reminder','invoice_due'].map(k => <option key={k} value={k}>{eventTypeLabel(k)}</option>)}
                 </select>
                 <select value={form.customer_id} onChange={e => setForm({ ...form, customer_id: e.target.value })}
                   className="px-3 py-2 border rounded-md bg-background text-sm">

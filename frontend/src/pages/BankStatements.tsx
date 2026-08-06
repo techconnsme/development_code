@@ -611,11 +611,11 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                                                   setEdits(prev => ({...prev, [tx.id]: {...prev[tx.id], ...update}}));
                                                   if (json.note) toast.info('AI: ' + json.note);
                                                 } else {
-                                                  toast.info('AI 認為此交易無需修改');
+                                                  toast.info(tr('AI determined no changes needed', 'AI 認為此交易無需修改', 'AI 认为此交易无需修改'));
                                                 }
-                                              } catch { toast.info('AI 回應無法解析：' + cleanReply.slice(0, 200)); }
+                                              } catch { toast.info(tr('AI response could not be parsed: ', 'AI 回應無法解析：', 'AI 回应无法解析：') + cleanReply.slice(0, 200)); }
                                             } else {
-                                              toast.info('AI 回應：' + reply.slice(0, 300));
+                                              toast.info(tr('AI response: ', 'AI 回應：', 'AI 回应：') + reply.slice(0, 300));
                                             }
                                           } catch (e: any) { toast.info('AI 失敗：' + (e.message || 'unknown')); }
                                           setAiLoading(null);

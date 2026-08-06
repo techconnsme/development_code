@@ -1,14 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { Save, RefreshCw, BookOpen } from 'lucide-react';
+import { tr } from '../lib/i18nHelpers';
 
-const FILES = [
-  { key: 'soul', label: '靈魂' },
-  { key: 'tech', label: '技術記憶' },
-  { key: 'ledger', label: '賬本脈絡' },
-  { key: 'plan', label: '任務計劃' },
-  { key: 'prompt', label: '系統提示' },
-];
+const FILE_KEYS = ['soul', 'tech', 'ledger', 'plan', 'prompt'] as const;
+
+function fileLabel(key: string): string {
+  const labels: Record<string, [string, string, string]> = {
+    soul:   ['Soul', '靈魂', '灵魂'],
+    tech:   ['Tech Memory', '技術記憶', '技术记忆'],
+    ledger: ['Ledger Context', '賬本脈絡', '账本脉络'],
+    plan:   ['Task Plan', '任務計劃', '任务计划'],
+    prompt: ['System Prompt', '系統提示', '系统提示'],
+  };
+  const l = labels[key];
+  return l ? tr(l[0], l[1], l[2]) : key;
+}
 
 export default function AiMemory() {
   const [tab, setTab] = useState('soul');
@@ -31,31 +38,38 @@ export default function AiMemory() {
         if (data.sha) setSha(prev => ({ ...prev, [key]: data.sha }));
       }
     } catch (e: any) {
-      setMsg('讀取失敗: ' + (e.message || 'error'));
+      setMsg(tr('Read failed: ', '讀取失敗: ', '读取失败: ') + (e.message || 'error'));
     }
     setLoading(false);
   };
 
   const save = async (key: string) => {
     if (key === 'prompt') {
-      setMsg('⚠ 系統提示需透過修改 chat.ts 來更新');
+      setMsg(tr(
+        '⚠ System prompt must be updated by modifying chat.ts',
+        '⚠ 系統提示需透過修改 chat.ts 來更新',
+        '⚠ 系统提示需透过修改 chat.ts 来更新',
+      ));
       setTimeout(() => setMsg(''), 3000);
       return;
     }
     setSaving(true);
     setMsg('');
     try {
-      const file = FILES.find(f => f.key === key)!;
       await api('/chat', {
         method: 'POST',
         body: {
-          message: `請用write_code寫入 ${file.label}.md，commit message: update ${file.label}.md\n\n以下是完整檔案內容：\n\`\`\`\n${contents[key]}\n\`\`\``,
+          message: `請用write_code寫入 ${fileLabel(key)}.md，commit message: update ${fileLabel(key)}.md\n\n以下是完整檔案內容：\n\`\`\`\n${contents[key]}\n\`\`\``,
           history: [], stream: false,
         },
       });
-      setMsg(`✅ ${file.label} 已儲存`);
+      setMsg(tr(
+        `✅ ${fileLabel(key)} saved`,
+        `✅ ${fileLabel(key)} 已儲存`,
+        `✅ ${fileLabel(key)} 已储存`,
+      ));
     } catch (e: any) {
-      setMsg('儲存失敗: ' + (e.message || 'error'));
+      setMsg(tr('Save failed: ', '儲存失敗: ', '储存失败: ') + (e.message || 'error'));
     }
     setSaving(false);
     setTimeout(() => setMsg(''), 3000);
@@ -63,7 +77,6 @@ export default function AiMemory() {
 
   useEffect(() => { load(tab); }, [tab]);
 
-  const file = FILES.find(f => f.key === tab)!;
   const isReadOnly = tab === 'prompt';
 
   return (
@@ -71,17 +84,19 @@ export default function AiMemory() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold flex items-center gap-2">
-            <BookOpen className="h-6 w-6" /> AI 記憶
+            <BookOpen className="h-6 w-6" /> {tr('AI Memory', 'AI 記憶', 'AI 记忆')}
           </h2>
-          <p className="text-muted-foreground mt-1">AI 助理的核心記憶與系統提示</p>
+          <p className="text-muted-foreground mt-1">
+            {tr("AI assistant's core memory and system prompt", 'AI 助理的核心記憶與系統提示', 'AI 助理的核心记忆与系统提示')}
+          </p>
         </div>
       </div>
 
       <div className="flex gap-1 border-b">
-        {FILES.map(f => (
-          <button key={f.key} onClick={() => setTab(f.key)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === f.key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
-            {f.label}
+        {FILE_KEYS.map(k => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === k ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+            {fileLabel(k)}
           </button>
         ))}
       </div>
@@ -93,12 +108,12 @@ export default function AiMemory() {
           </span>
           <button onClick={() => load(tab)} disabled={loading}
             className="flex items-center gap-1 px-2 py-1 text-xs border rounded hover:bg-muted">
-            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} /> 重新讀取
+            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} /> {tr('Reload', '重新讀取', '重新读取')}
           </button>
           {!isReadOnly && (
             <button onClick={() => save(tab)} disabled={saving || !contents[tab]}
               className="flex items-center gap-1 px-3 py-1 text-xs bg-primary text-primary-foreground rounded hover:opacity-90 disabled:opacity-40">
-              <Save className="h-3 w-3" /> 儲存到 GitHub
+              <Save className="h-3 w-3" /> {tr('Save to GitHub', '儲存到 GitHub', '储存到 GitHub')}
             </button>
           )}
           {msg && <span className={`text-xs ${msg.startsWith('✅') ? 'text-green-600' : msg.startsWith('⚠') ? 'text-yellow-600' : 'text-red-600'}`}>{msg}</span>}
@@ -108,7 +123,7 @@ export default function AiMemory() {
           onChange={e => setContents(prev => ({ ...prev, [tab]: e.target.value }))}
           readOnly={isReadOnly}
           className={`w-full h-[70vh] p-4 border rounded-md text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-primary ${isReadOnly ? 'bg-muted/50' : 'bg-background'}`}
-          placeholder="載入中..."
+          placeholder={tr('Loading...', '載入中...', '载入中...')}
         />
       </div>
     </div>

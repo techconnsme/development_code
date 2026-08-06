@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { Download } from 'lucide-react';
+import { tr } from '../lib/i18nHelpers';
 
 export default function CardGenerator() {
   const [name, setName] = useState('');
@@ -61,8 +62,8 @@ export default function CardGenerator() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold">名片生成器 Card Generator</h2>
-        <p className="text-muted-foreground mt-1">根據公司資料自動產生名片</p>
+        <h2 className="text-2xl font-bold">{tr('Card Generator', '名片生成器 Card Generator', '名片生成器 Card Generator')}</h2>
+        <p className="text-muted-foreground mt-1">{tr('Auto-generate business cards from company info', '根據公司資料自動產生名片', '根据公司资料自动产生名片')}</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -118,12 +119,12 @@ export default function CardGenerator() {
           <div className="flex gap-2">
             <button onClick={downloadCard}
               className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm hover:opacity-90">
-              <Download className="h-4 w-4" /> 下載{flipped ? '背面' : '正面'} PNG
+              <Download className="h-4 w-4" /> {tr('Download', '下載', '下载')} {flipped ? tr('Back', '背面', '背面') : tr('Front', '正面', '正面')} PNG
             </button>
             {!flipped && (
               <button onClick={() => { setFlipped(true); setTimeout(() => { const svg = backRef.current; if (svg) { const clone = svg.cloneNode(true) as SVGSVGElement; clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg'); const svgData = new XMLSerializer().serializeToString(clone); const canvas = document.createElement('canvas'); canvas.width = 1050; canvas.height = 600; const ctx = canvas.getContext('2d'); if (ctx) { const img = new Image(); img.onload = () => { ctx.drawImage(img, 0, 0, 1050, 600); const a = document.createElement('a'); a.download = `名片_${name || company}_背面.png`; a.href = canvas.toDataURL('image/png'); a.click(); }; img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData))); } } }, 100); }}
                 className="flex items-center gap-2 border px-4 py-2 rounded-md text-sm hover:bg-muted">
-                <Download className="h-4 w-4" /> 下載背面
+                <Download className="h-4 w-4" /> {tr('Download Back', '下載背面', '下载背面')}
               </button>
             )}
           </div>
