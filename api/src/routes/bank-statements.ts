@@ -188,6 +188,34 @@ bank.post('/:id/confirm', async (c) => {
   await c.env.DB.prepare(
     "UPDATE bank_statements SET status = 'active', balance_status = ?, balance_check = ?, updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
   ).bind(balanceStatus, balanceCheck, id).run();
+
+  // Auto-detect matching invoices in background
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const txns = await c.env.DB.prepare(
+        `SELECT id, deposit_amount, withdrawal_amount, description, reference, transaction_date
+         FROM bank_transactions WHERE user_id = ? AND bank_statement_id = ? AND deleted_at IS NULL AND match_status = 'unmatched'`
+      ).bind(tenantId, id).all();
+
+      const invoices = await c.env.DB.prepare(
+        `SELECT id, invoice_number, total, issue_date, due_date, direction
+         FROM invoices WHERE user_id = ? AND status IN ('draft','sent','overdue','active') AND total > 0`
+      ).bind(tenantId).all();
+
+      for (const tx of (txns.results as any[])) {
+        const amt = tx.deposit_amount || tx.withdrawal_amount || 0;
+        for (const inv of (invoices.results as any[])) {
+          if (Math.abs(amt - inv.total) < 0.02) {
+            await c.env.DB.prepare(
+              "UPDATE bank_transactions SET match_status = 'suggested', invoice_id = ?, match_confidence = 'auto' WHERE id = ? AND user_id = ?"
+            ).bind(inv.id, tx.id, tenantId).run();
+            break;
+          }
+        }
+      }
+    } catch (e: any) { console.log('[AUTO-MATCH] background error:', e?.message); }
+  })());
+
   return c.json({ success: true, id, status: 'active', journal_skipped: journalSkipped });
 });
 
