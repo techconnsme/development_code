@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
 import { Upload, FileText, Image, File, Loader2, AlertCircle, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
@@ -123,6 +124,7 @@ function MismatchDialog({ info, onForce, onSwitch, onClose }: {
 // ── Component ──────────────────────────────────────────────────────────────
 
 export default function FileUpload() {
+  useTranslation(); // subscribe to language changes so tr() updates
   const nav = useNavigate();
   const toast = useToast();
   const queryClient = useQueryClient();

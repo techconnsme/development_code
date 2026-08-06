@@ -238,6 +238,9 @@ export default function BankStatementReview() {
       toast.success(tr('Saved to database! This statement is now confirmed.', '已儲存至數據庫！此月結單已確認。', '已储存至数据库！此月结单已确认。'));
       setIsSaving(false);
       const next = goNextInQueue();
+      if (!next) {
+        navigate('/bank-statements');
+      }
     },
     onError: (err: any) => {
       toast.error(`Failed to save: ${err?.message || err?.error || 'Unknown error'}`);

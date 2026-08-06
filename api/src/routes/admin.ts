@@ -107,6 +107,20 @@ admin.post('/create-account', async (c) => {
     } catch { /* ignore if table missing */ }
   }
 
+  // Auto-create a personal firm for the new user (unless linking to an existing firm)
+  if (!link_to_firm_id) {
+    const firmName = company_name || name;
+    const firmId = `f-${uuidv4().slice(0, 8)}`;
+    try {
+      await db.prepare('INSERT INTO firms (id, name, owner_user_id) VALUES (?, ?, ?)')
+        .bind(firmId, firmName, userId).run();
+      await db.prepare('INSERT INTO firm_members (id, firm_id, user_id, role) VALUES (?, ?, ?, ?)')
+        .bind(`fm-${uuidv4().slice(0, 8)}`, firmId, userId, 'admin').run();
+    } catch (e: any) {
+      console.log('[AUTO-FIRM] create-account firm creation failed:', e?.message);
+    }
+  }
+
   // If link_to_firm_id is provided, also create a firm_clients entry
   let firmClientId: string | null = null;
   if (link_to_firm_id) {
@@ -206,12 +220,24 @@ admin.post('/onboard', async (c) => {
   ).bind(userId, email, passwordHash, name || company_name, company_name, 'supervisor').run();
   steps.push('User account created (supervisor)');
 
-  // 2. Create company_settings  
+  // 2. Create company_settings
   await db.prepare(
     `INSERT OR REPLACE INTO company_settings (user_id, name, email, website, address)
      VALUES (?, ?, ?, ?, ?)`
   ).bind(userId, company_name, email, `https://${domain}`, 'Hong Kong').run();
   steps.push('Company settings configured');
+
+  // 2b. Auto-create personal firm
+  try {
+    const firmId = `f-${uuidv4().slice(0, 8)}`;
+    await db.prepare('INSERT INTO firms (id, name, owner_user_id) VALUES (?, ?, ?)')
+      .bind(firmId, company_name, userId).run();
+    await db.prepare('INSERT INTO firm_members (id, firm_id, user_id, role) VALUES (?, ?, ?, ?)')
+      .bind(`fm-${uuidv4().slice(0, 8)}`, firmId, userId, 'admin').run();
+    steps.push('Personal firm created');
+  } catch (e: any) {
+    steps.push(`⚠️ Firm creation: ${e.message}`);
+  }
 
   // 3. Insert domain mapping
   const dmId = `dm-${uuidv4().slice(0, 8)}`;

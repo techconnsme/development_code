@@ -118,6 +118,22 @@ auth.post('/login', authRateLimiter, zValidator('json', loginSchema), async (c) 
   if (firmMember) {
     user.firm_id = firmMember.firm_id;
     user.firm_role = firmMember.firm_role;
+  } else {
+    // Auto-create a personal firm for users without one.
+    // Each user gets their own isolated firm — no data sharing.
+    const firmName = row.company_name || row.name || row.email;
+    const firmId = `f-${uuidv4().slice(0, 8)}`;
+    try {
+      await db.prepare('INSERT INTO firms (id, name, owner_user_id) VALUES (?, ?, ?)')
+        .bind(firmId, firmName, row.id).run();
+      await db.prepare('INSERT INTO firm_members (id, firm_id, user_id, role) VALUES (?, ?, ?, ?)')
+        .bind(`fm-${uuidv4().slice(0, 8)}`, firmId, row.id, 'admin').run();
+      user.firm_id = firmId;
+      user.firm_role = 'admin';
+    } catch (e: any) {
+      console.log('[AUTO-FIRM] Could not create firm for user', row.id, ':', e?.message);
+      // Non-fatal — user can still log in, just without firm features
+    }
   }
 
   const token = sign(user, jwtSecret, { expiresIn: '24h' });

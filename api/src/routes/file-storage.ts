@@ -2303,7 +2303,8 @@ files.post('/:id/import-document', async (c) => {
   // OCR content is the primary signal — a misleading filename must not override it.
   if (/e[-_]?statement|bank.*statement|statement.*\d{6,8}/.test(fname)) filenameBank += 1;
   if (/deposit\s*(rs|jl|slip)|credit\s*advice/.test(fname)) filenameBank += 1;
-  if (/invoice|receipt|inv\d|rec\d|#e\d|inv022|inv-|tax\s*invoice/i.test(fname)) filenameInvoice += 1;
+  if (/invoice|inv\d|#e\d|inv022|inv-|tax\s*invoice/i.test(fname)) filenameInvoice += 1;
+  if (/receipt|rec\d/i.test(fname)) filenameInvoice += 2; // receipts go through invoice flow
 
   let ocrText = fileRow.ocr_text || '';
   if (!ocrText || ocrText.length < 20) {
@@ -2440,13 +2441,19 @@ files.post('/:id/import-document', async (c) => {
   if (/credit\s+card|信用卡|card\s+statement/i.test(ocrText)) { bankScore -= 2; cardScore += 4; }
 
   // Invoice signals
-  if (/\binvoice\b/i.test(ocrText)) invoiceScore += 2;
+  if (/\binvoice\b/i.test(ocrText)) invoiceScore += 3; // bumped: strong signal
   if (/invoice\s*(no|number|#)/i.test(ocrText)) invoiceScore += 3;
-  if (/bill\s*to/i.test(ocrText)) invoiceScore += 3;
+  // Handle garbled OCR: "B I L L   T O" or "B I L L T O"
+  if (/bill\s*to|b\s*i\s*l\s*l\s*t\s*o/i.test(ocrText)) invoiceScore += 3;
   if (/\breceipt\b/i.test(ocrText)) invoiceScore += 2;
   if (/(due\s*date|payment\s*terms|net\s*\d+\s*days)/i.test(ocrText)) invoiceScore += 2;
   if (/(subtotal|total\s*due|total\s*amount)/i.test(ocrText)) invoiceScore += 1;
-  if (/(unit\s*price|qty|quantity)/i.test(ocrText)) invoiceScore += 1;
+  if (/(unit\s*price|qty|quantity)/i.test(ocrText)) invoiceScore += 2; // bumped: line items = invoice
+  // Demote card when invoice signals present — credit card as payment method ≠ card statement
+  if (/\binvoice\b/i.test(ocrText) && /credit\s+card|visa|mastercard/i.test(ocrText)) {
+    invoiceScore += 4; // invoice mentioning card = invoice paid by card, not card statement
+    cardScore -= 4;
+  }
 
   // Card statement signals
   if (/credit\s+card\s+statement|信用卡.*月結|信用卡.*月结|card\s+statement/i.test(ocrText)) cardScore += 5;
@@ -2455,7 +2462,9 @@ files.post('/:id/import-document', async (c) => {
   if (/mastercard|master\s*card/i.test(ocrText)) cardScore += 2;
   if (/unionpay|銀聯|银联/i.test(ocrText)) cardScore += 2;
   if (/credit\s+limit/i.test(ocrText)) cardScore += 3;
-  if (/minimum\s+payment|payment\s+due\s+date/i.test(ocrText)) cardScore += 3;
+  if (/minimum\s+payment/i.test(ocrText)) cardScore += 3;
+  // "payment due date" alone is common on invoices too — require card context
+  if (/payment\s+due\s+date/i.test(ocrText) && /credit\s+card|信用卡|card/i.test(ocrText)) cardScore += 2;
   if (/finance\s+charge|interest\s+charge|late\s+payment\s+fee/i.test(ocrText)) cardScore += 2;
   if (/cash\s+advance/i.test(ocrText)) cardScore += 2;
   if (/card\s+number|card\s+(no|#)|cardholder|card\s+holder/i.test(ocrText)) cardScore += 2;

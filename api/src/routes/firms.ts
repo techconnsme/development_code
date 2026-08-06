@@ -272,6 +272,17 @@ firms.post('/my/clients', async (c) => {
      VALUES (?, ?, ?, ?, ?, ?)`
   ).bind(clientUserId, company_name, company_name, industry || 'general', fy_start || null, fy_end || null).run();
 
+  // Auto-create a personal firm for the new client user
+  try {
+    const firmId = `f-${uuidv4().slice(0, 8)}`;
+    await c.env.DB.prepare('INSERT INTO firms (id, name, owner_user_id) VALUES (?, ?, ?, ?)')
+      .bind(firmId, company_name, clientUserId).run();
+    await c.env.DB.prepare('INSERT INTO firm_members (id, firm_id, user_id, role) VALUES (?, ?, ?, ?)')
+      .bind(`fm-${uuidv4().slice(0, 8)}`, firmId, clientUserId, 'admin').run();
+  } catch (e: any) {
+    console.log('[AUTO-FIRM] my/clients firm creation failed:', e?.message);
+  }
+
   let firmClientId: string | null = null;
   if (isFirmContext && user.firm_id) {
     firmClientId = `fc-${uuidv4().slice(0, 8)}`;
@@ -323,6 +334,13 @@ firms.post('/:id/clients', async (c) => {
   ).bind(clientUserId, company_name, company_name, industry || 'general', fy_start || null, fy_end || null).run();
 
   const firmClientId = `fc-${uuidv4().slice(0, 8)}`;
+
+  // Auto-create a personal firm for the new client user
+  try {
+    const nf = "f-" + crypto.randomUUID().slice(0, 8);
+    await c.env.DB.prepare("INSERT INTO firms (id, name, owner_user_id) VALUES (?, ?, ?)").bind(nf, company_name, clientUserId).run();
+    await c.env.DB.prepare("INSERT INTO firm_members (id, firm_id, user_id, role) VALUES (?, ?, ?, ?)").bind("fm-" + crypto.randomUUID().slice(0, 8), nf, clientUserId, "admin").run();
+  } catch(e) {}
   await c.env.DB.prepare(
     'INSERT INTO firm_clients (id, firm_id, client_user_id, display_name) VALUES (?, ?, ?, ?)'
   ).bind(firmClientId, user.firm_id, clientUserId, display_name || null).run();
