@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api } from '../lib/api';
+import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
 import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil, CreditCard, AlertTriangle, Ban, Sparkles, CheckCircle2 } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
@@ -947,6 +947,14 @@ function LinkedDocModal({ txId, onClose, onLinkInvoice, onLinkCard }: {
 }) {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<'invoice' | 'card'>('invoice');
+  const [previewId, setPreviewId] = useState<string | null>(null);
+
+  // Fetch transaction details for context
+  const { data: txData } = useQuery({
+    queryKey: ['bank-transaction', txId],
+    queryFn: () => api(`/bank-statements/transactions/${txId}`),
+  });
+  const tx = txData as any;
 
   const { data: invData } = useQuery({
     queryKey: ['unpaid-invoices', search],
@@ -964,51 +972,89 @@ function LinkedDocModal({ txId, onClose, onLinkInvoice, onLinkCard }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 space-y-4" onClick={e => e.stopPropagation()}>
-        <h3 className="font-semibold flex items-center gap-2"><Link2 className="h-4 w-4" /> Link Document</h3>
-        {/* Tab switcher */}
-        <div className="flex gap-1 border-b">
-          <button onClick={() => setTab('invoice')}
-            className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === 'invoice' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
-            <FileText className="h-3.5 w-3.5 inline mr-1" />Invoices
-          </button>
-          <button onClick={() => setTab('card')}
-            className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === 'card' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
-            <CreditCard className="h-3.5 w-3.5 inline mr-1" />Card Statements
-          </button>
-        </div>
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder={tab === 'invoice' ? 'Search invoices...' : 'Search card statements...'}
-          className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
-        <div className="max-h-64 overflow-y-auto space-y-1">
-          {tab === 'invoice' && invoices.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No unpaid invoices</p>}
-          {tab === 'invoice' && invoices.map((inv: any) => (
-            <button key={inv.id} onClick={() => onLinkInvoice(inv.id)}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-muted text-sm text-left">
-              <div>
-                <span className="font-medium">{inv.invoice_number || inv.id}</span>
-                <span className="ml-2 text-muted-foreground">{inv.customer_name || ''}</span>
+      <div className="bg-card border rounded-xl p-6 w-full max-w-5xl mx-4 max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <h3 className="font-semibold flex items-center gap-2 mb-3"><Link2 className="h-4 w-4" /> {tr('Link Document', '連結文件', '连结文件')}</h3>
+
+        {/* Transaction context */}
+        {tx && (
+          <div className="bg-muted/50 rounded-lg p-3 mb-3 text-sm grid grid-cols-3 gap-2">
+            <div><span className="text-muted-foreground">{tr('Description', '描述', '描述')}:</span> <span className="font-medium">{tx.description?.slice(0, 60)}</span></div>
+            <div><span className="text-muted-foreground">{tr('Date', '日期', '日期')}:</span> {tx.transaction_date}</div>
+            <div><span className="text-muted-foreground">{tr('Amount', '金額', '金额')}:</span> <span className="font-mono font-medium">HKD {(tx.deposit_amount || tx.withdrawal_amount || 0)?.toLocaleString()}</span></div>
+          </div>
+        )}
+
+        <div className="flex gap-4 flex-1 min-h-0">
+          {/* Left: search + list */}
+          <div className="w-1/2 space-y-3 overflow-y-auto">
+            <div className="flex gap-1 border-b">
+              <button onClick={() => setTab('invoice')}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === 'invoice' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+                <FileText className="h-3.5 w-3.5 inline mr-1" />{tr('Invoices', '發票', '发票')}
+              </button>
+              <button onClick={() => setTab('card')}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === 'card' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+                <CreditCard className="h-3.5 w-3.5 inline mr-1" />{tr('Card Statements', '信用卡月結單', '信用卡月结单')}
+              </button>
+            </div>
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder={tab === 'invoice' ? tr('Search invoices...', '搜尋發票...', '搜寻发票...') : tr('Search card statements...', '搜尋信用卡月結單...', '搜寻信用卡月结单...')}
+              className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
+            <div className="max-h-96 overflow-y-auto space-y-1">
+              {tab === 'invoice' && invoices.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">{tr('No unpaid invoices', '沒有未付款發票', '没有未付款发票')}</p>}
+              {tab === 'invoice' && invoices.map((inv: any) => (
+                <div key={inv.id} className="flex items-center gap-2">
+                  <button onClick={() => onLinkInvoice(inv.id)}
+                    className="flex-1 flex items-center justify-between px-3 py-2 rounded-lg hover:bg-muted text-sm text-left">
+                    <div>
+                      <span className="font-medium">{inv.invoice_number || inv.id}</span>
+                      <span className="ml-2 text-muted-foreground text-xs">{(inv.customer_name || inv.vendor_name || '').slice(0, 30)}</span>
+                      {inv.description && <span className="block text-xs text-muted-foreground">{inv.description?.slice(0, 50)}</span>}
+                    </div>
+                    <span className="font-mono text-xs">HKD {inv.total?.toLocaleString()}</span>
+                  </button>
+                  {inv.file_id && (
+                    <button onClick={() => setPreviewId(inv.file_id)}
+                      className="p-1 text-xs text-primary hover:underline shrink-0">{tr('View', '查看', '查看')}</button>
+                  )}
+                </div>
+              ))}
+              {tab === 'card' && cardStmts.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">{tr('No card statements', '沒有信用卡月結單', '没有信用卡月结单')}</p>}
+              {tab === 'card' && cardStmts.map((cs: any) => (
+                <div key={cs.id} className="flex items-center gap-2">
+                  <button onClick={() => onLinkCard(cs.id)}
+                    className="flex-1 flex items-center justify-between px-3 py-2 rounded-lg hover:bg-muted text-sm text-left">
+                    <div>
+                      <span className="font-medium">{cs.card_issuer || 'Card'}</span>
+                      {cs.card_number_last4 && <span className="ml-2 text-muted-foreground">··{cs.card_number_last4}</span>}
+                      <span className="ml-2 text-muted-foreground text-xs">{cs.statement_year}-{String(cs.statement_month || 1).padStart(2, '0')}</span>
+                    </div>
+                    <span className="font-mono text-xs">HKD {cs.closing_balance?.toLocaleString() || '-'}</span>
+                  </button>
+                  {cs.file_id && (
+                    <button onClick={() => setPreviewId(cs.file_id)}
+                      className="p-1 text-xs text-primary hover:underline shrink-0">{tr('View', '查看', '查看')}</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Right: PDF preview */}
+          <div className="w-1/2 border-l pl-4 flex flex-col min-h-0">
+            {previewId ? (
+              <iframe src={`${WORKER_API_BASE}/file-storage/${previewId}/download?token=${localStorage.getItem('token') || ''}`}
+                className="w-full flex-1 border rounded" title="Document Preview" />
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
+                {tr('Select a document and click "View" to preview', '選擇文件並點擊"查看"以預覽', '选择文件并点击"查看"以预览')}
               </div>
-              <span className="font-mono">${inv.total?.toLocaleString()}</span>
-            </button>
-          ))}
-          {tab === 'card' && cardStmts.length === 0 && <p className="text-sm text-muted-foreground text-center py-4">No card statements found</p>}
-          {tab === 'card' && cardStmts.map((cs: any) => (
-            <button key={cs.id} onClick={() => onLinkCard(cs.id)}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-muted text-sm text-left">
-              <div>
-                <span className="font-medium">{cs.card_issuer || 'Card'}</span>
-                {cs.card_number_last4 && <span className="ml-2 text-muted-foreground">··{cs.card_number_last4}</span>}
-                <span className="ml-2 text-muted-foreground">
-                  {cs.statement_year}-{String(cs.statement_month || 1).padStart(2, '0')}
-                </span>
-              </div>
-              <span className="font-mono text-xs">HKD {cs.closing_balance?.toLocaleString() || '-'}</span>
-            </button>
-          ))}
+            )}
+          </div>
         </div>
-        <div className="flex justify-end">
-          <button onClick={onClose} className="px-4 py-2 text-sm border rounded-md hover:bg-muted">Cancel</button>
+
+        <div className="flex justify-end mt-3">
+          <button onClick={onClose} className="px-4 py-2 text-sm border rounded-md hover:bg-muted">{tr('Cancel', '取消', '取消')}</button>
         </div>
       </div>
     </div>

@@ -693,13 +693,17 @@ export default function InvoiceReview() {
             </div>
 
             {/* ── Action buttons (bottom) ── */}
-            <div className="flex gap-3 pb-6">
+            <div className="flex gap-2 pb-6 flex-wrap">
               <button onClick={handleDiscard} disabled={discardMut.isPending}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 border rounded-md text-sm text-destructive hover:bg-destructive/10">
-                <Trash2 className="h-4 w-4" /> {tr('Discard', 'Discard 放棄', 'Discard 放弃')}
+                className="flex-1 min-w-[100px] flex items-center justify-center gap-1 py-2 border rounded-md text-sm text-destructive hover:bg-destructive/10">
+                <Trash2 className="h-4 w-4" /> {tr('Discard', 'Discard', 'Discard')}
+              </button>
+              <button onClick={() => { goNextInQueue(); }}
+                className="flex-1 min-w-[100px] flex items-center justify-center gap-1 py-2 border rounded-md text-sm text-muted-foreground hover:bg-muted">
+                {tr('Review Later', '稍後審核', '稍后审核')}
               </button>
               <button onClick={handleSave} disabled={confirmMut.isPending || saved}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 disabled:opacity-60">
+                className="flex-1 min-w-[100px] flex items-center justify-center gap-1 py-2 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 disabled:opacity-60">
                 <Save className="h-4 w-4" />
                 {saved
                   ? (tr('✓ Saved', '已儲存 ✓', '已储存 ✓'))
@@ -709,12 +713,20 @@ export default function InvoiceReview() {
               </button>
               {saved && (
                 <button onClick={() => postGlMut.mutate()} disabled={postGlMut.isPending}
-                  className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-green-600 text-white rounded-md text-sm hover:bg-green-700 disabled:opacity-60">
+                  className="flex-1 min-w-[100px] flex items-center justify-center gap-1 py-2 bg-green-600 text-white rounded-md text-sm hover:bg-green-700 disabled:opacity-60">
                   {postGlMut.isPending
                     ? (tr('Posting…', '過賬中…', '过账中…'))
                     : (tr('📒 Post to GL', '📒 過賬至總賬', '📒 过账至总账'))}
                 </button>
               )}
+            </div>
+            {/* Quick action: change document type if OCR misclassified */}
+            <div className="pb-4 text-xs text-muted-foreground flex items-center gap-2">
+              <span>{tr('Wrong document type?', '文件類型錯誤？', '文件类型错误？')}</span>
+              <button onClick={() => navigate(`/file-storage?q=${invoiceData?.file_id || ''}`)}
+                className="text-primary hover:underline">
+                {tr('Go to File Storage to change', '前往文件管理更改', '前往文件管理更改')}
+              </button>
             </div>
 
           </div>
