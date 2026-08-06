@@ -629,7 +629,7 @@ export default function ChartOfAccounts() {
                         )}
                         <td className="px-4 py-2.5">
                           <div className="flex items-center gap-2">
-                            <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${a.is_active !== 0 ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
+                            <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${a.is_active !== 0 ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
                               {a.is_active !== 0 ? tr('Active', '啟用', '启用') : tr('Inactive', '停用', '停用')}
                             </span>
                             {a.is_active !== 0 ? (

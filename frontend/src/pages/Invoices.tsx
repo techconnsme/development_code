@@ -196,16 +196,6 @@ export default function Invoices() {
                   <td className="p-3 font-medium">
                     <span className="inline-flex items-center gap-1.5">
                       {inv.invoice_number}
-                      {inv.needs_review?.includes('direction') && (
-                        <span title={tr('AI OCR could not determine if this is AR (you issued) or AP (you received). Please review.', 'AI OCR 無法判斷此為 AR（你開出）或 AP（你接收）。請審核。', 'AI OCR 无法判断此为 AR（你开出）或 AP（你接收）。请审核。')}>
-                          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
-                        </span>
-                      )}
-                      {inv.needs_review?.includes('company_not_detected') && (
-                        <span title={tr('Your company name was not detected in this invoice. It may be between two third parties.', '未在此發票中檢測到你公司名稱。可能涉及兩個第三方。', '未在此发票中检测到你公司名称。可能涉及两个第三方。')}>
-                          <Info className="h-3.5 w-3.5 text-blue-500" />
-                        </span>
-                      )}
                       {inv.needs_review?.includes('duplicate') && (
                         <span title={tr('An invoice with this number already existed. The number was adjusted to avoid conflict.', '此發票號碼已存在。號碼已調整以避免衝突。', '此发票号码已存在。号码已调整以避免冲突。')}>
                           <Copy className="h-3.5 w-3.5 text-orange-500" />
