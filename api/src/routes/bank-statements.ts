@@ -553,11 +553,110 @@ bank.patch('/transactions/:id', async (c) => {
 
   await auditLog(db, user.id, 'update', 'bank_transaction', txId, body);
 
-  // Flag linked journal entry as stale if transaction was modified
+  // Auto-regenerate linked journal entry if transaction was modified
   if (body.account_code !== undefined || body.deposit_amount !== undefined || body.withdrawal_amount !== undefined || body.description !== undefined) {
+    // Delete existing journal entry (CASCADE handles lines)
     await db.prepare(
-      "UPDATE journal_entries SET status = 'stale' WHERE reference_type = 'bank_transaction' AND reference_id = ? AND status NOT IN ('stale', 'reconciled')"
+      "DELETE FROM journal_entries WHERE reference_type = 'bank_transaction' AND reference_id = ? AND status != 'reconciled'"
     ).bind(txId).run();
+
+    // Regenerate fresh journal entry from updated transaction
+    const fullTx = await db.prepare(
+      `SELECT bt.*, bs.bank_name, bs.account_number
+       FROM bank_transactions bt
+       LEFT JOIN bank_statements bs ON bt.statement_id = bs.id
+       WHERE bt.id = ? AND bt.user_id = ? AND bt.deleted_at IS NULL`
+    ).bind(txId, tenantId).first<any>();
+
+    if (fullTx) {
+      const desc = fullTx.description || '';
+      const isDirector = (d: string) => /JOSEPH|LIN PUI|LAI KIN|RAYMOND|SZETO/i.test(d);
+      const entryId = `je-${uuidv4().slice(0, 8)}`;
+      const bankCode = (fullTx.bank_name || 'BANK').replace(/[^A-Z0-9]/gi, '').slice(0, 6).toUpperCase() || 'BANK';
+      const txDate = fullTx.transaction_date || new Date().toISOString().split('T')[0];
+
+      // Generate voucher number
+      const ym = txDate.slice(0, 7).replace(/-/g, '');
+      const like = `B-${bankCode}-${ym}-%`;
+      const lastRow = await db.prepare(
+        `SELECT entry_number FROM journal_entries WHERE user_id = ? AND entry_number LIKE ? ORDER BY entry_number DESC LIMIT 1`
+      ).bind(tenantId, like).first<{ entry_number: string }>();
+      let seq = 1;
+      if (lastRow?.entry_number) {
+        const parts = lastRow.entry_number.split('-');
+        const lastSeq = parseInt(parts[parts.length - 1], 10);
+        if (!isNaN(lastSeq)) seq = lastSeq + 1;
+      }
+      const entryNum = `B-${bankCode}-${ym}-${String(seq).padStart(3, '0')}`;
+
+      // Pre-load accounts for code lookup
+      const allAccounts = await db.prepare(
+        'SELECT account_code, account_name, account_type FROM accounts WHERE user_id = ? AND is_active = 1'
+      ).bind(tenantId).all();
+      const accountMap = new Map<string, { name: string; type: string }>();
+      for (const a of allAccounts.results as any[]) {
+        accountMap.set(a.account_code, { name: a.account_name, type: a.account_type });
+      }
+
+      const lines: { code: string; name: string; debit: number; credit: number }[] = [];
+
+      if (fullTx.deposit_amount > 0) {
+        if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
+          lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.deposit_amount, credit: 0 });
+          lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: fullTx.deposit_amount });
+        } else {
+          lines.push({ code: '11101', name: 'Cash on Hand', debit: fullTx.deposit_amount, credit: 0 });
+          const assigned = fullTx.account_code ? accountMap.get(fullTx.account_code) : null;
+          if (assigned && fullTx.account_code !== '11101' && fullTx.account_code !== '21201') {
+            lines.push({ code: fullTx.account_code, name: assigned.name, debit: 0, credit: fullTx.deposit_amount });
+          } else if (isDirector(desc)) {
+            lines.push({ code: '21201', name: 'Director Loan', debit: 0, credit: fullTx.deposit_amount });
+          } else if (/VISA DEBIT.*- *CR|CREDIT.*VISA/i.test(desc)) {
+            lines.push({ code: '62303', name: 'Software Subscriptions', debit: 0, credit: fullTx.deposit_amount });
+          } else if (desc.includes('INTEREST PAYMENT') || desc.includes('利息收入')) {
+            lines.push({ code: '42101', name: 'Bank Interest', debit: 0, credit: fullTx.deposit_amount });
+          } else if (fullTx.deposit_amount >= 5000 && /DIRECT CREDIT|FPS|TRANSFER|CHEQUE/i.test(desc)) {
+            lines.push({ code: '21201', name: 'Director Loan', debit: 0, credit: fullTx.deposit_amount });
+          } else {
+            lines.push({ code: '41101', name: 'Professional Services', debit: 0, credit: fullTx.deposit_amount });
+          }
+        }
+      }
+      if (fullTx.withdrawal_amount > 0) {
+        if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
+          lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.withdrawal_amount, credit: 0 });
+          lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: fullTx.withdrawal_amount });
+        } else if (isDirector(desc) && /TRANSFER-DEBIT|FPS/i.test(desc)) {
+          lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.withdrawal_amount, credit: 0 });
+          lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: fullTx.withdrawal_amount });
+        } else {
+          const assigned = fullTx.account_code ? accountMap.get(fullTx.account_code) : null;
+          let expCode: string, expName: string;
+          if (assigned && fullTx.account_code !== '11101' && fullTx.account_code !== '21201') {
+            expCode = fullTx.account_code;
+            expName = assigned.name;
+          } else {
+            expCode = '62303';
+            expName = 'Software Subscriptions';
+          }
+          lines.push({ code: expCode, name: expName, debit: fullTx.withdrawal_amount, credit: 0 });
+          lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: fullTx.withdrawal_amount });
+        }
+      }
+
+      if (lines.length > 0) {
+        await db.prepare(
+          'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(entryId, tenantId, entryNum, txDate, desc, 'bank_transaction', fullTx.id, 'draft').run();
+
+        for (let i = 0; i < lines.length; i++) {
+          const l = lines[i];
+          await db.prepare(
+            'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+          ).bind(`jl-${uuidv4().slice(0, 8)}`, entryId, l.code, l.name, desc, l.debit, l.credit, i).run();
+        }
+      }
+    }
   }
 
   const row = await db.prepare('SELECT * FROM bank_transactions WHERE id = ? AND deleted_at IS NULL').bind(txId).first();

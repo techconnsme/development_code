@@ -41,7 +41,7 @@ rq.get('/', async (c) => {
 
   // Journal entries (draft or stale)
   const journalPending = await db.prepare(
-    `SELECT id, entry_number, entry_date, description, reference_type, status, created_at
+    `SELECT id, entry_number, entry_date, description, reference_type, reference_id, status, created_at
      FROM journal_entries
      WHERE user_id = ? AND status IN ('draft', 'stale')
      ORDER BY created_at DESC LIMIT ?`
@@ -133,7 +133,7 @@ rq.get('/', async (c) => {
       subtitle: row.description?.slice(0, 80) || undefined,
       date: row.entry_date || row.created_at?.slice(0, 10),
       reason,
-      reviewUrl: '/GJE',
+      reviewUrl: reason === 'stale' ? '/bank-statements' : '/GJE',
     });
   }
 
