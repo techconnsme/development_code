@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye } from 'lucide-react';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
@@ -69,6 +69,17 @@ interface FileItem {
   payment_status?: string;
   amount?: number;
   created_at: string;
+  // Linked records (from API JOIN)
+  invoice_id?: string;
+  invoice_number?: string;
+  invoice_status?: string;
+  invoice_needs_review?: string;
+  statement_id?: string;
+  stmt_bank_name?: string;
+  stmt_status?: string;
+  card_statement_id?: string;
+  card_issuer?: string;
+  card_status?: string;
 }
 
 interface TreeNode {
@@ -159,6 +170,40 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                 </div>
               </div>
               <div className="flex gap-1 ml-2 shrink-0">
+                {/* Review button — link to the processed document's review page */}
+                {(() => {
+                  if (f.invoice_id) {
+                    return (
+                      <a href={`/invoices/review/${f.invoice_id}`}
+                        className="p-1 hover:bg-blue-100 rounded text-blue-600 inline-flex" title={tr('Review invoice', '審核發票', '审核发票')}>
+                        <Eye className="h-3.5 w-3.5" />
+                      </a>
+                    );
+                  }
+                  if (f.statement_id) {
+                    return (
+                      <a href={`/bank-statements/review/${f.statement_id}`}
+                        className="p-1 hover:bg-blue-100 rounded text-blue-600 inline-flex" title={tr('Review bank statement', '審核銀行月結單', '审核银行月结单')}>
+                        <Eye className="h-3.5 w-3.5" />
+                      </a>
+                    );
+                  }
+                  if (f.card_statement_id) {
+                    return (
+                      <a href={`/card-statements/review/${f.card_statement_id}`}
+                        className="p-1 hover:bg-blue-100 rounded text-blue-600 inline-flex" title={tr('Review card statement', '審核信用卡月結單', '审核信用卡月结单')}>
+                        <Eye className="h-3.5 w-3.5" />
+                      </a>
+                    );
+                  }
+                  return null;
+                })()}
+                {/* Amended flag */}
+                {f.invoice_needs_review && (
+                  <span className="px-1 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700 font-medium" title={tr('Manually amended in review', '已在審核中手動修改', '已在审核中手动修改')}>
+                    {tr('Edited', '已編輯', '已编辑')}
+                  </span>
+                )}
                 {f.category === 'invoice' && (
                   <button onClick={() => onSetDirection(f.id, f.direction === 'outgoing' ? 'incoming' : 'outgoing')}
                     className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${

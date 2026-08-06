@@ -1188,18 +1188,28 @@ files.get('/', async (c) => {
   const folder = c.req.query('folder') || '';
   const q = c.req.query('q') || '';
 
-  let sql = 'SELECT id, folder, filename, original_name, file_type, file_size, description, ocr_status, category, direction, payment_status, amount, created_at, updated_at FROM file_records WHERE user_id = ? AND deleted_at IS NULL';
+  let sql = `SELECT fr.id, fr.folder, fr.filename, fr.original_name, fr.file_type, fr.file_size,
+    fr.description, fr.ocr_status, fr.category, fr.direction, fr.payment_status, fr.amount,
+    fr.created_at, fr.updated_at,
+    i.id as invoice_id, i.invoice_number, i.status as invoice_status, i.needs_review as invoice_needs_review,
+    bs.id as statement_id, bs.bank_name as stmt_bank_name, bs.status as stmt_status,
+    cs.id as card_statement_id, cs.card_issuer, cs.status as card_status
+    FROM file_records fr
+    LEFT JOIN invoices i ON i.file_id = fr.id AND i.user_id = fr.user_id
+    LEFT JOIN bank_statements bs ON bs.r2_key = fr.r2_key AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
+    LEFT JOIN card_statements cs ON cs.file_id = fr.id AND cs.user_id = fr.user_id
+    WHERE fr.user_id = ? AND fr.deleted_at IS NULL`;
   const params: unknown[] = [tenantId];
 
   if (folder) {
-    sql += ' AND folder = ?';
+    sql += ' AND fr.folder = ?';
     params.push(folder);
   }
   if (q) {
-    sql += ' AND (filename LIKE ? OR description LIKE ? OR ocr_text LIKE ?)';
+    sql += ' AND (fr.filename LIKE ? OR fr.description LIKE ? OR fr.ocr_text LIKE ?)';
     params.push(`%${q}%`, `%${q}%`, `%${q}%`);
   }
-  sql += ' ORDER BY created_at DESC';
+  sql += ' ORDER BY fr.created_at DESC';
 
   const rows = await c.env.DB.prepare(sql).bind(...params).all();
   return c.json({ data: rows.results });
