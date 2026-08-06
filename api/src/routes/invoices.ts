@@ -384,4 +384,57 @@ invoices.delete('/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// ── Auto-match receipts to AP invoices ──
+invoices.post('/auto-match-receipts', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+
+  // Find unmatched receipts (have receipt_number, are incoming/AP direction)
+  const receipts = await db.prepare(
+    `SELECT id, invoice_number, receipt_number, total, vendor_name, paid_date
+     FROM invoices WHERE user_id = ? AND receipt_number IS NOT NULL
+     AND linked_invoice_id IS NULL AND total > 0`
+  ).bind(tenantId).all();
+
+  // Find unpaid AP invoices
+  const apInvoices = await db.prepare(
+    `SELECT id, invoice_number, total, vendor_name, status
+     FROM invoices WHERE user_id = ? AND direction = 'incoming'
+     AND receipt_number IS NULL AND status NOT IN ('paid', 'cancelled') AND total > 0`
+  ).bind(tenantId).all();
+
+  const matched: any[] = [];
+  const usedApIds = new Set<string>();
+
+  for (const receipt of (receipts.results as any[])) {
+    for (const ap of (apInvoices.results as any[])) {
+      if (usedApIds.has(ap.id)) continue;
+      if (Math.abs(receipt.total - ap.total) < 0.02) {
+        // Link receipt → AP invoice (receipt proves payment of supplier bill)
+        await db.prepare('UPDATE invoices SET linked_invoice_id = ? WHERE id = ? AND user_id = ?')
+          .bind(ap.id, receipt.id, tenantId).run();
+        await db.prepare("UPDATE invoices SET status = 'paid', paid_date = ?, linked_invoice_id = ? WHERE id = ? AND user_id = ?")
+          .bind(receipt.paid_date || receipt.issue_date || new Date().toISOString().split('T')[0], receipt.id, ap.id, tenantId).run();
+        usedApIds.add(ap.id);
+        matched.push({
+          receipt_id: receipt.id,
+          receipt_number: receipt.receipt_number || receipt.invoice_number,
+          receipt_total: receipt.total,
+          invoice_id: ap.id,
+          invoice_number: ap.invoice_number,
+          invoice_total: ap.total,
+        });
+        break;
+      }
+    }
+  }
+
+  return c.json({
+    matched,
+    total_receipts: (receipts.results as any[]).length,
+    total_ap: (apInvoices.results as any[]).length,
+  });
+});
+
 export { invoices as invoiceRoutes };

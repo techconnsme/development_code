@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
-import { Plus, Search, FileText, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy } from 'lucide-react';
+import { Plus, Search, FileText, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Link2 } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
+import { useToast } from '../components/Toast';
 
 // Authenticated PDF download: fetches with Bearer token, opens as blob URL
 async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
@@ -32,6 +33,7 @@ async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
 
 export default function Invoices() {
   const { i18n } = useTranslation();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
@@ -129,10 +131,26 @@ export default function Invoices() {
           <h2 className="text-2xl font-bold">{tr('Expenses', '支出 Expenses', '支出 Expenses')}</h2>
           <p className="text-muted-foreground mt-1">{tr('Manage invoices, expenses and reimbursements', '管理發票、支出與報銷', '管理发票、支出与报销')}</p>
         </div>
-        <button onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
-          <Plus className="h-4 w-4" /> {tr('Create Invoice', '建立發票', '建立发票')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={async () => {
+            try {
+              const result = await api('/invoices/auto-match-receipts', { method: 'POST' });
+              if (result.matched?.length > 0) {
+                toast.success(`${result.matched.length} receipt(s) matched to AP invoices`);
+                queryClient.invalidateQueries({ queryKey: ['invoices'] });
+              } else {
+                toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
+              }
+            } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+          }}
+            className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
+            <Link2 className="h-4 w-4" /> {tr('Match Receipts', '配對收據', '配对收据')}
+          </button>
+          <button onClick={() => setShowForm(true)}
+            className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
+            <Plus className="h-4 w-4" /> {tr('Create Invoice', '建立發票', '建立发票')}
+          </button>
+        </div>
       </div>
 
       {/* Expense category tabs */}
