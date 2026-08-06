@@ -126,7 +126,7 @@ export default function Invoices() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold">{tr('Invoices', '發票 Invoices', '发票 Invoices')}</h2>
+          <h2 className="text-2xl font-bold">{tr('Expenses', '支出 Expenses', '支出 Expenses')}</h2>
           <p className="text-muted-foreground mt-1">{tr('Manage invoices, expenses and reimbursements', '管理發票、支出與報銷', '管理发票、支出与报销')}</p>
         </div>
         <button onClick={() => setShowForm(true)}
