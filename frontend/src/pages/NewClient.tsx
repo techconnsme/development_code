@@ -16,8 +16,8 @@ export default function NewClient() {
     contact_name: '',
     initial_password: '',
     industry: '',
-    fy_start: '2026-04',
-    fy_end: '2027-03',
+    fy_start: '04',
+    fy_end: '03',
   });
   const [result, setResult] = useState<{ user_id: string; email: string; password: string; clientId: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -96,7 +96,7 @@ export default function NewClient() {
             <CredentialRow label={tr('Login Email', '登入電郵', '登入电邮')} value={result.email} copied={copied === 'Login Email'} onCopy={() => copy('Login Email', result.email)} />
             <CredentialRow label={tr('Password', '密碼', '密码')} value={result.password} copied={copied === 'Password'} onCopy={() => copy('Password', result.password)} />
             <CredentialRow label={tr('Industry', '行業', '行业')} value={form.industry || 'general'} copied={false} onCopy={() => {}} />
-            <CredentialRow label={tr('Financial Year', '會計年度', '会计年度')} value={`${form.fy_start} → ${form.fy_end}`} copied={false} onCopy={() => {}} />
+            <CredentialRow label={tr('Financial Year', '會計年度', '会计年度')} value={`${new Date(2024, parseInt(form.fy_start)-1).toLocaleString('default', { month: 'long' })} → ${new Date(2024, parseInt(form.fy_end)-1).toLocaleString('default', { month: 'long' })}`} copied={false} onCopy={() => {}} />
           </div>
           <div className="mt-4 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 flex items-start gap-2">
             <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
@@ -108,7 +108,7 @@ export default function NewClient() {
               <ExternalLink className="h-4 w-4" />
               {tr('View Client Dashboard', '查看客戶儀表板', '查看客户仪表板')}
             </button>
-            <button onClick={() => { setResult(null); setForm({ company_name: '', contact_email: '', contact_name: '', initial_password: '', industry: '', fy_start: '2026-04', fy_end: '2027-03' }); }}
+            <button onClick={() => { setResult(null); setForm({ company_name: '', contact_email: '', contact_name: '', initial_password: '', industry: '', fy_start: '04', fy_end: '03' }); }}
               className="px-4 py-2 border rounded text-sm">
               {tr('Add another client', '新增其他客戶', '新增其他客户')}
             </button>
@@ -192,17 +192,25 @@ export default function NewClient() {
           </select>
         </div>
 
-        {/* FY dates — month-only picker */}
+        {/* FY month-only — the fiscal cycle repeats every year */}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs font-medium text-muted-foreground">{tr('FY Start', '會計年度開始', '会计年度开始')}</label>
-            <input type="month" value={form.fy_start} onChange={e => setForm(f => ({ ...f, fy_start: e.target.value }))}
-              className="mt-1 block w-full px-3 py-2 border rounded text-sm" />
+            <label className="text-xs font-medium text-muted-foreground">{tr('FY Start Month', '會計年度起始月', '会计年度起始月')}</label>
+            <select value={form.fy_start} onChange={e => setForm(f => ({ ...f, fy_start: e.target.value }))}
+              className="mt-1 block w-full px-3 py-2 border rounded text-sm bg-background">
+              {['01','02','03','04','05','06','07','08','09','10','11','12'].map(m => (
+                <option key={m} value={m}>{new Date(2024, parseInt(m)-1).toLocaleString('default', { month: 'long' })}</option>
+              ))}
+            </select>
           </div>
           <div>
-            <label className="text-xs font-medium text-muted-foreground">{tr('FY End', '會計年度結束', '会计年度结束')}</label>
-            <input type="month" value={form.fy_end} onChange={e => setForm(f => ({ ...f, fy_end: e.target.value }))}
-              className="mt-1 block w-full px-3 py-2 border rounded text-sm" />
+            <label className="text-xs font-medium text-muted-foreground">{tr('FY End Month', '會計年度結束月', '会计年度结束月')}</label>
+            <select value={form.fy_end} onChange={e => setForm(f => ({ ...f, fy_end: e.target.value }))}
+              className="mt-1 block w-full px-3 py-2 border rounded text-sm bg-background">
+              {['01','02','03','04','05','06','07','08','09','10','11','12'].map(m => (
+                <option key={m} value={m}>{new Date(2024, parseInt(m)-1).toLocaleString('default', { month: 'long' })}</option>
+              ))}
+            </select>
           </div>
         </div>
 
