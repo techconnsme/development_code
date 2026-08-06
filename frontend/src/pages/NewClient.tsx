@@ -16,8 +16,8 @@ export default function NewClient() {
     contact_name: '',
     initial_password: '',
     industry: '',
-    fy_start: '2026-04-01',
-    fy_end: '2027-03-31',
+    fy_start: '2026-04',
+    fy_end: '2027-03',
   });
   const [result, setResult] = useState<{ user_id: string; email: string; password: string; clientId: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -108,7 +108,7 @@ export default function NewClient() {
               <ExternalLink className="h-4 w-4" />
               {tr('View Client Dashboard', '查看客戶儀表板', '查看客户仪表板')}
             </button>
-            <button onClick={() => { setResult(null); setForm({ company_name: '', contact_email: '', contact_name: '', initial_password: '', industry: '', fy_start: '2026-04-01', fy_end: '2027-03-31' }); }}
+            <button onClick={() => { setResult(null); setForm({ company_name: '', contact_email: '', contact_name: '', initial_password: '', industry: '', fy_start: '2026-04', fy_end: '2027-03' }); }}
               className="px-4 py-2 border rounded text-sm">
               {tr('Add another client', '新增其他客戶', '新增其他客户')}
             </button>
@@ -192,16 +192,16 @@ export default function NewClient() {
           </select>
         </div>
 
-        {/* FY dates */}
+        {/* FY dates — month-only picker */}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs font-medium text-muted-foreground">{tr('FY Start', '會計年度開始', '会计年度开始')}</label>
-            <input type="date" value={form.fy_start} onChange={e => setForm(f => ({ ...f, fy_start: e.target.value }))}
+            <input type="month" value={form.fy_start} onChange={e => setForm(f => ({ ...f, fy_start: e.target.value }))}
               className="mt-1 block w-full px-3 py-2 border rounded text-sm" />
           </div>
           <div>
             <label className="text-xs font-medium text-muted-foreground">{tr('FY End', '會計年度結束', '会计年度结束')}</label>
-            <input type="date" value={form.fy_end} onChange={e => setForm(f => ({ ...f, fy_end: e.target.value }))}
+            <input type="month" value={form.fy_end} onChange={e => setForm(f => ({ ...f, fy_end: e.target.value }))}
               className="mt-1 block w-full px-3 py-2 border rounded text-sm" />
           </div>
         </div>
