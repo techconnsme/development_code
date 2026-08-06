@@ -461,6 +461,59 @@ ${ocrText.slice(0, 8000)}` }],
   };
 }
 
+// Extract readable text from GLM-OCR layout_parsing JSON response.
+// GLM-OCR returns nested layout data like:
+//   { pages: [{ elements: [{ type: "text", content: "TAX INVOICE" }, ...] }] }
+// This extracts just the text content, joined as readable lines.
+// Detect if OCR output is just PDF metadata (not real invoice text).
+// toMarkdown sometimes produces metadata instead of text content for PDFs
+// that lack extractable text layers. We want to fall through to GLM-OCR.
+function isPdfMetadataOnly(text: string): boolean {
+  if (!text || text.length < 30) return false;
+  const lines = text.split('\n').filter(l => l.trim());
+  if (lines.length === 0) return false;
+  // Count metadata-like lines vs real content lines
+  let metaLines = 0;
+  let contentLines = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^(#|##)\s/.test(trimmed) && /\.pdf$/i.test(trimmed)) { metaLines++; continue; }
+    if (/^-\s*(PDFFormatVersion|IsLinearized|IsAcroFormPresent|IsXFAPresent|IsCollectionPresent|PDFVersion|Producer|Creator|Author|Title|Subject|Keywords|Created|Modified|Pages|Encrypted|Page size|File size)/i.test(trimmed)) { metaLines++; continue; }
+    if (/^##\s*Metadata/i.test(trimmed)) { metaLines++; continue; }
+    if (trimmed.length > 5) contentLines++;
+  }
+  // If metadata lines dominate and there's very little real content, it's metadata-only
+  return metaLines >= 3 && contentLines < 3;
+}
+
+function extractTextFromGlmOcr(glmData: any): string {
+  if (typeof glmData === 'string') return glmData;
+  try {
+    const parts: string[] = [];
+    const pages = glmData?.pages || glmData?.data?.pages || [];
+    for (const page of pages) {
+      const elements = page?.elements || page?.text_blocks || page?.blocks || [];
+      for (const el of elements) {
+        const text = el?.content || el?.text || el?.value || '';
+        if (text.trim()) parts.push(text.trim());
+      }
+      if (parts.length > 0 && parts[parts.length - 1] !== '') parts.push('');
+    }
+    // Remove trailing empty string
+    while (parts.length > 0 && parts[parts.length - 1] === '') parts.pop();
+    const result = parts.join('\n').trim();
+    if (result.length > 10) {
+      console.log('[GLM-OCR-EXTRACT] Extracted', parts.length, 'text elements,', result.length, 'chars');
+      return result;
+    }
+    console.log('[GLM-OCR-EXTRACT] Extraction produced too little text, falling back to raw JSON');
+    return JSON.stringify(glmData);
+  } catch (e: any) {
+    console.log('[GLM-OCR-EXTRACT] Error extracting text:', e?.message || e);
+    return JSON.stringify(glmData);
+  }
+}
+
 // Shared import: file_record → invoice + invoice_items
 async function importInvoiceFromFile(
   fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, deepseekKey: string, glmApiKey?: string,
@@ -492,7 +545,8 @@ async function importInvoiceFromFile(
           if (glmResp.ok) {
             const glmData = await glmResp.json() as any;
             glmUsage = glmData.usage || null;
-            const candidate = typeof glmData === 'string' ? glmData : JSON.stringify(glmData);
+            const candidate = extractTextFromGlmOcr(glmData);
+            console.log('[OCR-IMPORT-INVOICE] GLM-OCR result:', candidate.slice(0, 200));
             if (candidate && candidate.length > 20) ocrText = candidate;
           }
         } catch {}
@@ -506,7 +560,14 @@ async function importInvoiceFromFile(
             blob: new Blob([buffer], { type: mimeType }),
           }]);
           const candidate = Array.isArray(mdResult) ? mdResult.map((r: any) => r?.data || r?.content || '').join('\n') : String(mdResult || '');
-          if (candidate && candidate.length > 20) ocrText = candidate;
+          if (candidate && candidate.length > 20) {
+            if (isPdfMetadataOnly(candidate)) {
+              console.log('[OCR-IMPORT-INVOICE] toMarkdown produced only PDF metadata, discarding for GLM-OCR');
+            } else {
+              ocrText = candidate;
+              console.log('[OCR-IMPORT-INVOICE] toMarkdown succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
+            }
+          }
         } catch {}
       }
 
@@ -575,6 +636,7 @@ async function importInvoiceFromFile(
   }
 
   const regexParties = !isReceipt ? regexExtractInvoiceParties(ocrText) : { letterheadVendor: null, billToCustomer: null };
+  console.log('[REGEX-PARTIES] letterheadVendor:', regexParties.letterheadVendor, '| billToCustomer:', regexParties.billToCustomer);
 
   let parsed: any = null;
   let usage: any = null;
@@ -666,6 +728,7 @@ ${ocrText.slice(0, 8000)}`;
     if (!parsed.customer_name && regexParties.billToCustomer) {
       parsed.customer_name = regexParties.billToCustomer;
     }
+    console.log('[POST-AI-CORRECTION] Final — vendor:', parsed?.vendor_name, '| customer:', parsed?.customer_name);
   }
 
   // For receipts: the "customer" is the payer (the company that made the payment)
@@ -754,6 +817,8 @@ ${ocrText.slice(0, 8000)}`;
         counterpartyName = parsed?.customer_name || parsed?.vendor_name || null;
       }
     }
+    console.log('[DIRECTION] ownNorm:', ownNorm, '| vendorNorm:', vendorNorm, '| customerNorm:', customerNorm, '| ownKnown:', ownKnown, '| hasVendor:', hasVendor, '| hasCustomer:', hasCustomer);
+    console.log('[DIRECTION] isIncoming:', isIncoming, '| needsDirectionReview:', needsDirectionReview, '| companyNotDetected:', companyNotDetected);
   }
 
   const customerName = isReceipt
@@ -948,13 +1013,17 @@ ${ocrText.slice(0, 8000)}`;
     duplicateStatus = 'active';
   }
 
-  // Build review flags for persistent display in the Invoices list
+  // Build review flags for persistent display in the Invoices list.
+  // Only force manual review when OCR is provably unreliable: the sum of
+  // AI-extracted line items doesn't match the AI-extracted total.
+  // Direction uncertainty and company-name-not-found are informational
+  // flags but don't block auto-save when the numbers are consistent.
   const reviewFlags: string[] = [];
   if (needsDirectionReview) reviewFlags.push('direction');
   if (companyNotDetected) reviewFlags.push('company_not_detected');
   if (isDuplicate) reviewFlags.push('duplicate');
   if (totalMismatch) reviewFlags.push('total');
-  const needsReview = reviewFlags.join(',');
+  const needsReview = !!totalMismatch ? reviewFlags.join(',') : '';
 
   const invId = `i-${uuidv4().slice(0, 8)}`;
   // Clean imports → 'active' (auto-confirmed). Needs-review imports → 'pending_review'.
@@ -963,6 +1032,7 @@ ${ocrText.slice(0, 8000)}`;
     `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(invId, userId, invNumber, customerId, supplierId || null, invStatus, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef).run();
+  console.log('[INVOICE-CREATED] id:', invId, '| direction:', direction, '| status:', invStatus, '| needsReview:', needsReview, '| vendor:', customerName, '| total:', total, '| currency:', parsed?.currency || 'HKD');
 
   // Auto-link: if this is a receipt, try to find a matching invoice by amount
   // Receipt = proof of payment. Links to AR (customer paid us) or AP (we paid supplier)
@@ -1002,6 +1072,9 @@ ${ocrText.slice(0, 8000)}`;
   ).bind(isReceipt ? 'receipt' : 'invoice', direction, total, folder, fileId).run();
 
   // Return parsed data so the review page can pre-populate without another round-trip
+  // Only report needs_direction_review when balance doesn't match.
+  // Direction uncertainty and company-not-found are informational; they
+  // don't block auto-save on their own.
   return {
     success: true,
     invoice_id: invId,
@@ -1009,8 +1082,8 @@ ${ocrText.slice(0, 8000)}`;
     folder,
     is_receipt: isReceipt,
     receipt_number: receiptNum,
-    needs_direction_review: needsDirectionReview,
-    company_not_detected: companyNotDetected,
+    needs_direction_review: totalMismatch ? needsDirectionReview : false,
+    company_not_detected: totalMismatch ? companyNotDetected : false,
     total_mismatch: totalMismatch,
     usage,
     glm_usage: glmUsage,
@@ -1070,7 +1143,7 @@ function classifyFile(filename: string, fileType: string, ocrText?: string): { f
     return { folder: 'Card Statements', category: 'card_statement' };
   }
   // Invoices — direction is determined later by company_settings comparison, not here
-  if (/invoice|發票|发票|inv[_-]?\d/i.test(name)) {
+  if (/invoice|發票|发票|tax\s*invoice|inv[_-]?|bill[_-]?in|po[_-]?\d/i.test(name)) {
     return { folder: 'Invoices', category: 'invoice' };
   }
   // Receipts
@@ -1100,7 +1173,8 @@ async function runGlmOcr(fileData: string, fileType: string, glmApiKey?: string)
     });
     if (!resp.ok) return { text: '', status: 'failed' };
     const data = await resp.json() as any;
-    const text = typeof data === 'string' ? data : JSON.stringify(data);
+    const text = extractTextFromGlmOcr(data);
+    console.log('[OCR-RUN-GLM] GLM-OCR result:', text.slice(0, 200));
     return { text, status: text.length > 20 ? 'completed' : 'unclear' };
   } catch {
     return { text: '', status: 'failed' };
@@ -1323,7 +1397,8 @@ files.post('/upload', async (c) => {
               });
               if (glmResp.ok) {
                 const glmData = await glmResp.json() as any;
-                ocrText = JSON.stringify(glmData);
+                ocrText = extractTextFromGlmOcr(glmData);
+                console.log('[OCR-AUTO-IMPORT] GLM-OCR result:', ocrText.slice(0, 200));
                 await c.env.DB.prepare(
                   "UPDATE file_records SET ocr_text = ?, ocr_status = 'completed' WHERE id = ?"
                 ).bind(ocrText.slice(0, 10000), id).run();
@@ -2224,9 +2299,11 @@ files.post('/:id/import-document', async (c) => {
   const fname = (fileRow.original_name || fileRow.filename || '').toLowerCase();
   let filenameBank = 0;
   let filenameInvoice = 0;
-  if (/e[-_]?statement|bank.*statement|statement.*\d{6,8}/.test(fname)) filenameBank += 8;
-  if (/deposit\s*(rs|jl|slip)|credit\s*advice/.test(fname)) filenameBank += 5;
-  if (/invoice|receipt|inv\d|rec\d|#e\d|inv022|inv-/.test(fname)) filenameInvoice += 8;
+  // Filename hints are tie-breakers only (1 pt each).
+  // OCR content is the primary signal — a misleading filename must not override it.
+  if (/e[-_]?statement|bank.*statement|statement.*\d{6,8}/.test(fname)) filenameBank += 1;
+  if (/deposit\s*(rs|jl|slip)|credit\s*advice/.test(fname)) filenameBank += 1;
+  if (/invoice|receipt|inv\d|rec\d|#e\d|inv022|inv-|tax\s*invoice/i.test(fname)) filenameInvoice += 1;
 
   let ocrText = fileRow.ocr_text || '';
   if (!ocrText || ocrText.length < 20) {
@@ -2246,8 +2323,13 @@ files.post('/:id/import-document', async (c) => {
             ? mdResult.map((r: any) => r?.data || r?.content || '').join('\n')
             : String(mdResult || '');
           if (candidate && candidate.length > 20) {
-            ocrText = candidate;
-            await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
+            if (isPdfMetadataOnly(candidate)) {
+              console.log('[OCR-IMPORT-DOC] toMarkdown produced only PDF metadata, discarding for GLM-OCR');
+            } else {
+              ocrText = candidate;
+              console.log('[OCR-IMPORT-DOC] toMarkdown succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
+              await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
+            }
           }
         } catch (e: any) {
           console.log('[SMART-IMPORT] toMarkdown failed:', e?.message || e);
@@ -2268,7 +2350,8 @@ files.post('/:id/import-document', async (c) => {
           });
           if (glmResp.ok) {
             const glmData = await glmResp.json() as any;
-            const candidate = typeof glmData === 'string' ? glmData : JSON.stringify(glmData);
+            const candidate = extractTextFromGlmOcr(glmData);
+            console.log('[OCR-IMPORT-DOC] GLM-OCR result:', candidate.slice(0, 200));
             if (candidate && candidate.length > 20) {
               ocrText = candidate;
               await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();

@@ -593,14 +593,15 @@ admin.delete('/tenants/:userId', async (c) => {
   const tables = [
     // Children first (foreign key dependents)
     'journal_lines', 'invoice_items', 'quotation_items', 'purchase_order_items',
-    'service_order_items', 'chat_messages', 'bank_transactions',
+    'service_order_items', 'chat_messages', 'bank_transactions', 'card_transactions',
     // Then parents
-    'journal_entries', 'accounts', 'bank_statements', 'invoices',
+    'journal_entries', 'accounts', 'bank_statements', 'card_statements', 'invoices',
     'expense_receipts', 'file_records', 'customers', 'suppliers',
     'products', 'quotations', 'purchase_orders', 'service_orders',
     'chat_sessions', 'calendar_events', 'messages', 'conversations',
     'company_settings', 'audit_log', 'fixed_assets', 'closed_periods',
     'bank_reconciliations', 'todos', 'documents', 'subscriptions',
+    'workbuddy_config', 'domains',
   ];
 
   for (const table of tables) {
@@ -615,6 +616,17 @@ admin.delete('/tenants/:userId', async (c) => {
     await db.prepare(
       `UPDATE applications SET created_user_id = NULL WHERE created_user_id = ?`
     ).bind(targetUserId).run();
+  } catch { /* ignore */ }
+
+  // Clear firm-related FK references (owner_user_id, client_user_id)
+  try {
+    await db.prepare('DELETE FROM firm_clients WHERE client_user_id = ?').bind(targetUserId).run();
+  } catch { /* ignore */ }
+  try {
+    await db.prepare('DELETE FROM firm_members WHERE user_id = ?').bind(targetUserId).run();
+  } catch { /* ignore */ }
+  try {
+    await db.prepare('DELETE FROM firms WHERE owner_user_id = ?').bind(targetUserId).run();
   } catch { /* ignore */ }
 
   // Delete staff accounts under this company
