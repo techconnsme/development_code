@@ -22,7 +22,9 @@ fix-admin-password.sql
 session-*.md
 
 # Test artifacts
+tests/
 test-results/
+test-samples/
 test-samples-generated/
 *.tsbuildinfo
 
