@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Search, Plus, Minus, Undo2, ChevronDown, ChevronRight, BookOpen, X, GripVertical,
@@ -185,6 +185,24 @@ export default function CoaPreview({
       (a, b) => a.account_code.localeCompare(b.account_code),
     );
   }, [templateAccounts, customAccounts, removedCodes]);
+
+  // Auto-expand all parent accounts on first load
+  useEffect(() => {
+    if (allAccounts.length === 0) return;
+    const parents = new Set(allAccounts.filter(a =>
+      allAccounts.some(c => c.parent_code === a.account_code)
+    ).map(a => a.account_code));
+    if (parents.size > 0) {
+      setExpandedAccounts(prev => {
+        const next = { ...prev };
+        let changed = false;
+        for (const code of parents) {
+          if (!next[code]) { next[code] = true; changed = true; }
+        }
+        return changed ? next : prev;
+      });
+    }
+  }, [allAccounts]);
 
   // ── Filter ─────────────────────────────────────────────────────────────
 
