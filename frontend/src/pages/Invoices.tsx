@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
@@ -37,6 +37,7 @@ export default function Invoices() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [expenseCategory, setExpenseCategory] = useState<'all' | 'cash' | 'reimburse' | 'director'>('all');
@@ -120,6 +121,28 @@ export default function Invoices() {
   }
 
   const invoices = data?.data || [];
+
+  // Deep link from account drill-down (/invoices?highlight=<id>): scroll to the targeted row
+  React.useEffect(() => {
+    const highlightId = searchParams.get('highlight');
+    if (!highlightId) return;
+    if (isLoading || invoices.length === 0) return;
+    // Small delay so the row has rendered, then scroll and pulse it
+    const timer = setTimeout(() => {
+      const el = document.getElementById(`inv-${highlightId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('highlight-pulse');
+        setTimeout(() => el.classList.remove('highlight-pulse'), 5000);
+      }
+      // Clear the URL param so the highlight doesn't re-apply on later navigation
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete('highlight');
+      setSearchParams(newParams, { replace: true });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchParams, isLoading, invoices, setSearchParams]);
+
   const statusLabel = (s: string) => {
     const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '已發送', '已发送'), paid: tr('Paid', '已付', '已付'), overdue: tr('Overdue', '逾期', '逾期'), cancelled: tr('Cancelled', '已取消', '已取消'), pending_review: tr('⏳ Pending', '⏳ 待審', '⏳ 待审') };
     return labels[s] || s;
@@ -213,7 +236,7 @@ export default function Invoices() {
             </thead>
             <tbody>
               {invoices.map((inv: any) => (
-                <tr key={inv.id} className="border-b hover:bg-muted/30">
+                <tr key={inv.id} id={`inv-${inv.id}`} className="border-b hover:bg-muted/30">
                   <td className="p-3 font-medium">
                     <span className="inline-flex items-center gap-1.5">
                       {inv.invoice_number}
