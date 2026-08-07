@@ -7,6 +7,9 @@ import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriang
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import DropdownSelect from '../components/DropdownSelect';
+import SlidePanel from '../components/SlidePanel';
+import AccountTransactionPanel from '../components/AccountTransactionPanel';
+import { useNavigate } from 'react-router-dom';
 
 // ── Fiscal year helpers (mirrors ChartOfAccounts.tsx) ──────────────────────
 interface FiscalYearOption { label: string; startDate: string; endDate: string; }
@@ -49,6 +52,14 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [entryDetails, setEntryDetails] = useState<Record<string, any[]>>({});
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const [expandedPL, setExpandedPL] = useState<Record<string, boolean>>({});
+  const [selectedAccountCode, setSelectedAccountCode] = useState<string | null>(null);
+  const [selectedAccountName, setSelectedAccountName] = useState<string>('');
+  const [panelOpen, setPanelOpen] = useState(false);
+  const navigate = useNavigate();
+
+  const handlePostClick = (bankStatementId: string, transactionId: string) => {
+    navigate(`/bank-statements?statement=${encodeURIComponent(bankStatementId)}&highlight=${encodeURIComponent(transactionId)}`);
+  };
 
   // ── Fiscal year — mirrors ChartOfAccounts.tsx pattern ──────────────────
   const { data: fiscalData } = useQuery({
@@ -576,6 +587,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
 
       {/* P&L Tab */}
       {tab === 'pl' && incomeStatement && (
+        <>
         <div className="bg-card border rounded-xl overflow-hidden max-w-2xl">
           {/* Revenue section */}
           <div>
@@ -615,11 +627,20 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                     </thead>
                     <tbody>
                       {(incomeStatement.revenue_accounts || []).map((acct: any) => (
-                        <tr key={acct.account_code} className="border-b border-muted/20 hover:bg-muted/30">
-                          <td className="py-1.5 px-4 font-mono text-xs">{acct.account_code}</td>
-                          <td className="py-1.5 px-4">{acct.account_name}</td>
-                          <td className="py-1.5 px-4 text-right font-mono text-green-600">
+                        <tr
+                          key={acct.account_code}
+                          className="border-b border-muted/20 hover:bg-muted/30 cursor-pointer group"
+                          onClick={() => {
+                            setSelectedAccountCode(acct.account_code);
+                            setSelectedAccountName(acct.account_name || acct.account_code);
+                            setPanelOpen(true);
+                          }}
+                        >
+                          <td className="py-1.5 px-4 font-mono text-xs group-hover:text-primary">{acct.account_code}</td>
+                          <td className="py-1.5 px-4 group-hover:text-primary">{acct.account_name}</td>
+                          <td className="py-1.5 px-4 text-right font-mono text-green-600 flex items-center justify-end gap-1">
                             HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            <ChevronRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                           </td>
                         </tr>
                       ))}
@@ -668,11 +689,20 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                     </thead>
                     <tbody>
                       {(incomeStatement.expense_accounts || []).map((acct: any) => (
-                        <tr key={acct.account_code} className="border-b border-muted/20 hover:bg-muted/30">
-                          <td className="py-1.5 px-4 font-mono text-xs">{acct.account_code}</td>
-                          <td className="py-1.5 px-4">{acct.account_name}</td>
-                          <td className="py-1.5 px-4 text-right font-mono text-red-600">
+                        <tr
+                          key={acct.account_code}
+                          className="border-b border-muted/20 hover:bg-muted/30 cursor-pointer group"
+                          onClick={() => {
+                            setSelectedAccountCode(acct.account_code);
+                            setSelectedAccountName(acct.account_name || acct.account_code);
+                            setPanelOpen(true);
+                          }}
+                        >
+                          <td className="py-1.5 px-4 font-mono text-xs group-hover:text-primary">{acct.account_code}</td>
+                          <td className="py-1.5 px-4 group-hover:text-primary">{acct.account_name}</td>
+                          <td className="py-1.5 px-4 text-right font-mono text-red-600 flex items-center justify-end gap-1">
                             HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            <ChevronRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                           </td>
                         </tr>
                       ))}
@@ -693,6 +723,25 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             </span>
           </div>
         </div>
+
+        {/* Transaction drill-down slide panel */}
+        <SlidePanel
+          open={panelOpen}
+          onClose={() => setPanelOpen(false)}
+          title={`${tr('Account Transactions', '科目交易', '科目交易')}: ${selectedAccountCode} — ${selectedAccountName}`}
+        >
+          {selectedAccountCode && panelOpen && (
+            <AccountTransactionPanel
+              accountCode={selectedAccountCode}
+              accountName={selectedAccountName}
+              startDate={startDate}
+              endDate={endDate}
+              onClose={() => setPanelOpen(false)}
+              onPostClick={handlePostClick}
+            />
+          )}
+        </SlidePanel>
+        </>
       )}
 
       {/* Balance Sheet Tab */}
