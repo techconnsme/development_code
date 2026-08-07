@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
-import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Receipt, Link2 } from 'lucide-react';
+import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Receipt, Link2, FileText } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 import { useToast } from '../components/Toast';
 import { ReceiptMatchReviewModal } from './AP';
@@ -410,81 +410,21 @@ export default function AR() {
                 <Download className="h-4 w-4" /> {tr('Download PDF', '下載 PDF', '下载 PDF')}
               </button>
             </div>
-            {/* Right: live invoice preview rendered from data */}
-            <div className="flex-1 border rounded-lg overflow-auto bg-white p-8 text-sm font-sans">
-              <div className="max-w-xl mx-auto space-y-6">
-                <div className="flex justify-between items-start border-b pb-4">
-                  <div>
-                    <div className="text-lg font-bold">{invoiceDetail.company_name || 'Proficiency and Reliance Co.'}</div>
-                    <div className="text-xs text-gray-500 mt-1">{invoiceDetail.company_address || ''}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-xl font-bold text-gray-700">INVOICE</div>
-                    <div className="text-xs text-gray-500 mt-1"># {invoiceDetail.invoice_number}</div>
-                  </div>
+            {/* Right: uploaded document PDF (or placeholder if none) */}
+            <div className="flex-1 border rounded-lg overflow-auto bg-gray-100 flex items-center justify-center">
+              {invoiceDetail.file_id ? (
+                <iframe
+                  src={`${WORKER_API_BASE}/file-storage/${invoiceDetail.file_id}/download?inline=1&token=${localStorage.getItem('token') || ''}`}
+                  className="w-full h-full border-0"
+                  title="Uploaded Document"
+                />
+              ) : (
+                <div className="text-center text-muted-foreground p-8">
+                  <FileText className="h-12 w-12 mx-auto mb-3 opacity-30" />
+                  <p className="text-sm">{tr('No uploaded document', '沒有上傳的文件', '没有上传的文件')}</p>
+                  <p className="text-xs mt-1">{tr('This invoice was created manually.', '此發票為手動建立。', '此发票为手动建立。')}</p>
                 </div>
-                <div className="grid grid-cols-2 gap-4 text-xs">
-                  <div>
-                    <div className="text-gray-500 uppercase tracking-wide mb-1">Bill To</div>
-                    <div className="font-semibold">{invoiceDetail.customer_name}</div>
-                    {invoiceDetail.customer_address && <div className="text-gray-500">{invoiceDetail.customer_address}</div>}
-                    {invoiceDetail.customer_email && <div className="text-gray-500">{invoiceDetail.customer_email}</div>}
-                  </div>
-                  <div className="text-right space-y-1">
-                    <div><span className="text-gray-500">Invoice Date: </span>{invoiceDetail.issue_date}</div>
-                    <div><span className="text-gray-500">Due Date: </span>{invoiceDetail.due_date}</div>
-                    {invoiceDetail.receipt_number && <div><span className="text-gray-500">Receipt #: </span>{invoiceDetail.receipt_number}</div>}
-                  </div>
-                </div>
-                <table className="w-full text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-gray-100">
-                      <th className="text-left p-2 border">{tr('Description', '項目 Description', '项目 Description')}</th>
-                      <th className="text-right p-2 border w-16">{tr('Qty', '數量 Qty', '数量 Qty')}</th>
-                      <th className="text-right p-2 border w-24">{tr('Unit Price', '單價 Unit Price', '单价 Unit Price')}</th>
-                      <th className="text-right p-2 border w-24">{tr('Amount', '金額 Amount', '金额 Amount')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(invoiceDetail.items || []).map((item: any, i: number) => (
-                      <tr key={item.id || i} className="border-b">
-                        <td className="p-2 border">{item.description}</td>
-                        <td className="p-2 border text-right">{item.quantity}</td>
-                        <td className="p-2 border text-right">{invoiceDetail.currency} {Number(item.unit_price).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                        <td className="p-2 border text-right">{invoiceDetail.currency} {Number(item.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    {invoiceDetail.tax_amount > 0 && (
-                      <tr>
-                        <td colSpan={3} className="text-right p-2 text-gray-500">Tax ({invoiceDetail.tax_rate}%)</td>
-                        <td className="p-2 text-right border-t">{invoiceDetail.currency} {Number(invoiceDetail.tax_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                      </tr>
-                    )}
-                    <tr className="bg-gray-50 font-bold">
-                      <td colSpan={3} className="text-right p-2 border-t">Total Amount Due</td>
-                      <td className="p-2 text-right border-t border-l">{invoiceDetail.currency} {Number(invoiceDetail.total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-                {invoiceDetail.notes && (
-                  <div className="text-xs text-gray-600 border-t pt-3">
-                    <div className="font-semibold mb-1">Notes</div>
-                    <div className="whitespace-pre-line">{invoiceDetail.notes}</div>
-                  </div>
-                )}
-                <div className="flex justify-end">
-                  <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                    invoiceDetail.status === 'paid' ? 'bg-green-100 text-green-700' :
-                    invoiceDetail.status === 'overdue' ? 'bg-red-100 text-red-700' :
-                    invoiceDetail.status === 'sent' ? 'bg-blue-100 text-blue-700' :
-                    'bg-gray-100 text-gray-600'
-                  }`}>
-                    {invoiceDetail.status?.toUpperCase()}
-                  </span>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
