@@ -176,13 +176,55 @@ ${inputOcrText.slice(0, 8000)}` }],
     return null;
   };
 
-  // First attempt: use existing OCR text (toMarkdown)
+  // ── Dual-path: try both stored OCR (pdftotext/tomarkdown) + toMarkdown fresh ──
+  // If the Docker worker has stored pdftotext output, use it as an alternative path.
+  // Otherwise, toMarkdown runs alone and GLM-OCR serves as fallback on mismatch.
+  let pdftotextOcrText = '';
   if (deepseekKey) {
+    // Path A: the existing stored OCR text (could be pdftotext from Docker worker, or toMarkdown)
     try { parsed = await tryDeepSeekParse(ocrText); } catch {}
     if (parsed) usage = (parsed as any)._usage;
+
+    // Path B (if available): check if file has pdftotext output from Docker worker.
+    // pdftotext output doesn't start with '#' (toMarkdown) or '{' (GLM-JSON).
+    // If the stored OCR is already pdftotext, Path A used it; run toMarkdown as Path B.
+    const isStoredPdftotext = ocrText && ocrText.length > 200 && ocrText[0] !== '#' && ocrText[0] !== '{';
+    if (isStoredPdftotext && parsed) {
+      // Stored OCR is pdftotext → run toMarkdown for comparison via file bucket
+      try {
+        const obj = await fileBucket.get(fileRow.r2_key);
+        if (obj && (ai as any)?.toMarkdown) {
+          const buffer = await obj.arrayBuffer();
+          const mdResult = await (ai as any).toMarkdown([{ name: fileRow.original_name || 'file.pdf', blob: new Blob([buffer], { type: 'application/pdf' }) }]);
+          const tmText = Array.isArray(mdResult) ? mdResult.map((r: any) => r?.data || r?.content || '').join('\n') : String(mdResult || '');
+          if (tmText.length > 20) pdftotextOcrText = ocrText; // save pdftotext for reference
+          const tmParsed = await tryDeepSeekParse(tmText);
+          if (tmParsed?.transactions?.length > 0) {
+            // Quick balance check to compare paths
+            const origTxs = parsed.transactions || [];
+            const origDep = origTxs.reduce((s: number, t: any) => s + (Number(t.deposit_amount) || 0), 0);
+            const origWit = origTxs.reduce((s: number, t: any) => s + (Number(t.withdrawal_amount) || 0), 0);
+            const origOk = parsed.closing_balance == null || Math.abs((parsed.opening_balance ?? 0) + origDep - origWit - parsed.closing_balance) <= 0.01;
+
+            const tmTxs = tmParsed.transactions || [];
+            const tmDep = tmTxs.reduce((s: number, t: any) => s + (Number(t.deposit_amount) || 0), 0);
+            const tmWit = tmTxs.reduce((s: number, t: any) => s + (Number(t.withdrawal_amount) || 0), 0);
+            const tmOk = tmParsed.closing_balance == null || Math.abs((tmParsed.opening_balance ?? 0) + tmDep - tmWit - tmParsed.closing_balance) <= 0.01;
+
+            // If toMarkdown passes balance but pdftotext doesn't, use toMarkdown
+            if (tmOk && !origOk && tmParsed.transactions.length > 0) {
+              console.log('[BANK-DUAL-PATH] toMarkdown passed balance, pdftotext failed — switching to toMarkdown');
+              parsed = tmParsed;
+              ocrText = tmText;
+              ocrSource = 'tomarkdown';
+            }
+          }
+        }
+      } catch (e: any) { console.log('[BANK-DUAL-PATH] toMarkdown comparison error:', e?.message || String(e)); }
+    }
   }
 
-  // Pre-check balance: if toMarkdown result looks wrong, retry with GLM-OCR
+  // Pre-check balance: if result looks wrong, retry with GLM-OCR
   if (parsed && glmApiKey && (parsed.opening_balance != null) && (parsed.closing_balance != null)) {
     const txs = parsed.transactions || [];
     const preTotalDep = txs.reduce((s: number, t: any) => s + (Number(t.deposit_amount) || 0), 0);
@@ -758,18 +800,34 @@ Return ONLY valid JSON, no explanation. Use null for missing values.
 OCR TEXT:
 ${ocrText.slice(0, 8000)}`;
 
-      // Build hints from regex pre-extraction to guide the AI
-      const regexHints = !isReceipt && (regexParties.letterheadVendor || regexParties.billToCustomer)
-        ? `HINTS (use these to guide your extraction):
-  - The issuer (vendor) at the top of the document appears to be: ${regexParties.letterheadVendor || 'NOT FOUND'}
-  - The party being billed (customer) appears to be: ${regexParties.billToCustomer || 'NOT FOUND'}
-  - IMPORTANT: vendor_name MUST be the issuer (top of document), customer_name MUST be the billed party (after Bill To:/Customer:).
-`
-        : '';
+      // Extract PDF metadata from toMarkdown output (Author is often the vendor)
+      let metadataAuthor: string | null = null;
+      const authorMatch = ocrText.match(/^- Author[=:]\s*(.+)$/m);
+      if (authorMatch) metadataAuthor = authorMatch[1].trim();
+      // Filter out non-company values (software names, generic strings)
+      if (metadataAuthor && /^(Word|Microsoft|Adobe|macOS|Excel|PowerPoint|Pages|Numbers|Keynote|WPS|LibreOffice|Unknown|Writer|Calc)$/i.test(metadataAuthor)) {
+        metadataAuthor = null;
+      }
 
-      const promptForInvoice = `${regexHints}Parse this invoice OCR text into structured JSON. Extract:
-- vendor_name: the company that ISSUED this invoice. This is the company at the VERY TOP of the document — look for the name immediately followed by "INVOICE", "TAX INVOICE", or an address (city, country). If the HINTS section above found a letterhead vendor, use that value.
-- customer_name: the company being BILLED. This appears after a label like "Bill To:", "Customer:", "Attn:", or "To:". If the HINTS section above found a billed party, use that value.
+      // Build hints from PDF metadata + regex pre-extraction to guide the AI
+      const hints: string[] = [];
+      if (metadataAuthor && !isReceipt) {
+        hints.push(`- PDF metadata Author field: "${metadataAuthor}" — this is almost certainly the vendor/issuer of this invoice.`);
+      }
+      if (!isReceipt && regexParties.letterheadVendor) {
+        hints.push(`- The letterhead/issuer (vendor) at the top of the document appears to be: ${regexParties.letterheadVendor}`);
+      }
+      if (!isReceipt && regexParties.billToCustomer) {
+        hints.push(`- The party being billed (customer) appears to be: ${regexParties.billToCustomer}`);
+      }
+      if (hints.length > 0) {
+        hints.push('- IMPORTANT: vendor_name MUST be the issuer (company that sent this bill), customer_name MUST be the party being billed.');
+      }
+      const hintBlock = hints.length > 0 ? `HINTS (use these to guide your extraction):\n${hints.join('\n')}\n\n` : '';
+
+      const promptForInvoice = `${hintBlock}Parse this invoice OCR text into structured JSON. Extract:
+- vendor_name: the company that ISSUED this invoice (the sender/supplier). If HINTS provide a PDF Author or letterhead vendor, use that. The vendor is the company that will receive payment.
+- customer_name: the company being BILLED (the client/buyer). If HINTS provide a billed party, use that. The customer is the company that needs to pay this invoice.
 - customer_email: optional customer email
 - invoice_number: the invoice number/ID
 - issue_date: YYYY-MM-DD

@@ -176,6 +176,8 @@ app.route('/api/chat', chatRoutes);
 app.route('/api/calendar', calendarRoutes);
 app.route('/api/file-storage', fileStorageRoutes);
 app.route('/api/services', serviceRoutes);
+
+app.route('/api/services', serviceRoutes);
 app.route('/api/wb/v1', workbuddyV1Routes);
 app.route('/api/admin', adminRoutes);
 app.route('/api/documents', documentRoutes);
