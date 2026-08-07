@@ -626,24 +626,36 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                       </tr>
                     </thead>
                     <tbody>
-                      {(incomeStatement.revenue_accounts || []).map((acct: any) => (
-                        <tr
-                          key={acct.account_code}
-                          className="border-b border-muted/20 hover:bg-muted/30 cursor-pointer group"
-                          onClick={() => {
-                            setSelectedAccountCode(acct.account_code);
-                            setSelectedAccountName(acct.account_name || acct.account_code);
-                            setPanelOpen(true);
-                          }}
-                        >
-                          <td className="py-1.5 px-4 font-mono text-xs group-hover:text-primary">{acct.account_code}</td>
-                          <td className="py-1.5 px-4 group-hover:text-primary">{acct.account_name}</td>
-                          <td className="py-1.5 px-4 text-right font-mono text-green-600 flex items-center justify-end gap-1">
-                            HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                            <ChevronRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                          </td>
-                        </tr>
-                      ))}
+                      {(incomeStatement.revenue_accounts || []).map((acct: any) => {
+                        const isUncategorized = acct.account_code === 'uncategorized';
+                        return (
+                          <tr
+                            key={acct.account_code}
+                            className={`border-b border-muted/20 group ${isUncategorized ? '' : 'hover:bg-muted/30 cursor-pointer'}`}
+                            onClick={isUncategorized ? undefined : () => {
+                              setSelectedAccountCode(acct.account_code);
+                              setSelectedAccountName(acct.account_name || acct.account_code);
+                              setPanelOpen(true);
+                            }}
+                          >
+                            <td className={`py-1.5 px-4 font-mono text-xs ${isUncategorized ? 'text-muted-foreground' : 'group-hover:text-primary'}`}>{acct.account_code}</td>
+                            <td className={`py-1.5 px-4 ${isUncategorized ? 'text-muted-foreground' : 'group-hover:text-primary'}`}>{acct.account_name}</td>
+                            <td className="py-1.5 px-4 text-right font-mono text-green-600 flex items-center justify-end gap-1">
+                              HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              {isUncategorized ? (
+                                <span
+                                  title={tr('Uncategorized bank transactions — categorize them in the bank statement review to see the transaction drill-down', '未分類銀行交易 — 請先在銀行對帳單審核中分類，才能查看交易明細', '未分类银行交易 — 请先在银行对账单审核中分类，才能查看交易明细')}
+                                  className="text-[10px] text-muted-foreground font-normal"
+                                >
+                                  {tr('Uncategorized', '未分類', '未分类')}
+                                </span>
+                              ) : (
+                                <ChevronRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}
@@ -688,24 +700,36 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                       </tr>
                     </thead>
                     <tbody>
-                      {(incomeStatement.expense_accounts || []).map((acct: any) => (
-                        <tr
-                          key={acct.account_code}
-                          className="border-b border-muted/20 hover:bg-muted/30 cursor-pointer group"
-                          onClick={() => {
-                            setSelectedAccountCode(acct.account_code);
-                            setSelectedAccountName(acct.account_name || acct.account_code);
-                            setPanelOpen(true);
-                          }}
-                        >
-                          <td className="py-1.5 px-4 font-mono text-xs group-hover:text-primary">{acct.account_code}</td>
-                          <td className="py-1.5 px-4 group-hover:text-primary">{acct.account_name}</td>
-                          <td className="py-1.5 px-4 text-right font-mono text-red-600 flex items-center justify-end gap-1">
-                            HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                            <ChevronRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                          </td>
-                        </tr>
-                      ))}
+                      {(incomeStatement.expense_accounts || []).map((acct: any) => {
+                        const isUncategorized = acct.account_code === 'uncategorized';
+                        return (
+                          <tr
+                            key={acct.account_code}
+                            className={`border-b border-muted/20 group ${isUncategorized ? '' : 'hover:bg-muted/30 cursor-pointer'}`}
+                            onClick={isUncategorized ? undefined : () => {
+                              setSelectedAccountCode(acct.account_code);
+                              setSelectedAccountName(acct.account_name || acct.account_code);
+                              setPanelOpen(true);
+                            }}
+                          >
+                            <td className={`py-1.5 px-4 font-mono text-xs ${isUncategorized ? 'text-muted-foreground' : 'group-hover:text-primary'}`}>{acct.account_code}</td>
+                            <td className={`py-1.5 px-4 ${isUncategorized ? 'text-muted-foreground' : 'group-hover:text-primary'}`}>{acct.account_name}</td>
+                            <td className="py-1.5 px-4 text-right font-mono text-red-600 flex items-center justify-end gap-1">
+                              HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              {isUncategorized ? (
+                                <span
+                                  title={tr('Uncategorized bank transactions — categorize them in the bank statement review to see the transaction drill-down', '未分類銀行交易 — 請先在銀行對帳單審核中分類，才能查看交易明細', '未分类银行交易 — 请先在银行对账单审核中分类，才能查看交易明细')}
+                                  className="text-[10px] text-muted-foreground font-normal"
+                                >
+                                  {tr('Uncategorized', '未分類', '未分类')}
+                                </span>
+                              ) : (
+                                <ChevronRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}
