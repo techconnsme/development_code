@@ -466,7 +466,7 @@ export default function Invoices() {
             <div className="flex-1 border rounded-lg overflow-auto bg-gray-100 flex items-center justify-center">
               {invoiceDetail.file_id ? (
                 <iframe
-                  src={`${WORKER_API_BASE}/file-storage/${invoiceDetail.file_id}/download?token=${localStorage.getItem('token') || ''}`}
+                  src={`${WORKER_API_BASE}/file-storage/${invoiceDetail.file_id}/download?inline=1&token=${localStorage.getItem('token') || ''}`}
                   className="w-full h-full border-0"
                   title="Uploaded Document"
                 />

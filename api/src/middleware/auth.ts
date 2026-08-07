@@ -24,6 +24,11 @@ export async function authMiddleware(c: AppContext, next: AppNext) {
     }
   }
 
+  // Fallback: query param (iframe downloads can't set headers)
+  if (!token) {
+    token = c.req.query('token') || undefined;
+  }
+
   if (!token) {
     return c.json({ error: 'Authentication required' }, 401);
   }

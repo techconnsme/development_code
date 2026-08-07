@@ -1550,10 +1550,11 @@ files.get('/:id/download', async (c) => {
   if (!obj) return c.json({ error: 'File not found in storage' }, 404);
 
   const downloadName = (row.original_name || row.filename || 'file') as string;
+  const disposition = c.req.query('inline') === '1' ? 'inline' : 'attachment';
   return new Response(obj.body, {
     headers: {
       'Content-Type': (row.file_type as string) || 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${downloadName}"`,
+      'Content-Disposition': `${disposition}; filename="${downloadName}"`,
       'Content-Length': obj.size.toString(),
     },
   });
