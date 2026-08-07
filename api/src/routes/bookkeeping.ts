@@ -1541,4 +1541,142 @@ bookkeeping.post('/profits-tax-provision', bookkeeperMiddleware, async (c) => {
   }, 201);
 });
 
+// ── Transaction-level drill-down for Income Statement ──
+bookkeeping.get('/income-statement/:account_code/transactions', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const accountCode = c.req.param('account_code');
+  const startDate = c.req.query('start_date') || '2000-01-01';
+  const endDate = c.req.query('end_date') || new Date().toISOString().split('T')[0];
+
+  // 1. Fetch journal lines for this account_code (excluding stale entries)
+  const journalLines = await db.prepare(
+    `SELECT jl.id as line_id, jl.entry_id, jl.account_code, jl.account_name,
+            jl.debit, jl.credit, jl.description as line_description,
+            je.entry_number, je.entry_date, je.description as entry_description,
+            je.reference_type, je.reference_id
+     FROM journal_lines jl
+     JOIN journal_entries je ON jl.entry_id = je.id
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
+       AND jl.account_code = ? AND je.status != 'stale'
+     ORDER BY je.entry_date DESC, jl.sort_order`
+  ).bind(tenantId, startDate, endDate, accountCode).all<{
+    line_id: string; entry_id: string; account_code: string; account_name: string;
+    debit: number; credit: number; line_description: string | null;
+    entry_number: string; entry_date: string; entry_description: string;
+    reference_type: string | null; reference_id: string | null;
+  }>();
+
+  // 2. Resolve linked documents for each journal entry
+  //    reference_type can be 'invoice', 'bank_transaction', 'bill', 'expense', 'journal'
+  const journalEntries: any[] = [];
+  for (const jl of (journalLines?.results || [])) {
+    const amount = jl.credit > 0 ? jl.credit : -jl.debit;
+    const direction = jl.credit > 0 ? 'credit' : 'debit';
+    const entry: any = {
+      type: 'journal',
+      line_id: jl.line_id,
+      entry_id: jl.entry_id,
+      entry_number: jl.entry_number,
+      entry_date: jl.entry_date,
+      description: jl.line_description || jl.entry_description,
+      amount: Math.abs(amount),
+      direction,
+      reference_type: jl.reference_type,
+      reference_id: jl.reference_id,
+      linked_documents: [] as { type: string; id: string; label: string }[],
+    };
+
+    // Resolve invoice link
+    if (jl.reference_type === 'invoice' && jl.reference_id) {
+      const inv = await db.prepare(
+        'SELECT id, invoice_number, total FROM invoices WHERE id = ? AND user_id = ?'
+      ).bind(jl.reference_id, tenantId).first<{ id: string; invoice_number: string; total: number }>();
+      if (inv) {
+        entry.invoice_number = inv.invoice_number;
+        entry.invoice_total = inv.total;
+        entry.linked_documents.push({ type: 'invoice', id: inv.id, label: inv.invoice_number });
+      }
+    }
+
+    // Resolve bank statement link (via bank_transactions reference or directly)
+    if (jl.reference_type === 'bank_transaction' && jl.reference_id) {
+      const bt = await db.prepare(
+        `SELECT bt.id, bt.bank_statement_id, bs.statement_year, bs.statement_month, bs.bank_name
+         FROM bank_transactions bt
+         JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+         WHERE bt.id = ? AND bt.user_id = ?`
+      ).bind(jl.reference_id, tenantId).first<{
+        id: string; bank_statement_id: string;
+        statement_year: number; statement_month: number; bank_name: string;
+      }>();
+      if (bt) {
+        entry.bank_statement_id = bt.bank_statement_id;
+        entry.bank_statement_period = `${bt.statement_year}-${String(bt.statement_month).padStart(2, '0')}`;
+        entry.linked_documents.push({
+          type: 'bank_statement', id: bt.bank_statement_id,
+          label: `${bt.bank_statement_id} · ${bt.statement_year}-${String(bt.statement_month).padStart(2, '0')} · ${bt.bank_name}`,
+        });
+      }
+    }
+
+    journalEntries.push(entry);
+  }
+
+  // 3. Fetch unposted bank transactions (have account_code but NOT journalized)
+  const unpostedBankTx = await db.prepare(
+    `SELECT bt.id as transaction_id, bt.transaction_date, bt.description,
+            CASE WHEN bt.deposit_amount > 0 THEN bt.deposit_amount ELSE bt.withdrawal_amount END as amount,
+            CASE WHEN bt.deposit_amount > 0 THEN 'credit' ELSE 'debit' END as direction,
+            bt.account_code, bt.bank_statement_id,
+            bs.statement_year, bs.statement_month, bs.bank_name
+     FROM bank_transactions bt
+     JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+     LEFT JOIN journal_entries je ON je.reference_id = bt.id AND je.reference_type = 'bank_transaction'
+     WHERE bt.user_id = ? AND bt.transaction_date >= ? AND bt.transaction_date <= ?
+       AND bt.account_code = ? AND bt.deleted_at IS NULL
+       AND je.id IS NULL
+     ORDER BY bt.transaction_date DESC`
+  ).bind(tenantId, startDate, endDate, accountCode).all<{
+    transaction_id: string; transaction_date: string; description: string;
+    amount: number; direction: string; account_code: string;
+    bank_statement_id: string; statement_year: number; statement_month: number; bank_name: string;
+  }>();
+
+  const unposted: any[] = (unpostedBankTx?.results || []).map(bt => ({
+    type: 'bank',
+    transaction_id: bt.transaction_id,
+    transaction_date: bt.transaction_date,
+    description: bt.description,
+    amount: bt.amount,
+    direction: bt.direction,
+    account_code: bt.account_code,
+    bank_statement_id: bt.bank_statement_id,
+    bank_statement_period: `${bt.statement_year}-${String(bt.statement_month).padStart(2, '0')}`,
+    has_voucher: false,
+    linked_documents: [{
+      type: 'bank_statement', id: bt.bank_statement_id,
+      label: `${bt.bank_statement_id} · ${bt.statement_year}-${String(bt.statement_month).padStart(2, '0')} · ${bt.bank_name}`,
+    }],
+  }));
+
+  // Get account name
+  const acctInfo = await db.prepare(
+    'SELECT account_name FROM accounts WHERE account_code = ? AND user_id = ? LIMIT 1'
+  ).bind(accountCode, tenantId).first<{ account_name: string }>();
+
+  const total = journalEntries.reduce((s, je) => s + je.amount, 0) +
+                unposted.reduce((s, bt) => s + bt.amount, 0);
+
+  return c.json({
+    account_code: accountCode,
+    account_name: acctInfo?.account_name || accountCode,
+    total,
+    journal_entries: journalEntries,
+    unposted_bank_transactions: unposted,
+    period: { start: startDate, end: endDate },
+  });
+});
+
 export { bookkeeping as bookkeepingRoutes };
