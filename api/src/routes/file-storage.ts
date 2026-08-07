@@ -5,6 +5,7 @@ import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { wsBroadcast } from './ws';
 import { generateReceiptNumber, detectOwnNumber } from '../lib/numbering';
 import { processBankStatement, extractCompanyInfo, extractBankInfo } from '../lib/bank-ocr';
+import { normalizeCompanyName, fuzzyMatchCompany, matchBankName } from '../lib/company-matcher';
 
 // Audit logging helper
 async function auditLog(db: any, userId: string, action: string, entityType: string, entityId: string | null, changes?: object) {
@@ -16,17 +17,13 @@ async function auditLog(db: any, userId: string, action: string, entityType: str
 }
 
 // Bank name detection fallback from OCR text and/or filename.
-// (Lily issues #1 and #9 — bank name not detected, especially HSBC.)
+// Uses fuzzy HK bank alias map for comprehensive matching (English + Chinese, acronyms).
 function inferBankName(...texts: (string | null | undefined)[]): string | null {
-  const combined = texts.filter(Boolean).join(' ').toUpperCase();
-  if (/HSBC|匯豐|汇丰/.test(combined)) return 'HSBC';
-  if (/STANDARD\s*CHARTERED|渣打/.test(combined)) return 'Standard Chartered';
-  if (/HANG\s*SENG|恆生|恒生/.test(combined)) return 'Hang Seng Bank';
-  if (/BANK\s*OF\s*CHINA|BOC\s*HK|中國銀行|中银/.test(combined)) return 'Bank of China (HK)';
-  if (/CITIBANK|花旗/.test(combined)) return 'Citibank';
-  if (/\bDBS\b|星展/.test(combined)) return 'DBS';
-  if (/CITIC|中信/.test(combined)) return 'China CITIC Bank';
-  if (/DAH\s*SING|大新/.test(combined)) return 'Dah Sing Bank';
+  for (const t of texts) {
+    if (!t) continue;
+    const m = matchBankName(t);
+    if (m) return m;
+  }
   return null;
 }
 
@@ -839,19 +836,19 @@ ${ocrText.slice(0, 8000)}`;
   // legitimately be either OUR OWN company or the other party, depending on whether this
   // document is a bill WE issued (outgoing) or a bill FROM a supplier TO us (incoming).
   // Compare both against our own company name (from company_settings) to tell them apart.
-  const normalizeCompanyName = (s: string | null | undefined) =>
-    (s || '').toLowerCase()
-      .replace(/\b(limited|ltd|inc|incorporated|llc|llp|co\.?|company|corp|corporation|gmbh|holdings|group)\b/g, '')
-      .replace(/[^a-z0-9]/g, '')
-      .trim();
+  // Uses fuzzy matching to handle "Pastel Tech" ↔ "PASTEL TECH LIMITED" variants.
 
   let counterpartyName: string | null = null;
   let isIncoming = false;
-  let needsDirectionReview = false; // AI can't confidently determine direction
-  let companyNotDetected = false;   // User's company not found in vendor or customer names
+  let needsDirectionReview = false;
+  let companyNotDetected = false;
 
   if (!isReceipt) {
-    const ownCompany = await db.prepare('SELECT name FROM company_settings WHERE user_id = ?').bind(userId).first<{ name: string | null }>();
+    const ownCompany = await db.prepare(
+      'SELECT name, legal_name, short_name FROM company_settings WHERE user_id = ?'
+    ).bind(userId).first<{ name: string | null; legal_name: string | null; short_name: string | null }>();
+    const ownCandidates = [ownCompany?.name, ownCompany?.legal_name, ownCompany?.short_name]
+      .filter((s): s is string => !!s && s.trim().length > 0);
     const ownNorm = normalizeCompanyName(ownCompany?.name);
     const vendorNorm = normalizeCompanyName(parsed?.vendor_name);
     const customerNorm = normalizeCompanyName(parsed?.customer_name);
@@ -859,11 +856,21 @@ ${ocrText.slice(0, 8000)}`;
     const hasCustomer = !!(parsed?.customer_name && parsed.customer_name.trim().length > 2);
     const ownKnown = !!(ownNorm && ownNorm.length > 3);
 
-    if (ownKnown && customerNorm && (customerNorm.includes(ownNorm) || ownNorm.includes(customerNorm))) {
+    // Fuzzy-match vendor & customer against own company
+    const vendorMatch = ownKnown && hasVendor
+      ? fuzzyMatchCompany(parsed?.vendor_name, ownCandidates, { topN: 3, minScore: 50 })
+      : null;
+    const customerMatch = ownKnown && hasCustomer
+      ? fuzzyMatchCompany(parsed?.customer_name, ownCandidates, { topN: 3, minScore: 50 })
+      : null;
+    const vendorIsOurs = vendorMatch?.best ? vendorMatch.best.score >= 70 : false;
+    const customerIsOurs = customerMatch?.best ? customerMatch.best.score >= 70 : false;
+
+    if (ownKnown && customerIsOurs) {
       // ✅ The "Bill To:" / "Customer:" field on this invoice is US — supplier billed us.
       isIncoming = true;
       counterpartyName = parsed?.vendor_name || null;
-    } else if (ownKnown && vendorNorm && (vendorNorm.includes(ownNorm) || ownNorm.includes(vendorNorm))) {
+    } else if (ownKnown && vendorIsOurs) {
       // ✅ The letterhead is US — we issued this invoice to a customer.
       isIncoming = false;
       counterpartyName = parsed?.customer_name || null;
@@ -884,12 +891,10 @@ ${ocrText.slice(0, 8000)}`;
       const acName = normalizeCompanyName(acNameMatch?.[1] || '');
       const emailMatch = ocrText.match(/([a-zA-Z0-9._%+-]+@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}))/);
       const emailDomain = normalizeCompanyName(emailMatch?.[2]?.split('.')[0] || '');
-      const vendorNormShort = normalizeCompanyName(parsed?.vendor_name?.split(' ').slice(0, 2).join(' ') || '');
+      const vendorNormFull = normalizeCompanyName(parsed?.vendor_name || '');
+      const customerNormFull = normalizeCompanyName(parsed?.customer_name || '');
 
       if (acName && acName.length > 3) {
-        const vendorNormFull = normalizeCompanyName(parsed?.vendor_name || '');
-        const customerNormFull = normalizeCompanyName(parsed?.customer_name || '');
-
         if (customerNormFull.length > 3 && acName.includes(customerNormFull)) {
           isIncoming = false;
           counterpartyName = parsed?.customer_name || null;
@@ -905,22 +910,19 @@ ${ocrText.slice(0, 8000)}`;
             const rawAcName = ocrText.toUpperCase().match(/A\/C\s*NAME\s*[:：]?\s*([A-Z\s&']+?)(?:\n|$)/)?.[1]?.trim() || null;
             counterpartyName = rawAcName ? rawAcName.split('\n')[0].trim() : null;
           } else {
-            // Last resort: if we have a vendor name but no customer, default to incoming (bill from supplier)
             isIncoming = hasVendor;
             counterpartyName = parsed?.customer_name || parsed?.vendor_name || null;
           }
         }
-      } else if (emailDomain && emailDomain.length > 3 && vendorNormShort && (emailDomain.includes(vendorNormShort.slice(0, 5)) || vendorNormShort.includes(emailDomain.slice(0, 5)))) {
+      } else if (emailDomain && emailDomain.length > 3 && vendorNormFull && (emailDomain.includes(vendorNormFull.slice(0, 5)) || vendorNormFull.includes(emailDomain.slice(0, 5)))) {
         isIncoming = true;
         counterpartyName = parsed?.vendor_name || null;
       } else {
-        // No signals at all — default to incoming (assume supplier bill received)
         isIncoming = true;
         counterpartyName = parsed?.customer_name || parsed?.vendor_name || null;
       }
     }
-    console.log('[DIRECTION] ownNorm:', ownNorm, '| vendorNorm:', vendorNorm, '| customerNorm:', customerNorm, '| ownKnown:', ownKnown, '| hasVendor:', hasVendor, '| hasCustomer:', hasCustomer);
-    console.log('[DIRECTION] isIncoming:', isIncoming, '| needsDirectionReview:', needsDirectionReview, '| companyNotDetected:', companyNotDetected);
+    console.log('[DIRECTION] vendorIsOurs:', vendorIsOurs, '| customerIsOurs:', customerIsOurs, '| isIncoming:', isIncoming);
   }
 
   const customerName = isReceipt
@@ -931,35 +933,42 @@ ${ocrText.slice(0, 8000)}`;
   // Route counterparty to correct table:
   // - Incoming invoice (supplier billed us) → suppliers table
   // - Outgoing invoice (we billed customer) → customers table
-  // Deduplication: normalize name before creating to avoid "3 invoices = 3 customers"
-  const normName = (s: string | null | undefined) =>
-    (s || '').toLowerCase()
-      .replace(/\b(limited|ltd|inc|co\.?|company|corp|hk|hong kong|intl|int'l|international)\b/g, '')
-      .replace(/[^a-z0-9]/g, '')
-      .trim();
+  // Deduplication: fuzzy-match name before creating to avoid duplicate records.
 
-  // Never create a record for null, blank, or generic "Unknown" names
   const isValidName = (s: string | null | undefined) =>
     !!s && s.trim().length > 2 && s.trim().toLowerCase() !== 'unknown';
+
+  // Shared fuzzy dedup helper
+  const findOrCreateCounterparty = async (
+    table: 'customers' | 'suppliers',
+    name: string,
+    email?: string | null,
+  ): Promise<{ id: string; created: boolean }> => {
+    const rows = await db.prepare(`SELECT id, name FROM ${table} WHERE user_id = ?`).bind(userId).all<{ id: string; name: string }>();
+    const candidates = (rows.results || []).map(r => ({ id: r.id, name: r.name }));
+    const match = fuzzyMatchCompany(name, candidates, { topN: 3, minScore: 50 });
+    if (match.best && match.best.score >= 70 && match.best.id) {
+      return { id: match.best.id, created: false };
+    }
+    // Email exact-match fallback
+    if (email) {
+      const byEmail = await db.prepare(`SELECT id FROM ${table} WHERE user_id = ? AND email = ?`).bind(userId, email).first<{ id: string }>();
+      if (byEmail) return { id: byEmail.id, created: false };
+    }
+    // Create new
+    const newId = table === 'customers' ? `c-${uuidv4().slice(0, 8)}` : `sup-${uuidv4().slice(0, 8)}`;
+    await db.prepare(`INSERT INTO ${table} (id, user_id, name, email, is_active) VALUES (?, ?, ?, ?, 1)`)
+      .bind(newId, userId, name, email || null).run();
+    return { id: newId, created: true };
+  };
 
   let customerId: string | null = null;
   let supplierId: string | null = null;
 
   if (isIncoming && isValidName(customerName)) {
-    // Supplier invoice — find or create in suppliers table
-    const normTarget = normName(customerName);
-    const allSuppliers = await db.prepare('SELECT id, name FROM suppliers WHERE user_id = ?').bind(userId).all<{ id: string; name: string }>();
-    const existingSupplier = (allSuppliers.results || []).find((s: any) => {
-      const n = normName(s.name);
-      return n === normTarget || n.includes(normTarget) || normTarget.includes(n);
-    });
-    if (existingSupplier) {
-      supplierId = existingSupplier.id;
-    } else {
-      supplierId = `sup-${uuidv4().slice(0, 8)}`;
-      await db.prepare('INSERT INTO suppliers (id, user_id, name, email, is_active) VALUES (?, ?, ?, ?, 1)')
-        .bind(supplierId, userId, customerName, customerEmail || null).run();
-    }
+    // Supplier invoice — find or create in suppliers table (fuzzy dedup)
+    const supResult = await findOrCreateCounterparty('suppliers', customerName, customerEmail);
+    supplierId = supResult.id;
     // For incoming invoices, we (PNR) are the customer being billed.
     // Find or create a self-customer record representing our own company.
     const ownCompanyName = (await db.prepare('SELECT name FROM company_settings WHERE user_id = ?').bind(userId).first<{ name: string | null }>())?.name || 'My Company (please set your company name in Settings)';
@@ -972,26 +981,9 @@ ${ocrText.slice(0, 8000)}`;
         .bind(customerId, userId, ownCompanyName).run();
     }
   } else if (isValidName(customerName)) {
-    // Outgoing invoice — find or create in customers table with deduplication
-    const normTarget = normName(customerName);
-    const allCustomers = await db.prepare('SELECT id, name FROM customers WHERE user_id = ?').bind(userId).all<{ id: string; name: string }>();
-    const existing = (allCustomers.results || []).find((c: any) => {
-      const n = normName(c.name);
-      return n === normTarget || n.includes(normTarget) || normTarget.includes(n);
-    });
-    if (existing) {
-      customerId = existing.id;
-    } else {
-      if (customerEmail) {
-        const byEmail = await db.prepare('SELECT id FROM customers WHERE user_id = ? AND email = ?').bind(userId, customerEmail).first<{ id: string }>();
-        if (byEmail) customerId = byEmail.id;
-      }
-      if (!customerId) {
-        customerId = `c-${uuidv4().slice(0, 8)}`;
-        await db.prepare('INSERT INTO customers (id, user_id, name, email, is_active) VALUES (?, ?, ?, ?, 1)')
-          .bind(customerId, userId, customerName, customerEmail || null).run();
-      }
-    }
+    // Outgoing invoice — find or create in customers table (fuzzy dedup)
+    const custResult = await findOrCreateCounterparty('customers', customerName, customerEmail);
+    customerId = custResult.id;
   }
 
   // If no customer found/created (name was invalid/unknown), use a placeholder
@@ -1125,7 +1117,7 @@ ${ocrText.slice(0, 8000)}`;
   if (companyNotDetected) reviewFlags.push('company_not_detected');
   if (isDuplicate) reviewFlags.push('duplicate');
   if (totalMismatch) reviewFlags.push('total');
-  const needsReview = !!totalMismatch ? reviewFlags.join(',') : '';
+  const needsReview = reviewFlags.length > 0 ? reviewFlags.join(',') : '';
 
   const invId = `i-${uuidv4().slice(0, 8)}`;
   // Clean imports → 'active' (auto-confirmed). Needs-review imports → 'pending_review'.
@@ -1184,8 +1176,8 @@ ${ocrText.slice(0, 8000)}`;
     folder,
     is_receipt: isReceipt,
     receipt_number: receiptNum,
-    needs_direction_review: totalMismatch ? needsDirectionReview : false,
-    company_not_detected: totalMismatch ? companyNotDetected : false,
+    needs_direction_review: needsDirectionReview,
+    company_not_detected: companyNotDetected,
     total_mismatch: totalMismatch,
     usage,
     glm_usage: glmUsage,
