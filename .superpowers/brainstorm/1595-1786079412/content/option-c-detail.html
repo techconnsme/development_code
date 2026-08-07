@@ -1,0 +1,247 @@
+<h2>Option C — Full Slide-Out Panel Design</h2>
+<p class="subtitle">Account transaction drill-down with journal entries first, unposted bank tx below, and pink "Post" navigation</p>
+
+<div class="section">
+  <h3>The Big Picture: P&amp;L stays on the left, detail slides in from the right</h3>
+</div>
+
+<div class="split">
+  <!-- LEFT: P&L -->
+  <div class="mockup" style="flex: 1;">
+    <div class="mockup-header">P&amp;L (left side — stays visible)</div>
+    <div class="mockup-body" style="font-size:0.78rem;color:#1e293b;">
+      <div style="padding:6px 10px;background:#f0fdf4;border-radius:4px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
+        <span><strong>▼ Revenue</strong></span>
+        <span style="color:#16a34a;font-weight:700;">HKD 85,000</span>
+      </div>
+      <div style="padding:6px 10px 6px 20px;background:#f8fafc;border-radius:4px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;border-left:3px solid #3b82f6;cursor:pointer;">
+        <span style="font-family:mono;font-size:0.72rem;">40001</span>
+        <span style="flex:1;margin-left:8px;">Sales Revenue</span>
+        <span style="color:#16a34a;font-weight:600;">50,000</span>
+        <span style="margin-left:6px;font-size:0.6rem;color:#3b82f6;">▶</span>
+      </div>
+      <div style="padding:6px 10px 6px 20px;background:#f8fafc;border-radius:4px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-family:mono;font-size:0.72rem;">40002</span>
+        <span style="flex:1;margin-left:8px;">Service Income</span>
+        <span style="color:#16a34a;font-weight:600;">35,000</span>
+      </div>
+      <div style="padding:6px 10px;background:#fef2f2;border-radius:4px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
+        <span><strong>▼ Expenses</strong></span>
+        <span style="color:#dc2626;font-weight:700;">HKD 35,000</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Slide-out Panel -->
+  <div class="mockup" style="flex: 0 0 420px; border: 2px solid #3b82f6;">
+    <div class="mockup-header" style="background:#eff6ff;color:#1e40af;">
+      ← Slide-in Panel (400px) — Account Transactions
+    </div>
+    <div class="mockup-body" style="font-size:0.75rem;color:#1e293b;max-height:500px;overflow-y:auto;">
+      <!-- Header -->
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 10px;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span><strong style="font-family:mono;">40001</strong> Sales Revenue</span>
+          <span style="color:#16a34a;font-weight:700;">HKD 50,000</span>
+        </div>
+        <div style="font-size:0.65rem;color:#64748b;margin-top:2px;">FY 2026 · 12 journal entries + 3 unposted bank tx</div>
+      </div>
+
+      <!-- ── JOURNAL ENTRIES (confirmed, posted) ── -->
+      <div style="font-size:0.65rem;color:#64748b;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+        <span style="display:inline-block;width:8px;height:8px;background:#16a34a;border-radius:50%;"></span>
+        JOURNAL ENTRIES (12)
+      </div>
+
+      <div style="border:1px solid #e2e8f0;border-radius:6px;margin-bottom:6px;overflow:hidden;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#f8fafc;border-bottom:1px solid #f1f5f9;">
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span style="font-family:mono;font-size:0.68rem;font-weight:600;">GJE-0067</span>
+            <span style="font-size:0.65rem;color:#64748b;">2026-08-01</span>
+          </span>
+          <span style="color:#16a34a;font-weight:600;">HKD 15,300</span>
+        </div>
+        <div style="padding:4px 8px;font-size:0.68rem;color:#475569;display:flex;align-items:center;gap:6px;">
+          <span style="flex:1;">Consulting — DEF International Ltd</span>
+          <a href="#" style="color:#3b82f6;text-decoration:none;font-size:0.62rem;white-space:nowrap;">📎 INV-0115</a>
+          <a href="#" style="color:#3b82f6;text-decoration:none;font-size:0.62rem;white-space:nowrap;">📄 BS-0712</a>
+        </div>
+      </div>
+
+      <div style="border:1px solid #e2e8f0;border-radius:6px;margin-bottom:6px;overflow:hidden;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#f8fafc;border-bottom:1px solid #f1f5f9;">
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span style="font-family:mono;font-size:0.68rem;font-weight:600;">GJE-0058</span>
+            <span style="font-size:0.65rem;color:#64748b;">2026-07-22</span>
+          </span>
+          <span style="color:#16a34a;font-weight:600;">HKD 8,200</span>
+        </div>
+        <div style="padding:4px 8px;font-size:0.68rem;color:#475569;display:flex;align-items:center;gap:6px;">
+          <span style="flex:1;">Service fees — XYZ Corp</span>
+          <a href="#" style="color:#3b82f6;text-decoration:none;font-size:0.62rem;white-space:nowrap;">📎 INV-0102</a>
+        </div>
+      </div>
+
+      <div style="border:1px solid #e2e8f0;border-radius:6px;margin-bottom:6px;overflow:hidden;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#f8fafc;border-bottom:1px solid #f1f5f9;">
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span style="font-family:mono;font-size:0.68rem;font-weight:600;">GJE-0042</span>
+            <span style="font-size:0.65rem;color:#64748b;">2026-07-15</span>
+          </span>
+          <span style="color:#16a34a;font-weight:600;">HKD 12,500</span>
+        </div>
+        <div style="padding:4px 8px;font-size:0.68rem;color:#475569;display:flex;align-items:center;gap:6px;">
+          <span style="flex:1;">Client payment — ABC Ltd</span>
+          <a href="#" style="color:#3b82f6;text-decoration:none;font-size:0.62rem;white-space:nowrap;">📎 INV-0089</a>
+          <a href="#" style="color:#3b82f6;text-decoration:none;font-size:0.62rem;white-space:nowrap;">📄 BS-0712</a>
+        </div>
+      </div>
+
+      <!-- ── DIVIDER ── -->
+      <div style="border-top:2px dashed #fbbf24;margin:10px 0;position:relative;">
+        <span style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#fef3c7;color:#92400e;font-size:0.6rem;padding:2px 8px;border-radius:10px;font-weight:600;">⚠ UNPOSTED BANK TRANSACTIONS (3)</span>
+      </div>
+
+      <!-- Unposted Bank Tx #1 -->
+      <div style="border:1px solid #fecaca;border-radius:6px;margin-bottom:6px;overflow:hidden;background:#fff5f5;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid #fecaca;">
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:0.65rem;color:#64748b;">2026-08-03</span>
+            <span style="font-size:0.6rem;padding:1px 5px;background:#fef3c7;color:#92400e;border-radius:8px;">bank</span>
+          </span>
+          <span style="color:#16a34a;font-weight:600;">HKD 22,000</span>
+        </div>
+        <div style="padding:4px 8px;font-size:0.68rem;color:#475569;display:flex;align-items:center;justify-content:space-between;">
+          <span>Bank deposit — TT from client</span>
+          <span style="display:flex;gap:4px;align-items:center;">
+            <a href="#" style="color:#3b82f6;text-decoration:none;font-size:0.62rem;">📄 BS-0712</a>
+            <button style="background:#ec4899;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:0.6rem;font-weight:600;cursor:pointer;white-space:nowrap;">Post →</button>
+          </span>
+        </div>
+      </div>
+
+      <!-- Unposted Bank Tx #2 -->
+      <div style="border:1px solid #fecaca;border-radius:6px;margin-bottom:6px;overflow:hidden;background:#fff5f5;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid #fecaca;">
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:0.65rem;color:#64748b;">2026-07-28</span>
+            <span style="font-size:0.6rem;padding:1px 5px;background:#fef3c7;color:#92400e;border-radius:8px;">bank</span>
+          </span>
+          <span style="color:#16a34a;font-weight:600;">HKD 14,500</span>
+        </div>
+        <div style="padding:4px 8px;font-size:0.68rem;color:#475569;display:flex;align-items:center;justify-content:space-between;">
+          <span>FPS deposit — GHI Partners</span>
+          <span style="display:flex;gap:4px;align-items:center;">
+            <a href="#" style="color:#3b82f6;text-decoration:none;font-size:0.62rem;">📄 BS-0712</a>
+            <button style="background:#ec4899;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:0.6rem;font-weight:600;cursor:pointer;white-space:nowrap;">Post →</button>
+          </span>
+        </div>
+      </div>
+
+      <!-- Unposted Bank Tx #3 (uncategorized) -->
+      <div style="border:1px solid #fecaca;border-radius:6px;margin-bottom:6px;overflow:hidden;background:#fff5f5;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid #fecaca;">
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:0.65rem;color:#64748b;">2026-07-14</span>
+            <span style="font-size:0.6rem;padding:1px 5px;background:#fef3c7;color:#92400e;border-radius:8px;">bank</span>
+            <span style="font-size:0.55rem;padding:1px 4px;background:#f1f5f9;color:#64748b;border-radius:4px;">no code</span>
+          </span>
+          <span style="color:#16a34a;font-weight:600;">HKD 3,500</span>
+        </div>
+        <div style="padding:4px 8px;font-size:0.68rem;color:#475569;display:flex;align-items:center;justify-content:space-between;">
+          <span>Deposit — unmatched</span>
+          <span style="display:flex;gap:4px;align-items:center;">
+            <a href="#" style="color:#3b82f6;text-decoration:none;font-size:0.62rem;">📄 BS-0712</a>
+            <button style="background:#ec4899;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:0.6rem;font-weight:600;cursor:pointer;white-space:nowrap;">Post →</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 16px;">
+  <h3>What Happens When User Clicks the Pink "Post →" Button</h3>
+</div>
+
+<div class="split">
+  <div class="mockup" style="flex: 1;">
+    <div class="mockup-header">Step 1 — Navigate to Bank Statements</div>
+    <div class="mockup-body" style="font-size:0.75rem;color:#1e293b;">
+      <p style="font-size:0.7rem;color:#64748b;margin-bottom:8px;">URL becomes: <code style="font-size:0.65rem;">/bookkeeping?tab=statements&statement=BS-0712&highlight=tx-b8a3f2c1</code></p>
+      <div style="border:1px solid #e2e8f0;border-radius:6px;padding:8px;">
+        <div style="font-weight:600;margin-bottom:4px;">📋 Bank Statements</div>
+        <div style="padding:4px 8px;background:#f8fafc;border-radius:4px;margin-bottom:3px;">BS-0714 · Jul 2026 · HSBC</div>
+        <div style="padding:4px 8px;background:#eff6ff;border:2px solid #3b82f6;border-radius:4px;margin-bottom:3px;font-weight:600;">▼ BS-0712 · Jul 2026 · HSBC ← auto-expanded</div>
+        <div style="padding:4px 8px;background:#f8fafc;border-radius:4px;">BS-0709 · Jun 2026 · HSBC</div>
+      </div>
+    </div>
+  </div>
+  <div class="mockup" style="flex: 1;">
+    <div class="mockup-header">Step 2 — Transaction Highlighted in Statement</div>
+    <div class="mockup-body" style="font-size:0.75rem;color:#1e293b;">
+      <p style="font-size:0.7rem;color:#64748b;margin-bottom:8px;">Inside BS-0712, the target transaction gets a <span style="background:#fef3c7;padding:1px 4px;border-radius:3px;">yellow pulse highlight</span> then settles</p>
+      <div style="border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">
+        <div style="padding:5px 8px;border-bottom:1px solid #f1f5f9;font-size:0.65rem;">2026-07-28 · Transfer to Supplier · <span style="color:#dc2626;">-5,000</span></div>
+        <div style="padding:5px 8px;border-bottom:1px solid #f1f5f9;font-size:0.65rem;">2026-07-27 · Cheque Deposit · <span style="color:#16a34a;">+8,200</span></div>
+        <div style="padding:5px 8px;border-bottom:1px solid #f1f5f9;font-size:0.65rem;">2026-07-25 · ATM Withdrawal · <span style="color:#dc2626;">-2,000</span></div>
+        <div style="padding:5px 8px;font-size:0.65rem;background:#fef3c7;border:2px solid #fbbf24;border-radius:2px;animation:pulse 1s;">
+          <strong>▶ 2026-07-14 · Deposit — unmatched · +3,500</strong>
+          <span style="display:block;font-size:0.55rem;color:#92400e;">Highlighted — click "Create Journal Entry" to post</span>
+        </div>
+        <div style="padding:5px 8px;font-size:0.65rem;">2026-07-12 · Salary Payment · <span style="color:#dc2626;">-30,000</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 16px;">
+  <h3>Animation: Panel Slides In From the Right</h3>
+  <div style="display:flex;gap:12px;align-items:flex-start;">
+    <div class="mockup" style="flex: 0 0 300px;">
+      <div class="mockup-header">Before Click</div>
+      <div class="mockup-body" style="min-height:120px;font-size:0.7rem;display:flex;align-items:center;justify-content:center;color:#64748b;">
+        P&amp;L takes full width<br>
+        <span style="font-size:0.6rem;">(panel hidden: translateX(100%))</span>
+      </div>
+    </div>
+    <div style="font-size:2rem;color:#64748b;display:flex;align-items:center;">→</div>
+    <div class="mockup" style="flex: 0 0 300px;">
+      <div class="mockup-header">After Click (300ms slide)</div>
+      <div class="mockup-body" style="min-height:120px;font-size:0.7rem;display:flex;gap:4px;">
+        <div style="flex:1;background:#f8fafc;border-radius:4px;padding:8px;font-size:0.6rem;color:#64748b;">P&amp;L<br>(narrower)</div>
+        <div style="flex:1;background:#eff6ff;border:2px solid #3b82f6;border-radius:4px;padding:8px;font-size:0.6rem;">← Slide Panel<br>400px<br>transition: transform 0.3s ease</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 16px;">
+  <h3>Panel Features Summary</h3>
+  <table style="width:100%;font-size:0.8rem;border-collapse:collapse;">
+    <tr style="border-bottom:1px solid #e2e8f0;">
+      <td style="padding:6px 8px;">📍 <strong>Position</strong></td>
+      <td style="padding:6px 8px;">Slides in from right edge. P&amp;L compresses. Uses CSS <code>transform: translateX</code> with <code>transition: 0.3s ease</code></td>
+    </tr>
+    <tr style="border-bottom:1px solid #e2e8f0;">
+      <td style="padding:6px 8px;">📊 <strong>Sorting</strong></td>
+      <td style="padding:6px 8px;">Journal entries first (newest → oldest), then unposted bank tx (newest → oldest), separated by dashed divider</td>
+    </tr>
+    <tr style="border-bottom:1px solid #e2e8f0;">
+      <td style="padding:6px 8px;">🔗 <strong>Doc links</strong></td>
+      <td style="padding:6px 8px;">📎 = invoice link, 📄 = bank statement scan link. Open in new tab or preview modal</td>
+    </tr>
+    <tr style="border-bottom:1px solid #e2e8f0;">
+      <td style="padding:6px 8px;">🩷 <strong>Pink "Post →"</strong></td>
+      <td style="padding:6px 8px;">Navigates to <code>/bookkeeping?tab=statements&amp;statement=BS-XXXX&amp;highlight=TX-ID</code>. Opens statement, scrolls to tx, yellow highlight animation</td>
+    </tr>
+    <tr style="border-bottom:1px solid #e2e8f0;">
+      <td style="padding:6px 8px;">🎨 <strong>Highlight</strong></td>
+      <td style="padding:6px 8px;">CSS animation: yellow background pulse (1s), then static yellow border. Uses <code>@keyframes pulseHighlight</code>. Auto-clears after 5s or on scroll</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;">❌ <strong>Close</strong></td>
+      <td style="padding:6px 8px;">X button in panel header, or click outside (backdrop), or press Escape. Slides back out (300ms)</td>
+    </tr>
+  </table>
+</div>

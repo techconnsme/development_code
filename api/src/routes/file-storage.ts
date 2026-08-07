@@ -176,11 +176,12 @@ ${inputOcrText.slice(0, 8000)}` }],
     return null;
   };
 
-  // ── Dual-path: try both stored OCR (pdftotext/tomarkdown) + toMarkdown fresh ──
-  // If the Docker worker has stored pdftotext output, use it as an alternative path.
-  // Otherwise, toMarkdown runs alone and GLM-OCR serves as fallback on mismatch.
+  // ── Dual-path: try both stored OCR + toMarkdown (pdftotext gated for future) ──
+  // When a Docker host runs pdftotext and stores output in file_records.ocr_text,
+  // set ENABLE_PDFTOTEXT_DUAL_PATH to true to activate dual-path comparison.
+  const ENABLE_PDFTOTEXT_DUAL_PATH = false;
   let pdftotextOcrText = '';
-  if (deepseekKey) {
+  if (ENABLE_PDFTOTEXT_DUAL_PATH && deepseekKey) {
     // Path A: the existing stored OCR text (could be pdftotext from Docker worker, or toMarkdown)
     try { parsed = await tryDeepSeekParse(ocrText); } catch {}
     if (parsed) usage = (parsed as any)._usage;
@@ -981,6 +982,90 @@ ${ocrText.slice(0, 8000)}`;
       }
     }
     console.log('[DIRECTION] vendorIsOurs:', vendorIsOurs, '| customerIsOurs:', customerIsOurs, '| isIncoming:', isIncoming);
+  }
+
+  // ── GLM-OCR retry on direction uncertainty ──
+  if (!isReceipt && (needsDirectionReview || companyNotDetected) && glmApiKey && parsed) {
+    console.log('[INVOICE-OCR-RETRY] Direction uncertain, retrying with GLM-OCR...');
+    try {
+      const obj = await fileBucket.get(fileRow.r2_key);
+      if (obj) {
+        const buffer = await obj.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const base64 = btoa(binary);
+        const mimeType = fileRow.file_type || 'application/pdf';
+
+        let glmResp: Response | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 3000));
+          glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${glmApiKey}` },
+            body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
+          });
+          if (glmResp.status !== 429) break;
+        }
+
+        if (glmResp?.ok) {
+          const glmData = await glmResp.json() as any;
+          const pages = glmData?.layout_details || [];
+          const parts: string[] = [];
+          for (const p of pages) {
+            for (const el of p) {
+              if (el.label === 'table' && el.content) parts.push(el.content);
+              else if (el.label === 'text' && el.content) {
+                const x = el.bbox_2d?.[0] || 0;
+                parts.push(`[${x < 600 ? 'L' : x < 1200 ? 'M' : 'R'}] ${el.content}`);
+              }
+            }
+            parts.push('');
+          }
+          const glmFormatted = parts.join('\n').trim();
+
+          if (glmFormatted.length > 20) {
+            // Call DeepSeek with positional format
+            const mdAuthor = ocrText.match(/^- Author[=:]\s*(.+)$/m);
+            const metaAuthor = mdAuthor?.[1]?.trim() || null;
+            const hints = metaAuthor ? `HINT: PDF Author="${metaAuthor}" — likely the vendor.\n` : '';
+            const retryPrompt = `${hints}Parse this invoice OCR into JSON. Fields: vendor_name (issuer/supplier), customer_name (party being billed), invoice_number, issue_date, due_date, total. IMPORTANT: Positional format with [L]=top/left (letterhead/vendor), [M]=middle (client/customer), HTML tables have column headers. Return ONLY valid JSON.\n\nOCR:\n${glmFormatted.slice(0, 8000)}`;
+
+            const retryResp = await fetch('https://api.deepseek.com/chat/completions', {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
+              body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'user', content: retryPrompt }], max_tokens: 2000 }),
+            });
+            const retryData = await retryResp.json() as any;
+            const retryRaw = retryData.choices?.[0]?.message?.content || '';
+            const retryMatch = retryRaw.match(/\{[\s\S]*\}/);
+            let retryParsed: any = null;
+            if (retryMatch) try { retryParsed = JSON.parse(retryMatch[0]); } catch {}
+
+            if (retryParsed) {
+              // Re-check direction with GLM-OCR result
+              const retryVendorMatch = fuzzyMatchCompany(retryParsed.vendor_name, ownCandidates, { topN: 3, minScore: 50 });
+              const retryCustMatch = fuzzyMatchCompany(retryParsed.customer_name, ownCandidates, { topN: 3, minScore: 50 });
+              const retryVendorOurs = retryVendorMatch?.best ? retryVendorMatch.best.score >= 70 : false;
+              const retryCustOurs = retryCustMatch?.best ? retryCustMatch.best.score >= 70 : false;
+
+              if (retryCustOurs || retryVendorOurs) {
+                console.log('[INVOICE-OCR-RETRY] GLM-OCR resolved direction: customerIsOurs=', retryCustOurs, 'vendorIsOurs=', retryVendorOurs);
+                parsed = retryParsed;
+                isIncoming = retryCustOurs;
+                counterpartyName = retryCustOurs ? (retryParsed.vendor_name || null) : (retryParsed.customer_name || null);
+                needsDirectionReview = false;
+                companyNotDetected = false;
+                glmUsage = glmData.usage || null;
+                ocrText = glmFormatted; // Use GLM OCR text going forward
+              } else {
+                console.log('[INVOICE-OCR-RETRY] GLM-OCR still uncertain, keeping original');
+              }
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      console.log('[INVOICE-OCR-RETRY] Error:', e?.message || String(e));
+    }
   }
 
   const customerName = isReceipt
@@ -2346,6 +2431,86 @@ ${ocrText.slice(0, 12000)}` }],
         if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
       }
     } catch (e: any) { console.log('[CARD-PARSE] DeepSeek error:', e.message); }
+  }
+
+  // ── GLM-OCR retry on balance mismatch ──
+  if (parsed && glmApiKey && (parsed.opening_balance != null) && (parsed.closing_balance != null)) {
+    const txs = parsed.transactions || [];
+    const totalCharges = txs.reduce((s: number, t: any) => {
+      const amt = Number(t.amount || 0);
+      const tt = (t.transaction_type || '').toLowerCase();
+      return s + (tt === 'payment' || tt === 'refund' ? -amt : amt);
+    }, 0);
+    const preComputed = (parsed.opening_balance ?? 0) + totalCharges;
+    if (Math.abs(preComputed - parsed.closing_balance) > 0.01) {
+      console.log(`[CARD-OCR-RETRY] toMarkdown balance mismatch, retrying with GLM-OCR...`);
+      try {
+        const obj = await fileBucket.get(fileRow.r2_key);
+        if (obj) {
+          const buffer = await obj.arrayBuffer();
+          const bytes = new Uint8Array(buffer);
+          let binary = ''; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          const base64 = btoa(binary);
+          const mimeType = fileRow.file_type || 'application/pdf';
+
+          let glmResp: Response | null = null;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 3000));
+            glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${glmApiKey}` },
+              body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
+            });
+            if (glmResp.status !== 429) break;
+          }
+
+          if (glmResp?.ok) {
+            const glmData = await glmResp.json() as any;
+            const glmUsageData = glmData.usage || null;
+            const pages = glmData?.layout_details || [];
+            const parts: string[] = [];
+            for (const p of pages) {
+              for (const el of p) {
+                if (el.label === 'table' && el.content) parts.push(el.content);
+                else if (el.label === 'text' && el.content) {
+                  const x = el.bbox_2d?.[0] || 0;
+                  parts.push(`[${x < 600 ? 'L' : x < 1200 ? 'M' : 'R'}] ${el.content}`);
+                }
+              }
+              parts.push('');
+            }
+            const glmFormatted = parts.join('\n').trim();
+
+            if (glmFormatted.length > 20) {
+              const retryResp = await fetch('https://api.deepseek.com/chat/completions', {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
+                body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'user', content: `Parse this card statement OCR into JSON. Fields: card_issuer, card_network, card_number_last4, cardholder_name, currency, statement_year, statement_month, period_start, period_end (YYYY-MM-DD), credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date, transactions: [{ transaction_date, posting_date, description, amount, transaction_type }]. IMPORTANT: Positional format [L/M/R] and HTML tables preserve column alignment. Return ONLY valid JSON.\n\nOCR:\n${glmFormatted.slice(0, 8000)}` }], max_tokens: 4000 }),
+              });
+              const retryData = await retryResp.json() as any;
+              const retryRaw = retryData.choices?.[0]?.message?.content || '';
+              const retryMatch = retryRaw.match(/\{[\s\S]*\}/);
+              let retryParsed: any = null;
+              if (retryMatch) try { retryParsed = JSON.parse(retryMatch[0]); } catch {}
+
+              if (retryParsed?.transactions?.length > 0) {
+                const rtTxs = retryParsed.transactions || [];
+                const rtChange = rtTxs.reduce((s: number, t: any) => {
+                  const amt = Number(t.amount || 0);
+                  const tt = (t.transaction_type || '').toLowerCase();
+                  return s + (tt === 'payment' || tt === 'refund' ? -amt : amt);
+                }, 0);
+                const rtComputed = (retryParsed.opening_balance ?? 0) + rtChange;
+                if (retryParsed.closing_balance == null || Math.abs(rtComputed - retryParsed.closing_balance) <= 0.01) {
+                  console.log('[CARD-OCR-RETRY] GLM-OCR balance passed, using retry result');
+                  parsed = retryParsed;
+                  glmUsage = glmUsageData;
+                  ocrText = glmFormatted;
+                }
+              }
+            }
+          }
+        }
+      } catch (e: any) { console.log('[CARD-OCR-RETRY] Error:', e?.message || String(e)); }
+    }
   }
 
   // Insert card statement first (FK constraint: transactions reference this)
