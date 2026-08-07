@@ -57,7 +57,7 @@ app.use('*', cors({
 app.use('*', async (c, next) => {
   await next();
   c.res.headers.set('X-Content-Type-Options', 'nosniff');
-  c.res.headers.set('X-Frame-Options', 'DENY');
+  // X-Frame-Options removed — file-storage PDF download needs iframe embedding from Pages frontend
   c.res.headers.set('X-XSS-Protection', '1; mode=block');
   c.res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   c.res.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
@@ -174,6 +174,7 @@ app.route('/api/payment', paymentRoutes);
 app.route('/api/company/website', websiteRoutes);
 app.route('/api/chat', chatRoutes);
 app.route('/api/calendar', calendarRoutes);
+app.route('/api/file-storage', fileStorageRoutes);
 app.route('/api/services', serviceRoutes);
 app.route('/api/wb/v1', workbuddyV1Routes);
 app.route('/api/admin', adminRoutes);

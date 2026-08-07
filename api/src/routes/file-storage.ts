@@ -124,18 +124,20 @@ async function importStatementFromFile(
     };
   }
 
-  // Parse with DeepSeek AI
+  // Parse with DeepSeek AI — with GLM-OCR retry on balance failure
   let parsed: any = null;
   let usage: any = null;
   let glmUsage: any = null;
-  if (deepseekKey) {
-    try {
-      const parseResp = await fetch('https://api.deepseek.com/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [{ role: 'user', content: `Parse the following bank statement OCR text into structured JSON. Extract:
+  let ocrSource: 'tomarkdown' | 'glm-ocr' = 'tomarkdown';
+
+  const tryDeepSeekParse = async (inputOcrText: string): Promise<any> => {
+    if (!deepseekKey) return null;
+    const resp = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: `Parse the following bank statement OCR text into structured JSON. Extract:
 - bank_name: the bank name
 - account_number: account number if visible
 - currency: default "HKD"
@@ -156,24 +158,123 @@ IMPORTANT — banks (especially HSBC) often print SEVERAL transaction lines on t
 - Only set "balance" to a number when that exact figure is printed on that exact line.
 
 IMPORTANT — deciding whether a line's amount is a deposit or a withdrawal:
-- Judge ONLY by which column (Deposit vs Withdrawal) the number is printed under / aligned with in the original layout. Never infer it from wording in the description such as "CR", "CR TO", "credit", "DR", "debit", etc. — those words describe the OTHER party's account, not this statement's own column, and are frequently misleading (e.g. a line reading "CR TO <account>" is very often actually a WITHDRAWAL from this account, because money is being credited TO the other account, not to this one).
-- A figure printed with a trailing "DR" suffix directly attached to it (e.g. "10,500.00DR") means the running balance is NEGATIVE / overdrawn at that point — parse it as a negative number (e.g. -10500.00). Do NOT drop the "DR" suffix and treat it as a positive balance, and do NOT leave "balance" null just because of the suffix — the number itself (minus the DR marker) is exactly the balance figure, just negated.
-- Self-check your work continuously down each ledger, not only within same-date batches: keep a running total starting from that ledger's B/F BALANCE (or opening_balance), and every time you reach a line that has a balance printed on it (including a "DR" balance, now correctly negated), verify running total so far equals that printed balance exactly. If it doesn't, you have swapped a deposit/withdrawal or misread a figure somewhere between the previous checkpoint and this line — go back and correct it (checking column alignment and DR suffixes first) so every printed balance reconciles before you return the JSON.
+- Judge ONLY by which column (Deposit vs Withdrawal) the number is printed under / aligned with in the original layout. Never infer it from wording in the description such as "CR", "CR TO", "credit", "DR", "debit", etc.
+- For HTML tables: read each <td> position relative to the header row (columns: Date | Details | Deposit | Withdrawal | Balance). An amount in the Deposit column = deposit_amount. An amount in the Withdrawal column = withdrawal_amount.
+- For [L]/[M]/[R] tagged text: [L]=left columns (date/description), [M]=middle columns, [R]=right columns (Deposit/Withdrawal/Balance). Cross-reference with HTML tables for column mapping.
+- A figure printed with a trailing "DR" suffix directly attached to it (e.g. "10,500.00DR") means the running balance is NEGATIVE. Parse it as a negative number.
+- Self-check: keep a running total from B/F BALANCE and verify against every printed balance checkpoint. If it doesn't reconcile, you've swapped a deposit/withdrawal — correct it before returning JSON.
 
 Return ONLY valid JSON, no explanation. If you can't parse something, use null.
 
 OCR TEXT:
-${ocrText.slice(0, 8000)}` }],
-          max_tokens: 4000,
-        }),
-      });
-      const parseData = await parseResp.json() as any;
-      const raw = parseData.choices?.[0]?.message?.content || '';
-      usage = parseData.usage || null;
-      console.log('[DEEPSEEK-RAW-BANK]', raw.slice(0, 2000));
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-    } catch {}
+${inputOcrText.slice(0, 8000)}` }],
+        max_tokens: 4000,
+      }),
+    });
+    const data = await resp.json() as any;
+    const raw = data.choices?.[0]?.message?.content || '';
+    console.log('[DEEPSEEK-RAW-BANK]', raw.slice(0, 2000));
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) return JSON.parse(m[0]);
+    return null;
+  };
+
+  // First attempt: use existing OCR text (toMarkdown)
+  if (deepseekKey) {
+    try { parsed = await tryDeepSeekParse(ocrText); } catch {}
+    if (parsed) usage = (parsed as any)._usage;
+  }
+
+  // Pre-check balance: if toMarkdown result looks wrong, retry with GLM-OCR
+  if (parsed && glmApiKey && (parsed.opening_balance != null) && (parsed.closing_balance != null)) {
+    const txs = parsed.transactions || [];
+    const preTotalDep = txs.reduce((s: number, t: any) => s + (Number(t.deposit_amount) || 0), 0);
+    const preTotalWit = txs.reduce((s: number, t: any) => s + (Number(t.withdrawal_amount) || 0), 0);
+    const preComputed = (parsed.opening_balance ?? 0) + preTotalDep - preTotalWit;
+    const balanceMismatched = Math.abs(preComputed - parsed.closing_balance) > 0.01;
+
+    if (balanceMismatched) {
+      console.log(`[BANK-OCR-RETRY] toMarkdown balance mismatch (expected=${preComputed} actual=${parsed.closing_balance}), retrying with GLM-OCR...`);
+      try {
+        const obj = await fileBucket.get(fileRow.r2_key);
+        if (obj) {
+          const buffer = await obj.arrayBuffer();
+          const bytes = new Uint8Array(buffer);
+          let binary = '';
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          const base64 = btoa(binary);
+          const mimeType = fileRow.file_type || 'application/pdf';
+
+          // GLM-OCR with rate-limit retry (up to 3 attempts, 3s/6s/9s delays)
+          let glmResp: Response | null = null;
+          for (let glmAttempt = 0; glmAttempt < 3; glmAttempt++) {
+            if (glmAttempt > 0) {
+              const delay = glmAttempt * 3000;
+              console.log(`[BANK-OCR-RETRY] GLM rate-limited, waiting ${delay}ms before retry ${glmAttempt + 1}/3...`);
+              await new Promise(r => setTimeout(r, delay));
+            }
+            glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${glmApiKey}` },
+              body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
+            });
+            if (glmResp.status !== 429) break;
+            console.log(`[BANK-OCR-RETRY] GLM returned 429 (rate limited), attempt ${glmAttempt + 1}/3`);
+          }
+
+          if (glmResp && glmResp.ok) {
+            const glmData = await glmResp.json() as any;
+            glmUsage = glmData.usage || null;
+
+            // Build new positional format: HTML tables + [L/M/R] column tags
+            const pages = glmData?.layout_details || [];
+            const newParts: string[] = [];
+            for (const p of pages) {
+              for (const el of p) {
+                if (el.label === 'table' && el.content) {
+                  newParts.push(el.content); // HTML table with column structure preserved
+                } else if (el.label === 'text' && el.content) {
+                  const x = el.bbox_2d?.[0] || 0;
+                  const col = x < 600 ? 'L' : x < 1200 ? 'M' : 'R';
+                  newParts.push(`[${col}] ${el.content}`);
+                }
+              }
+              newParts.push('');
+            }
+            const glmFormatted = newParts.join('\n').trim();
+
+            if (glmFormatted.length > 20) {
+              console.log('[BANK-OCR-RETRY] GLM-OCR formatted, length:', glmFormatted.length);
+              const retryParsed = await tryDeepSeekParse(glmFormatted);
+              if (retryParsed?.transactions?.length > 0) {
+                // Re-validate balance on retry
+                const retryTxs = retryParsed.transactions || [];
+                const retryTotalDep = retryTxs.reduce((s: number, t: any) => s + (Number(t.deposit_amount) || 0), 0);
+                const retryTotalWit = retryTxs.reduce((s: number, t: any) => s + (Number(t.withdrawal_amount) || 0), 0);
+                const retryComputed = (retryParsed.opening_balance ?? 0) + retryTotalDep - retryTotalWit;
+                const retryOk = retryParsed.closing_balance == null || Math.abs(retryComputed - retryParsed.closing_balance) <= 0.01;
+
+                console.log(`[BANK-OCR-RETRY] GLM retry balance: computed=${retryComputed} actual=${retryParsed.closing_balance} ok=${retryOk}`);
+
+                if (retryOk) {
+                  // GLM-OCR retry passed — use this result
+                  parsed = retryParsed;
+                  ocrText = glmFormatted; // update OCR text to GLM format
+                  ocrSource = 'glm-ocr';
+                  // Store the improved OCR text for future use
+                  await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL")
+                    .bind(glmFormatted.slice(0, 50000), fileId).run();
+                } else {
+                  console.log('[BANK-OCR-RETRY] GLM retry also failed balance check, keeping toMarkdown result flagged as draft');
+                }
+              }
+            }
+          }
+        }
+      } catch (e: any) {
+        console.log('[BANK-OCR-RETRY] GLM-OCR retry error:', e?.message || String(e));
+      }
+    }
   }
   const deepseekRaw = parsed ? JSON.stringify(parsed).slice(0, 3000) : null;
 
@@ -452,6 +553,7 @@ ${ocrText.slice(0, 8000)}` }],
     usage,
     glm_usage: glmUsage,
     deepseek_raw: deepseekRaw,
+    ocr_source: ocrSource,
     is_duplicate: isDuplicate,
     duplicate_status: duplicateStatus,
     duplicate_existing_id: duplicateExistingId,
@@ -1550,10 +1652,11 @@ files.get('/:id/download', async (c) => {
   if (!obj) return c.json({ error: 'File not found in storage' }, 404);
 
   const downloadName = (row.original_name || row.filename || 'file') as string;
+  const disposition = c.req.query('inline') === '1' ? 'inline' : 'attachment';
   return new Response(obj.body, {
     headers: {
       'Content-Type': (row.file_type as string) || 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${downloadName}"`,
+      'Content-Disposition': `${disposition}; filename="${downloadName}"`,
       'Content-Length': obj.size.toString(),
     },
   });
