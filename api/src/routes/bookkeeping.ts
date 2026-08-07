@@ -1633,7 +1633,7 @@ bookkeeping.get('/income-statement/:account_code/transactions', async (c) => {
             bs.statement_year, bs.statement_month, bs.bank_name
      FROM bank_transactions bt
      JOIN bank_statements bs ON bt.bank_statement_id = bs.id
-     LEFT JOIN journal_entries je ON je.reference_id = bt.id AND je.reference_type = 'bank_transaction'
+     LEFT JOIN journal_entries je ON je.reference_id = bt.id AND je.reference_type = 'bank_transaction' AND je.status != 'stale'
      WHERE bt.user_id = ? AND bt.transaction_date >= ? AND bt.transaction_date <= ?
        AND bt.account_code = ? AND bt.deleted_at IS NULL
        AND je.id IS NULL
