@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
@@ -52,6 +52,33 @@ export default function BankStatements() {
   const [hideReconciledCoa, setHideReconciledCoa] = useState(true);
   const [autoMatchResults, setAutoMatchResults] = useState<any[] | null>(null);
   const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const highlightTxRef = React.useRef<string | null>(null);
+
+  // Auto-expand statement and highlight transaction from query params
+  React.useEffect(() => {
+    const statementId = searchParams.get('statement');
+    const highlightId = searchParams.get('highlight');
+    if (statementId) {
+      setExpandedId(statementId);
+      highlightTxRef.current = highlightId;
+    }
+  }, []); // Run once on mount
+
+  // After scrolling/highlighting, clear the URL params
+  React.useEffect(() => {
+    if (!searchParams.has('statement') && !searchParams.has('highlight')) return;
+    const timer = setTimeout(() => {
+      const newParams = new URLSearchParams(searchParams);
+      if (newParams.has('highlight') || newParams.has('statement')) {
+        newParams.delete('highlight');
+        newParams.delete('statement');
+        setSearchParams(newParams, { replace: true });
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [searchParams]);
 
   const { data, isLoading } = useQuery({
     queryKey: ['bank-statements'],
@@ -194,6 +221,26 @@ export default function BankStatements() {
   const statements = (data?.data || []) as any[];
   const detail = detailQuery.data as any;
   const transactions = detail?.transactions || [];
+
+  // Scroll to highlighted transaction after detail loads
+  React.useEffect(() => {
+    if (highlightTxRef.current && detail && !detailQuery.isLoading) {
+      const txId = highlightTxRef.current;
+      // Small delay to let DOM render
+      setTimeout(() => {
+        const el = document.getElementById(`tx-${txId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('highlight-pulse');
+          // Clear highlight after 5 seconds
+          setTimeout(() => {
+            el.classList.remove('highlight-pulse');
+          }, 5000);
+        }
+        highlightTxRef.current = null;
+      }, 300);
+    }
+  }, [detail, detailQuery.isLoading]);
 
   const totalDeposits = transactions.reduce((s: number, tx: Transaction) => s + tx.deposit_amount, 0);
   const totalWithdrawals = transactions.reduce((s: number, tx: Transaction) => s + tx.withdrawal_amount, 0);
@@ -409,7 +456,7 @@ export default function BankStatements() {
                                 const dirty = !!edits[tx.id];
 
                                 return (
-                                <tr key={tx.id} className={`border-b border-muted/50 hover:bg-muted/20 ${dirty ? 'bg-blue-50 dark:bg-blue-950/20' : ''} ${
+                                <tr key={tx.id} id={`tx-${tx.id}`} className={`border-b border-muted/50 hover:bg-muted/20 ${dirty ? 'bg-blue-50 dark:bg-blue-950/20' : ''} ${
                                   tx.match_status === 'suggested' ? 'bg-yellow-50 dark:bg-yellow-950/20' :
                                   tx.match_status === 'confirmed' ? 'bg-green-50 dark:bg-green-950/20' : ''
                                 }`}>
