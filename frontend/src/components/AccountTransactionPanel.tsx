@@ -145,9 +145,9 @@ export default function AccountTransactionPanel({
         <div className="text-[10px] text-muted-foreground mt-1">
           {txData.period.start} – {txData.period.end}
           {' · '}
-          {hasJournal && `${txData.journal_entries.length} journal entries`}
+          {hasJournal && `${txData.journal_entries.length} ${tr('journal entries', '日記帳分錄', '日记账分录')}`}
           {hasJournal && hasUnposted && ' + '}
-          {hasUnposted && `${txData.unposted_bank_transactions.length} unposted bank tx`}
+          {hasUnposted && `${txData.unposted_bank_transactions.length} ${tr('unposted bank tx', '未過賬銀行交易', '未过账银行交易')}`}
         </div>
       </div>
 
