@@ -647,6 +647,33 @@ function padPassword(pw: string): Uint8Array {
 }
 
 // MD5 using Node.js crypto (nodejs_compat), with pure-JS fallback
+// ── pdfjs-dist for PDF text extraction (handles encrypted PDFs natively) ──
+let pdfjsLib: any = null;
+async function getPdfjsLib() {
+  if (pdfjsLib) return pdfjsLib;
+  try { pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js'); } catch { return null; }
+  return pdfjsLib;
+}
+
+async function extractPdfTextWithPassword(
+  pdfBytes: Uint8Array, password: string
+): Promise<string | null> {
+  const lib = await getPdfjsLib();
+  if (!lib) return null;
+  try {
+    const loadingTask = lib.getDocument({ data: pdfBytes, password, disableAutoFetch: true, disableStream: true });
+    const doc = await loadingTask.promise;
+    const parts: string[] = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const tc = await page.getTextContent();
+      parts.push(tc.items.map((it: any) => it.str).join(' '));
+    }
+    const text = parts.join('\n').trim();
+    return text.length > 20 ? text : null;
+  } catch { return null; }
+}
+
 let nodeCrypto: any = null;
 try { nodeCrypto = require('crypto'); } catch {}
 
@@ -715,8 +742,16 @@ function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, startPos: number
   return -1;
 }
 
-// RC4 (ARC4) stream cipher — used by older PDF encryption
+// RC4 (ARC4) stream cipher — uses Node crypto if available, pure-JS fallback
 function rc4(key: Uint8Array, data: Uint8Array): Uint8Array {
+  if (nodeCrypto) {
+    try {
+      const cipher = nodeCrypto.createCipheriv('rc4', Buffer.from(key), null);
+      const result = Buffer.concat([cipher.update(Buffer.from(data)), cipher.final()]);
+      return new Uint8Array(result);
+    } catch {}
+  }
+  // Pure-JS fallback
   const s: number[] = [];
   for (let i = 0; i < 256; i++) s[i] = i;
   let j = 0;
@@ -867,13 +902,15 @@ async function tryDecryptPdf(pdfBytes: Uint8Array, password: string = ''): Promi
   console.log(`[PDF-DECRYPT] Found encrypted PDF V=${dict.v} R=${dict.r} P=${dict.p}`);
 
   try {
-    // Compute encryption key per PDF spec (Algorithm 3.2 for R=2)
-    const paddedPw = padPassword(password);
-    const keyInput = new Uint8Array(paddedPw.length + dict.o.length + 4 + (dict.id1 ? dict.id1.length : 0));
+    // Compute encryption key per PDF spec (Algorithm 3.2)
+    // For V=1/R=2: key = MD5(password_pad + O + P), NO file ID
+    // For V>=4 or R>=4: key = MD5(password_pad + O + P + ID1)
+    const includeId = dict.v >= 4 || dict.r >= 4;
+    const keyInput = new Uint8Array(paddedPw.length + dict.o.length + 4 + (includeId && dict.id1 ? 16 : 0));
     keyInput.set(paddedPw, 0);
     keyInput.set(dict.o, paddedPw.length);
 
-    // P as 4-byte little-endian
+    // P as 4-byte little-endian (unsigned)
     const pBytes = new Uint8Array(4);
     pBytes[0] = dict.p & 0xff;
     pBytes[1] = (dict.p >>>8) & 0xff;
@@ -881,7 +918,7 @@ async function tryDecryptPdf(pdfBytes: Uint8Array, password: string = ''): Promi
     pBytes[3] = (dict.p >>>24) & 0xff;
     keyInput.set(pBytes, paddedPw.length + dict.o.length);
 
-    if (dict.id1) {
+    if (includeId && dict.id1) {
       keyInput.set(dict.id1.slice(0, 16), paddedPw.length + dict.o.length + 4);
     }
 
@@ -889,81 +926,97 @@ async function tryDecryptPdf(pdfBytes: Uint8Array, password: string = ''): Promi
     const keyLen = Math.min(dict.length / 8 + 5, 16);
     const encKey = hash.slice(0, keyLen);
 
-    // Verify password: for R=2, U is RC4-encrypted 32 padding bytes.
-    // Decrypt U with encKey and compare to PDF padding.
-    const decryptedU = rc4(encKey, dict.u);
-    let passwordOk = decryptedU.length >= 16;
-    for (let i = 0; i < Math.min(32, decryptedU.length); i++) {
-      if (decryptedU[i] !== PDF_PADDING_BYTES[i]) { passwordOk = false; break; }
+    // Try both key derivations: without file ID (R=2) and with file ID (R>=3)
+    const keysToTry: Uint8Array[] = [encKey];
+    if (dict.id1 && !includeId) {
+      // Also try with file ID as fallback
+      const altInput = new Uint8Array(paddedPw.length + dict.o.length + 4 + 16);
+      altInput.set(paddedPw, 0);
+      altInput.set(dict.o, paddedPw.length);
+      altInput.set(pBytes, paddedPw.length + dict.o.length);
+      altInput.set(dict.id1.slice(0, 16), paddedPw.length + dict.o.length + 4);
+      const altHash = md5(altInput);
+      keysToTry.push(altHash.slice(0, keyLen));
     }
 
-    if (!passwordOk) {
-      console.log('[PDF-DECRYPT] Empty password verification failed — PDF may require a real password');
-      return null;
-    }
-
-    console.log('[PDF-DECRYPT] Password verified, decrypting streams...');
-
-    // Decrypt all streams in the PDF
-    // For simplicity, re-encode the PDF with encryption removed
-    // Strategy: find all "stream ... endstream" sections and decrypt the content
-    const pdfText = new TextDecoder().decode(pdfBytes);
-    let decryptedPdf = new TextDecoder().decode(pdfBytes);
-
-    // Remove the encryption dictionary from the PDF
-    // Find the encrypt object and replace its reference with null
-    const encRefMatch = pdfText.match(/\/Encrypt\s+(\d+\s+0\s+R)/);
-    if (encRefMatch) {
-      decryptedPdf = decryptedPdf.replace(new RegExp(encRefMatch[1].replace(/\s+/g, '\\s+')), 'null');
-    }
-
-    // Remove /Encrypt reference from trailer if present
-    decryptedPdf = decryptedPdf.replace(/\/Encrypt\s+\d+\s+0\s+R/g, '');
-
-    // Decrypt each stream
+    // Try each key — decrypt first stream, check for valid zlib header (0x78).
+    // Use Latin-1 for byte-perfect round-trip with binary PDF data.
+    const pdfText = new TextDecoder('latin1').decode(pdfBytes);
     const streamRegex = /(\d+\s+0\s+obj[\s\S]*?\/Length\s+\d+[\s\S]*?)\nstream\n([\s\S]*?)endstream/g;
-    let match: RegExpExecArray | null;
-    let result = decryptedPdf;
-    const encoder = new TextEncoder();
+    const firstMatch = streamRegex.exec(pdfText);
+    let bestKey: Uint8Array | null = null;
 
-    while ((match = streamRegex.exec(decryptedPdf)) !== null) {
-      const streamHeader = match[1];
-      const streamContent = match[2];
-      const streamStart = match.index + match[1].length + 9; // after "stream\n"
-
-      // Get object number for this stream
-      const objMatch = streamHeader.match(/^(\d+)\s+0\s+obj/);
+    if (firstMatch) {
+      const streamContent = firstMatch[2];
+      const objMatch = firstMatch[1].match(/^(\d+)\s+0\s+obj/);
       const objNum = objMatch ? parseInt(objMatch[1]) : 0;
+      const streamBytes = latin1ToBytes(streamContent);
 
-      // Determine if this stream should be decrypted (not metadata streams)
-      // In standard encrypted PDFs, all streams except the metadata stream are encrypted
-      const isMetadata = streamHeader.includes('/Type /Metadata') || streamHeader.includes('/Type/Metadata');
-
-      if (!isMetadata && streamContent.length > 0) {
-        const streamBytes = encoder.encode(streamContent);
-
-        // For each stream, the RC4 key = encKey + object_number (3 bytes, little-endian)
-        const streamKeyInput = new Uint8Array(encKey.length + 5);
-        streamKeyInput.set(encKey, 0);
-        streamKeyInput[encKey.length] = objNum & 0xff;
-        streamKeyInput[encKey.length + 1] = (objNum >> 8) & 0xff;
-        streamKeyInput[encKey.length + 2] = (objNum >> 16) & 0xff;
-        streamKeyInput[encKey.length + 3] = 0; // generation 0
-        streamKeyInput[encKey.length + 4] = 0;
-
+      for (const key of keysToTry) {
+        const streamKeyInput = new Uint8Array(key.length + 5);
+        streamKeyInput.set(key, 0);
+        streamKeyInput[key.length] = objNum & 0xff;
+        streamKeyInput[key.length + 1] = (objNum >> 8) & 0xff;
+        streamKeyInput[key.length + 2] = (objNum >> 16) & 0xff;
         const streamHash = md5(streamKeyInput);
-        const streamKey = streamHash.slice(0, Math.min(encKey.length + 5, 16));
-
+        const streamKey = streamHash.slice(0, Math.min(key.length + 5, 16));
         const decryptedBytes = rc4(streamKey, streamBytes);
-        const decryptedContent = new TextDecoder().decode(decryptedBytes);
-
-        // Replace the encrypted stream content with decrypted content
-        result = result.substring(0, streamStart) + decryptedContent + result.substring(streamStart + streamContent.length);
+        // FlateDecode streams start with zlib header 0x78
+        if (decryptedBytes.length > 2 && decryptedBytes[0] === 0x78) {
+          bestKey = key;
+          console.log('[PDF-DECRYPT] Key works — stream decrypts to valid zlib');
+          break;
+        }
       }
     }
 
-    // Reset regex state for second pass
-    const resultBytes = encoder.encode(result);
+    if (!bestKey) {
+      console.log('[PDF-DECRYPT] No key produced readable stream content');
+      return null;
+    }
+
+    // Helper: convert string to bytes preserving Latin-1 byte values
+    function latin1ToBytes(s: string): Uint8Array {
+      const bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
+      return bytes;
+    }
+    function bytesToLatin1(bytes: Uint8Array): string {
+      let s = '';
+      for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      return s;
+    }
+
+    // Decrypt all streams with the working key
+    let decryptedPdf = pdfText;
+    decryptedPdf = decryptedPdf.replace(/\/Encrypt\s+\d+\s+0\s+R/g, '');
+    let result = decryptedPdf;
+    const allStreams = decryptedPdf.matchAll(/(\d+\s+0\s+obj[\s\S]*?\/Length\s+\d+[\s\S]*?)\nstream\n([\s\S]*?)endstream/g);
+
+    for (const match of allStreams) {
+      const streamHeader = match[1];
+      const streamContent = match[2];
+      const streamStart = match.index! + match[1].length + 8;
+      // Find the LAST object number before this stream position
+      const beforeStream = decryptedPdf.slice(0, match.index);
+      const allObjs = [...beforeStream.matchAll(/(\d+)\s+0\s+obj/g)];
+      const objNum = allObjs.length > 0 ? parseInt(allObjs[allObjs.length - 1][1]) : 0;
+      const isMetadata = streamHeader.includes('/Type /Metadata') || streamHeader.includes('/Type/Metadata');
+      if (!isMetadata && streamContent.length > 0) {
+        const streamBytes = latin1ToBytes(streamContent);
+        const streamKeyInput = new Uint8Array(bestKey.length + 5);
+        streamKeyInput.set(bestKey, 0);
+        streamKeyInput[bestKey.length] = objNum & 0xff;
+        streamKeyInput[bestKey.length + 1] = (objNum >> 8) & 0xff;
+        streamKeyInput[bestKey.length + 2] = (objNum >> 16) & 0xff;
+        const streamHash = md5(streamKeyInput);
+        const streamKey = streamHash.slice(0, Math.min(bestKey.length + 5, 16));
+        const decryptedBytes = rc4(streamKey, streamBytes);
+        result = result.substring(0, streamStart) + new TextDecoder().decode(decryptedBytes) + result.substring(streamStart + streamContent.length);
+      }
+    }
+
+    const resultBytes = latin1ToBytes(result);
     console.log(`[PDF-DECRYPT] Decrypted PDF, size: ${pdfBytes.length} → ${resultBytes.length} bytes`);
     return resultBytes;
   } catch (e: any) {
@@ -3166,32 +3219,6 @@ files.post('/:id/import-document', async (c) => {
   }
   if (!fileRow) return c.json({ error: 'File not found' }, 404);
 
-  // Check if the file is an encrypted PDF that can't be OCR'd
-  if (fileRow.file_type?.includes('pdf') && !force) {
-    const obj = await c.env.FILE_BUCKET.get(fileRow.r2_key);
-    if (obj) {
-      const buffer = await obj.arrayBuffer();
-      const pdfBytes = new Uint8Array(buffer);
-      if (needsDecryption(pdfBytes)) {
-        const decrypted = await tryDecryptPdf(pdfBytes, '');
-        if (!decrypted) {
-          // PDF is encrypted with a non-empty password — can't auto-import
-          await c.env.DB.prepare(
-            "UPDATE file_records SET ocr_status = 'encrypted', updated_at = datetime('now') WHERE id = ?"
-          ).bind(fileId).run();
-          return c.json({
-            type: 'encrypted_pdf',
-            success: false,
-            error: 'This PDF is encrypted. Please enter the password to unlock it for OCR scanning.',
-            status: 'password_required',
-            file_id: fileId,
-          });
-        }
-        // else: decryption succeeded, continue with import
-      }
-    }
-  }
-
   // force=true: user explicitly said "upload again" on duplicate warning.
   // Delete any existing invoice OR bank statement linked to this file so re-import succeeds cleanly.
   if (force) {
@@ -3249,7 +3276,28 @@ files.post('/:id/import-document', async (c) => {
             : String(mdResult || '');
           if (candidate && candidate.length > 20) {
             if (isPdfMetadataOnly(candidate)) {
-              console.log('[OCR-IMPORT-DOC] toMarkdown produced only PDF metadata, discarding for GLM-OCR');
+              console.log('[OCR-IMPORT-DOC] toMarkdown produced only PDF metadata');
+              // Check if this is an encrypted PDF that toMarkdown can't read
+              const isEncrypted = await (async () => {
+                try {
+                  const bytes = new Uint8Array(buffer);
+                  if (needsDecryption(bytes)) return true;
+                } catch { return false; }
+                return false;
+              })();
+              if (isEncrypted) {
+                await c.env.DB.prepare(
+                  "UPDATE file_records SET ocr_text = ?, ocr_status = 'encrypted', updated_at = datetime('now') WHERE id = ?"
+                ).bind(candidate.slice(0, 50000), fileId).run();
+                return c.json({
+                  type: 'encrypted_pdf',
+                  success: false,
+                  error: 'This PDF is encrypted. Please enter the password to unlock it for OCR scanning.',
+                  status: 'password_required',
+                  file_id: fileId,
+                });
+              }
+              // Not encrypted — just a bad scan, fall through to GLM-OCR
             } else {
               ocrText = candidate;
               console.log('[OCR-IMPORT-DOC] toMarkdown succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
@@ -3506,41 +3554,18 @@ files.post('/:id/try-decrypt', async (c) => {
     return c.json({ error: 'This PDF is not encrypted', status: 'not_encrypted' }, 400);
   }
 
-  // Attempt decryption with provided password
-  const decrypted = await tryDecryptPdf(bytes, password);
+  // Try to extract text directly with pdfjs-dist (handles decryption + text extraction)
+  const ocrText = await extractPdfTextWithPassword(bytes, password);
 
-  if (!decrypted) {
+  if (!ocrText) {
     return c.json({
       success: false,
-      message: 'Wrong password — could not decrypt this file. Please check your password and try again.',
+      message: 'Wrong password — could not decrypt this PDF. Please check your password and try again.',
       status: 'wrong_password',
     });
   }
 
-  console.log(`[PDF-DECRYPT] Successfully decrypted file ${fileId} with user-provided password`);
-
-  // Derive OCR text from decrypted PDF
-  let ocrText = '';
-  if (c.env.GLM_API_KEY) {
-    try {
-      let binary = '';
-      for (let i = 0; i < decrypted.length; i++) binary += String.fromCharCode(decrypted[i]);
-      const base64 = btoa(binary);
-      const mimeType = fileRow.file_type || 'application/pdf';
-
-      const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${c.env.GLM_API_KEY}` },
-        body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
-      });
-      if (glmResp.ok) {
-        const glmData = await glmResp.json() as any;
-        ocrText = extractTextFromGlmOcr(glmData);
-      }
-    } catch (e: any) {
-      console.log('[PDF-DECRYPT] GLM-OCR after decryption error:', e?.message || e);
-    }
-  }
+  console.log(`[PDF-DECRYPT] Successfully decrypted file ${fileId}, extracted ${ocrText.length} chars of text`);
 
   // Store decrypted OCR text and update file record
   await c.env.DB.prepare(
