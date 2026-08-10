@@ -446,7 +446,13 @@ export default function FileUpload() {
         setBatchProgress(prev => ({ ...prev, currentFile: file.name }));
         const status = await uploadFile(file, isBatch, idx, files.length);
         if (status === 'review') reviewCount++;
-        if (status === 'encrypted') encryptedCount++;
+        if (status === 'encrypted') {
+          encryptedCount++;
+          ok++;
+          setFileStatuses(prev => ({ ...prev, [fileIdx]: 'success' }));
+          // Stop processing — wait for user to handle password modal
+          break;
+        }
         ok++;
         setFileStatuses(prev => ({ ...prev, [fileIdx]: 'success' }));
       } catch (e: any) {

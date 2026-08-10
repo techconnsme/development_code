@@ -89,9 +89,9 @@ export default function EncryptedPdfModal({ fileId, fileName, onClose, onSuccess
           <>
             <p className="text-sm text-muted-foreground">
               {tr(
-                'This PDF is encrypted. Please enter the password to unlock it for OCR scanning.',
-                '此 PDF 已加密。請輸入密碼以解鎖進行 OCR 掃描。',
-                '此 PDF 已加密。请输入密码以解锁进行 OCR 扫描。'
+                'This PDF is encrypted. Enter the password (leave blank to try with no password).',
+                '此 PDF 已加密。請輸入密碼（留空則嘗試無密碼解密）。',
+                '此 PDF 已加密。请输入密码（留空则尝试无密码解密）。'
               )}
             </p>
             {status === 'wrong' && (
@@ -120,7 +120,7 @@ export default function EncryptedPdfModal({ fileId, fileName, onClose, onSuccess
                 </button>
                 <button
                   type="submit"
-                  disabled={!password.trim() || decryptMut.isPending}
+                  disabled={decryptMut.isPending}
                   className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
                 >
                   {decryptMut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
