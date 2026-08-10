@@ -1,23 +1,24 @@
 import { test, expect } from '@playwright/test';
 
-const BASE = 'https://0a37a767.opcc-crm-testing.pages.dev';
+const BASE = 'https://opcc-crm-testing.pages.dev';
 // Using Joseph Lin PNR account
 const EMAIL = 'joseph.lin@pnr.hk';
 const PASSWORD = 'Test1234';
 
 test.describe('Encrypted PDF Password Flow', () => {
 
-  // Shared helper: navigate to File Storage and expand folders
+  // Shared helper: navigate to File Storage and expand all folders
   async function openFileStorage(page: any) {
     await page.goto(`${BASE}/file-storage`, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(3000);
-    // Expand ALL collapsible folders by clicking every chevron-right icon
-    await page.locator('.lucide-chevron-right').first().click().catch(() => {});
-    await page.waitForTimeout(500);
-    await page.locator('.lucide-chevron-right').first().click().catch(() => {});
-    await page.waitForTimeout(500);
-    await page.locator('.lucide-chevron-right').first().click().catch(() => {});
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(4000);
+
+    // Click ALL chevron-right icons to expand every folder
+    const chevrons = page.locator('svg.lucide-chevron-right');
+    const count = await chevrons.count();
+    for (let i = 0; i < count; i++) {
+      await chevrons.nth(0).click().catch(() => {});
+      await page.waitForTimeout(400);
+    }
   }
 
   test.beforeEach(async ({ page }) => {

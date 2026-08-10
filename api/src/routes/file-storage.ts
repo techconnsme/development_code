@@ -3166,6 +3166,32 @@ files.post('/:id/import-document', async (c) => {
   }
   if (!fileRow) return c.json({ error: 'File not found' }, 404);
 
+  // Check if the file is an encrypted PDF that can't be OCR'd
+  if (fileRow.file_type?.includes('pdf') && !force) {
+    const obj = await c.env.FILE_BUCKET.get(fileRow.r2_key);
+    if (obj) {
+      const buffer = await obj.arrayBuffer();
+      const pdfBytes = new Uint8Array(buffer);
+      if (needsDecryption(pdfBytes)) {
+        const decrypted = await tryDecryptPdf(pdfBytes, '');
+        if (!decrypted) {
+          // PDF is encrypted with a non-empty password — can't auto-import
+          await c.env.DB.prepare(
+            "UPDATE file_records SET ocr_status = 'encrypted', updated_at = datetime('now') WHERE id = ?"
+          ).bind(fileId).run();
+          return c.json({
+            type: 'encrypted_pdf',
+            success: false,
+            error: 'This PDF is encrypted. Please enter the password to unlock it for OCR scanning.',
+            status: 'password_required',
+            file_id: fileId,
+          });
+        }
+        // else: decryption succeeded, continue with import
+      }
+    }
+  }
+
   // force=true: user explicitly said "upload again" on duplicate warning.
   // Delete any existing invoice OR bank statement linked to this file so re-import succeeds cleanly.
   if (force) {
