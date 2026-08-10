@@ -59,7 +59,6 @@ export default function EncryptedPdfModal({ fileId, fileName, onClose, onSuccess
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!password.trim()) return;
     setStatus('trying');
     decryptMut.mutate(password.trim());
   };
