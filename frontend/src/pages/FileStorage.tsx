@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
+import EncryptedPdfModal from '../components/EncryptedPdfModal';
 import { useToast } from '../components/Toast';
 import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye } from 'lucide-react';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
@@ -80,6 +81,7 @@ interface FileItem {
   card_statement_id?: string;
   card_issuer?: string;
   card_status?: string;
+  ocr_status?: string;
 }
 
 interface TreeNode {
@@ -113,11 +115,12 @@ function buildTree(files: FileItem[]): TreeNode {
   return root;
 }
 
-function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirection, onDelete }: {
+function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirection, onDelete, onUnlockEncrypted }: {
   node: TreeNode; depth: number; expanded: Set<string>; toggle: (p: string) => void;
   onFileAction: (action: string, f: FileItem) => void;
   onSetDirection: (id: string, direction: string) => void;
   onDelete: (f: FileItem) => void;
+  onUnlockEncrypted: (f: FileItem) => void;
 }) {
   const { t } = useTranslation();
   const isExpanded = expanded.has(node.path) || depth === 0;
@@ -138,7 +141,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
       {isExpanded && (
         <>
           {node.children.map(child => (
-            <FolderTree key={child.path} node={child} depth={depth + 1} expanded={expanded} toggle={toggle} onFileAction={onFileAction} onSetDirection={onSetDirection} onDelete={onDelete} />
+            <FolderTree key={child.path} node={child} depth={depth + 1} expanded={expanded} toggle={toggle} onFileAction={onFileAction} onSetDirection={onSetDirection} onDelete={onDelete} onUnlockEncrypted={onUnlockEncrypted} />
           ))}
           {node.files.map(f => (
             <div key={f.id} className="flex items-center justify-between hover:bg-muted/30 rounded-md px-2 py-1.5"
@@ -164,6 +167,15 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                     )}
                     {f.category === 'invoice' && f.amount != null && (
                       <span className="font-mono">${f.amount.toLocaleString()}</span>
+                    )}
+                    {f.ocr_status === 'encrypted' && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onUnlockEncrypted(f); }}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 hover:bg-amber-200 cursor-pointer"
+                        title={tr('Click to unlock with password', '點擊以輸入密碼解鎖', '点击以输入密码解锁')}
+                      >
+                        🔒 {tr('Encrypted', '已加密', '已加密')}
+                      </button>
                     )}
                     {f.description && <span className="truncate max-w-[200px]">— {f.description}</span>}
                   </div>
@@ -247,6 +259,7 @@ export default function FileStorage() {
   const [editFolder, setEditFolder] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const [supModal, setSupModal] = useState<{ show: boolean; onConfirm: () => void } | null>(null);
+  const [encryptedPdf, setEncryptedPdf] = useState<{ fileId: string; fileName: string } | null>(null);
   // Issue 17: type-choice modal shown when AI can't confidently decide document type
   const [typeChoice, setTypeChoice] = useState<{
     show: boolean;
@@ -677,6 +690,8 @@ export default function FileStorage() {
       if (confirm(tr(`Import "${f.filename}" as a bank statement? The system will auto-OCR and parse transactions.`, `確定要將「${f.filename}」匯入為銀行月結單嗎？系統會自動 OCR 辨識並解析交易紀錄。`, `确定要将「${f.filename}」汇入为银行月结单吗？系统会自动 OCR 辨识并解析交易纪录。`))) {
         importStmtMut.mutate(f.id);
       }
+    } else if (action === 'unlock-encrypted') {
+      setEncryptedPdf({ fileId: f.id, fileName: f.original_name || f.filename || '' });
     }
   };
 
@@ -837,6 +852,16 @@ export default function FileStorage() {
           action="delete this file"
           onConfirm={supModal.onConfirm}
           onCancel={() => setSupModal(null)}
+        />
+      )}
+
+      {/* Encrypted PDF password prompt */}
+      {encryptedPdf && (
+        <EncryptedPdfModal
+          fileId={encryptedPdf.fileId}
+          fileName={encryptedPdf.fileName}
+          onClose={() => setEncryptedPdf(null)}
+          onSuccess={() => setEncryptedPdf(null)}
         />
       )}
 
@@ -1021,7 +1046,7 @@ export default function FileStorage() {
         ) : fileList.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-8">{t('fileStorage.noData')}</p>
         ) : (
-          <FolderTree node={tree} depth={0} expanded={expanded} toggle={toggleFolder} onFileAction={handleFileAction} onSetDirection={handleSetDirection} onDelete={(f) => {
+          <FolderTree node={tree} depth={0} expanded={expanded} toggle={toggleFolder} onFileAction={handleFileAction} onSetDirection={handleSetDirection} onUnlockEncrypted={(f) => setEncryptedPdf({ fileId: f.id, fileName: f.original_name || f.filename || '' })} onDelete={(f) => {
             if (isStaff) {
               setSupModal({ show: true, onConfirm: () => handleFileAction('delete', f) });
             } else {

@@ -70,13 +70,13 @@ async function importStatementFromFile(
     if (glmApiKey) {
       try {
         const mimeType = fileRow.file_type || 'application/pdf';
-        const base64 = await fetchAndDecryptFile(fileRow.r2_key, mimeType, fileBucket);
-        if (base64) {
+        const decryptedFile = await fetchAndDecryptFile(fileRow.r2_key, mimeType, fileBucket);
+        if (decryptedFile?.base64) {
           console.log('[OCR-DEBUG] Calling GLM, mime:', mimeType);
           const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${glmApiKey}` },
-            body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
+            body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${decryptedFile.base64}` }),
           });
           console.log('[OCR-DEBUG] GLM response status:', glmResp.status);
           if (glmResp.ok) {
@@ -975,18 +975,19 @@ async function tryDecryptPdf(pdfBytes: Uint8Array, password: string = ''): Promi
 // ── End PDF Decryption ─────────────────────────────────────────────────────
 
 // Helper: read file from R2, decrypt if encrypted, return base64 data-URI
+// Returns { base64, needsPassword } — needsPassword=true means encrypted & empty-pw failed
 async function fetchAndDecryptFile(
   r2Key: string, mimeType: string, fileBucket: R2Bucket
-): Promise<string | null> {
+): Promise<{ base64: string; needsPassword: boolean } | null> {
   try {
     const obj = await fileBucket.get(r2Key);
     if (!obj) return null;
     const buffer = await obj.arrayBuffer();
     let bytes = new Uint8Array(buffer);
+    let needsPassword = false;
 
     if (mimeType.includes('pdf') && needsDecryption(bytes)) {
       console.log(`[PDF-DECRYPT] Encrypted PDF detected for ${r2Key}, attempting decryption...`);
-      // Try empty password first, then common HSBC passwords
       const passwords = ['', 'hsbc', 'HSBC'];
       let decrypted: Uint8Array | null = null;
       for (const pw of passwords) {
@@ -996,13 +997,14 @@ async function fetchAndDecryptFile(
       if (decrypted) {
         bytes = decrypted;
       } else {
-        console.log(`[PDF-DECRYPT] Empty-password decryption failed, sending original bytes to OCR`);
+        needsPassword = true;
+        console.log(`[PDF-DECRYPT] Decryption failed — PDF requires a user password`);
       }
     }
 
     let binary = '';
     for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    return btoa(binary);
+    return { base64: btoa(binary), needsPassword };
   } catch (e: any) {
     console.log(`[PDF-DECRYPT] Error:`, e?.message || e);
     return null;
@@ -2128,15 +2130,24 @@ files.post('/upload', async (c) => {
         if (c.env.GLM_API_KEY) {
           try {
             const mimeType = file_type || 'application/pdf';
-            const base64 = await fetchAndDecryptFile(r2Key, mimeType, c.env.FILE_BUCKET);
-            if (base64) {
+            const decryptedFile = await fetchAndDecryptFile(r2Key, mimeType, c.env.FILE_BUCKET);
+            if (decryptedFile?.base64) {
+              // If encrypted and needs password, mark as encrypted and skip OCR —
+              // the user must provide a password to unlock
+              if (decryptedFile.needsPassword) {
+                await c.env.DB.prepare(
+                  "UPDATE file_records SET ocr_status = 'encrypted', updated_at = datetime('now') WHERE id = ?"
+                ).bind(id).run();
+                console.log('[OCR-AUTO-STATEMENT] File is encrypted — marked as needs password');
+                return; // Don't attempt OCR on encrypted PDF
+              }
               const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                   'Authorization': `Bearer ${c.env.GLM_API_KEY}`,
                 },
-                body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
+                body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${decryptedFile.base64}` }),
               });
               if (glmResp.ok) {
                 const glmData = await glmResp.json() as any;
@@ -3442,6 +3453,88 @@ files.post('/:id/import-document', async (c) => {
     return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText,
       needs_review: !!(forcedType || result.needs_direction_review || result.company_not_detected || result.total_mismatch || result.needs_review) }, 201);
   }
+});
+
+// ── Encrypted PDF password prompt ─────────────────────────────────────────
+// POST /:id/try-decrypt — user provides a password, we attempt decryption + re-import
+files.post('/:id/try-decrypt', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const fileId = c.req.param('id');
+  const { password } = await c.req.json<{ password: string }>();
+
+  if (!password) return c.json({ error: 'Password required' }, 400);
+
+  const fileRow = await c.env.DB.prepare(
+    'SELECT id, r2_key, file_type, original_name, category FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(fileId, tenantId).first<{ id: string; r2_key: string; file_type: string; original_name: string; category: string }>();
+  if (!fileRow) return c.json({ error: 'File not found' }, 404);
+
+  const obj = await c.env.FILE_BUCKET.get(fileRow.r2_key);
+  if (!obj) return c.json({ error: 'File data not available' }, 404);
+
+  const buffer = await obj.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+
+  if (!needsDecryption(bytes)) {
+    return c.json({ error: 'This PDF is not encrypted', status: 'not_encrypted' }, 400);
+  }
+
+  // Attempt decryption with provided password
+  const decrypted = await tryDecryptPdf(bytes, password);
+
+  if (!decrypted) {
+    return c.json({
+      success: false,
+      message: 'Wrong password — could not decrypt this file. Please check your password and try again.',
+      status: 'wrong_password',
+    });
+  }
+
+  console.log(`[PDF-DECRYPT] Successfully decrypted file ${fileId} with user-provided password`);
+
+  // Derive OCR text from decrypted PDF
+  let ocrText = '';
+  if (c.env.GLM_API_KEY) {
+    try {
+      let binary = '';
+      for (let i = 0; i < decrypted.length; i++) binary += String.fromCharCode(decrypted[i]);
+      const base64 = btoa(binary);
+      const mimeType = fileRow.file_type || 'application/pdf';
+
+      const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${c.env.GLM_API_KEY}` },
+        body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
+      });
+      if (glmResp.ok) {
+        const glmData = await glmResp.json() as any;
+        ocrText = extractTextFromGlmOcr(glmData);
+      }
+    } catch (e: any) {
+      console.log('[PDF-DECRYPT] GLM-OCR after decryption error:', e?.message || e);
+    }
+  }
+
+  // Store decrypted OCR text and update file record
+  await c.env.DB.prepare(
+    "UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?"
+  ).bind(ocrText.slice(0, 50000), fileId).run();
+
+  // Re-trigger import based on category
+  let importResult: any = { success: false };
+  if (fileRow.category === 'bank_statement') {
+    importResult = await importStatementFromFile(fileId, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+  } else if (fileRow.category === 'invoice') {
+    importResult = await importInvoiceFromFile(fileId, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+  }
+
+  return c.json({
+    success: true,
+    message: 'File decrypted and processed successfully',
+    ocr_text_length: ocrText.length,
+    import: importResult,
+  });
 });
 
 export { files as fileStorageRoutes };
