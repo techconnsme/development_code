@@ -43,7 +43,7 @@ export default function AR() {
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
   const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
-  const [form, setForm] = useState({ invoice_number: '', customer_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
+  const [form, setForm] = useState({ invoice_number: '', customer_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, discount_type: 'flat' as string, discount_value: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   const [productSearch, setProductSearch] = useState<Record<number, string>>({});
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
@@ -109,8 +109,11 @@ export default function AR() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const sub = form.items.reduce((s: number, i: any) => s + i.amount, 0);
+    const tax = sub * ((form.tax_rate || 0) / 100);
+    const disc = (form.discount_type === 'percent' ? sub * ((form.discount_value || 0) / 100) : (form.discount_value || 0));
     // Ensure outgoing direction for AR
-    createMut.mutate({ ...form, direction: 'outgoing' });
+    createMut.mutate({ ...form, direction: 'outgoing', total: sub + tax - disc, subtotal: sub, tax_amount: tax, discount_amount: disc });
   }
 
   const invoices = data?.data || [];
@@ -355,8 +358,29 @@ export default function AR() {
                     <button type="button" onClick={() => { const items = form.items.filter((_, i) => i !== idx); setForm({ ...form, items: items.length ? items : [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] }); }} className="col-span-1 text-destructive text-xs">✕</button>
                   </div>
                 );})}
-                <div className="text-right font-bold text-sm pt-2 border-t">
-                  {tr('Total', '總計', '总计')}: {form.currency} {form.items.reduce((s, i) => s + i.amount, 0).toFixed(2)}
+                <div className="flex items-center gap-1.5 justify-end text-xs text-muted-foreground pt-2 border-t">
+                  <span>{tr('Tax %', '稅%', '税%')}</span>
+                  <input type="number" min="0" max="100" step="0.5" value={form.tax_rate || 0}
+                    onChange={(e) => setForm({ ...form, tax_rate: parseFloat(e.target.value) || 0 })}
+                    className="w-14 px-1 py-0.5 border rounded text-xs text-center bg-background" />
+                  <span className="mr-2">{tr('Discount', '折扣', '折扣')}</span>
+                  <input type="number" min="0" step="0.01" value={form.discount_value || ''}
+                    onChange={(e) => setForm({ ...form, discount_value: parseFloat(e.target.value) || 0 })}
+                    placeholder="0" className="w-18 px-1 py-0.5 border rounded text-xs text-center bg-background" />
+                  <select value={form.discount_type}
+                    onChange={(e) => setForm({ ...form, discount_type: e.target.value })}
+                    className="text-xs border rounded px-1 py-0.5 bg-background">
+                    <option value="flat">$</option>
+                    <option value="percent">%</option>
+                  </select>
+                </div>
+                <div className="text-right font-bold text-sm pt-1">
+                  {tr('Total', '總計', '总计')}: {form.currency} {(() => {
+                    const sub = form.items.reduce((s: number, i: any) => s + i.amount, 0);
+                    const tax = sub * ((form.tax_rate || 0) / 100);
+                    const disc = (form.discount_type === 'percent' ? sub * ((form.discount_value || 0) / 100) : (form.discount_value || 0));
+                    return (sub + tax - disc).toFixed(2);
+                  })()}
                 </div>
               </div>
 

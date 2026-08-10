@@ -92,6 +92,7 @@ export default function InvoiceReview() {
         currency: invoiceData.currency || 'HKD',
         tax_rate: invoiceData.tax_rate || 0,
         discount_amount: invoiceData.discount_amount || 0,
+        discount_type: (invoiceData.discount_amount || 0) > 0 ? 'flat' : 'flat',
         notes: invoiceData.notes || '',
       });
       setItems((invoiceData.items || []).map((it: any) => ({
@@ -241,11 +242,16 @@ export default function InvoiceReview() {
   }
 
   const subtotal = items.reduce((s, it) => s + (it.amount || 0), 0);
+  const discountType = (form?.discount_type as string) || 'flat';
+  const discountValue = form?.discount_value ?? form?.discount_amount ?? 0;
+  const computedDiscount = discountType === 'percent'
+    ? subtotal * (discountValue / 100)
+    : discountValue;
   const taxAmount = subtotal * ((form?.tax_rate || 0) / 100);
-  const total = subtotal + taxAmount - (form?.discount_amount || 0);
+  const total = subtotal + taxAmount - computedDiscount;
 
   function handleSave() {
-    confirmMut.mutate({ ...form, items, tax_rate: form.tax_rate || 0, discount_amount: form.discount_amount || 0 });
+    confirmMut.mutate({ ...form, items, tax_rate: form.tax_rate || 0, discount_amount: computedDiscount });
   }
 
   function handleDiscard() {
@@ -267,9 +273,10 @@ export default function InvoiceReview() {
   });
   const suppliers: any[] = (suppliersData?.data || []) as any[];
 
-  // Auto-link supplier by matching vendor_name
-  // NOTE: Must be before any conditional return (React Rules of Hooks)
+  // Auto-link supplier by matching vendor_name — runs ONCE per review session
+  const supplierAutoLinked = useRef(false);
   useEffect(() => {
+    if (supplierAutoLinked.current) return;
     if (!isIncomingInvoice || !form || !suppliers.length || form.supplier_id) return;
     const vendorName = (form.vendor_name || '').toLowerCase().replace(/\b(limited|ltd|inc|co\.?|company|corp)\b/g, '').replace(/[^a-z0-9]/g, '').trim();
     if (!vendorName) return;
@@ -277,7 +284,10 @@ export default function InvoiceReview() {
       const n = (s.name || '').toLowerCase().replace(/\b(limited|ltd|inc|co\.?|company|corp)\b/g, '').replace(/[^a-z0-9]/g, '').trim();
       return n === vendorName || n.includes(vendorName) || vendorName.includes(n);
     });
-    if (match) setForm((prev: any) => prev ? { ...prev, supplier_id: match.id } : prev);
+    if (match) {
+      supplierAutoLinked.current = true;
+      setForm((prev: any) => prev ? { ...prev, supplier_id: match.id } : prev);
+    }
   }, [suppliers, form?.vendor_name, isIncomingInvoice]);
 
   // ── Render ──
@@ -671,12 +681,30 @@ export default function InvoiceReview() {
                   </div>
                   <span className="font-mono">{form.currency} {taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                 </div>
-                {form.discount_amount > 0 && (
-                  <div className="flex justify-between text-muted-foreground">
+                <div className="flex justify-between items-center text-muted-foreground">
+                  <div className="flex items-center gap-1.5">
                     <span>{tr('Discount', '折扣', '折扣')}</span>
-                    <span className="font-mono text-red-500">- {form.currency} {(form.discount_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <input type="number" min="0" step="0.01"
+                      value={discountValue === 0 ? '' : discountValue}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value) || 0;
+                        setForm({ ...form, discount_value: v, discount_amount: 0 });
+                      }}
+                      placeholder="0"
+                      className="w-20 px-1.5 py-0.5 border rounded text-xs text-center bg-background" />
+                    <select
+                      value={discountType}
+                      onChange={(e) => setForm({ ...form, discount_type: e.target.value, discount_value: discountValue })}
+                      className="text-xs border rounded px-1 py-0.5 bg-background"
+                    >
+                      <option value="flat">$</option>
+                      <option value="percent">%</option>
+                    </select>
                   </div>
-                )}
+                  {computedDiscount > 0 && (
+                    <span className="font-mono text-red-500">- {form.currency} {computedDiscount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  )}
+                </div>
                 <div className="flex justify-between font-bold border-t pt-1.5">
                   <span>{tr('Total', 'Total 合計', 'Total 合计')}</span>
                   <span className="font-mono text-base">{form.currency} {total.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
