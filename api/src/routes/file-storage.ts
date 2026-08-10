@@ -67,30 +67,27 @@ async function importStatementFromFile(
   // Get OCR text from file record or run GLM-OCR
   let ocrText = fileRow.ocr_text || '';
   if (!ocrText || ocrText.length < 20) {
-    const obj = await fileBucket.get(fileRow.r2_key);
-    if (obj && glmApiKey) {
+    if (glmApiKey) {
       try {
-        const buffer = await obj.arrayBuffer();
-        const bytes = new Uint8Array(buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const base64 = btoa(binary);
         const mimeType = fileRow.file_type || 'application/pdf';
-        console.log('[OCR-DEBUG] Calling GLM, file size:', buffer.byteLength, 'mime:', mimeType);
-        const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${glmApiKey}` },
-          body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
-        });
-        console.log('[OCR-DEBUG] GLM response status:', glmResp.status);
-        if (glmResp.ok) {
-          const glmData = await glmResp.json() as any;
-          glmUsage = glmData.usage || null;
-          ocrText = typeof glmData === 'string' ? glmData : JSON.stringify(glmData);
-          console.log('[OCR-DEBUG] GLM ocrText length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
-        } else {
-          const errBody = await glmResp.text();
-          console.log('[OCR-DEBUG] GLM error body:', errBody.slice(0, 500));
+        const base64 = await fetchAndDecryptFile(fileRow.r2_key, mimeType, fileBucket);
+        if (base64) {
+          console.log('[OCR-DEBUG] Calling GLM, mime:', mimeType);
+          const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${glmApiKey}` },
+            body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
+          });
+          console.log('[OCR-DEBUG] GLM response status:', glmResp.status);
+          if (glmResp.ok) {
+            const glmData = await glmResp.json() as any;
+            glmUsage = glmData.usage || null;
+            ocrText = typeof glmData === 'string' ? glmData : JSON.stringify(glmData);
+            console.log('[OCR-DEBUG] GLM ocrText length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
+          } else {
+            const errBody = await glmResp.text();
+            console.log('[OCR-DEBUG] GLM error body:', errBody.slice(0, 500));
+          }
         }
       } catch (e: any) {
         console.log('[OCR-DEBUG] GLM exception:', e?.message || String(e));
@@ -627,6 +624,347 @@ function isPdfMetadataOnly(text: string): boolean {
   // If metadata lines dominate and there's very little real content, it's metadata-only
   return metaLines >= 3 && contentLines < 3;
 }
+
+// ── PDF Decryption ─────────────────────────────────────────────────────────
+// HSBC eStatements and similar bank PDFs use Standard encryption (V=1,R=2 or V=4,R=4)
+// with an EMPTY password — the PDF viewer decrypts silently because there's no
+// user password set. We replicate that decryption so GLM-OCR / Cloudflare AI
+// receive readable content.
+
+const PDF_PADDING_BYTES = new Uint8Array([
+  0x28,0xBF,0x4E,0x5E,0x4E,0x75,0x8A,0x41,0x64,0x00,0x4E,0x56,0xFF,0xFA,0x01,0x08,
+  0x2E,0x2E,0x00,0xB6,0xD0,0x68,0x3E,0x80,0x2F,0x0C,0xA9,0xFE,0x64,0x53,0x69,0x7A,
+]);
+
+function padPassword(pw: string): Uint8Array {
+  const bytes = new Uint8Array(32);
+  const encoder = new TextEncoder();
+  const pwBytes = encoder.encode(pw);
+  for (let i = 0; i < 32; i++) {
+    bytes[i] = i < pwBytes.length ? pwBytes[i] : PDF_PADDING_BYTES[i - pwBytes.length];
+  }
+  return bytes;
+}
+
+async function md5(data: Uint8Array): Promise<Uint8Array> {
+  const hash = await crypto.subtle.digest('MD5', data);
+  return new Uint8Array(hash);
+}
+
+// RC4 (ARC4) stream cipher — used by older PDF encryption
+function rc4(key: Uint8Array, data: Uint8Array): Uint8Array {
+  const s: number[] = [];
+  for (let i = 0; i < 256; i++) s[i] = i;
+  let j = 0;
+  for (let i = 0; i < 256; i++) {
+    j = (j + s[i] + key[i % key.length]) & 0xff;
+    [s[i], s[j]] = [s[j], s[i]];
+  }
+  let a = 0, b = 0;
+  const result = new Uint8Array(data.length);
+  for (let k = 0; k < data.length; k++) {
+    a = (a + 1) & 0xff;
+    b = (b + s[a]) & 0xff;
+    [s[a], s[b]] = [s[b], s[a]];
+    result[k] = data[k] ^ s[(s[a] + s[b]) & 0xff];
+  }
+  return result;
+}
+
+function parseEncryptDict(pdfBytes: Uint8Array): {
+  v: number; r: number; o: Uint8Array; u: Uint8Array; p: number;
+  length: number; encryptStart: number; id1: Uint8Array | null;
+} | null {
+  const text = new TextDecoder().decode(pdfBytes.slice(0, 4000));
+  // Find the encryption object number: "N 0 obj ... /Type /Encrypt"
+  const encMatch = text.match(/(\d+)\s+0\s+obj[\s\S]*?\/Type\s*\/Encrypt/);
+  if (!encMatch) return null;
+
+  // Extract V, R, O, U, P, Length from the encryption dict
+  const dictStr = encMatch[0];
+  const vMatch = dictStr.match(/\/V\s+(\d+)/);
+  const rMatch = dictStr.match(/\/R\s+(\d+)/);
+  const pMatch = dictStr.match(/\/P\s+(-?\d+)/);
+  const lenMatch = dictStr.match(/\/Length\s+(\d+)/);
+  if (!vMatch || !rMatch || !pMatch) return null;
+
+  const v = parseInt(vMatch[1]);
+  const r = parseInt(rMatch[1]);
+  const p = parseInt(pMatch[1]);
+  const length = lenMatch ? parseInt(lenMatch[1]) : 40;
+
+  // Extract O and U strings (hex in angle brackets OR raw binary in parentheses)
+  let o: Uint8Array | null = null;
+  let u: Uint8Array | null = null;
+
+  const oHex = dictStr.match(/\/O\s*<([0-9a-fA-F]+)>/);
+  if (oHex) {
+    o = new Uint8Array(oHex[1].length / 2);
+    for (let i = 0; i < o.length; i++) o[i] = parseInt(oHex[1].substr(i*2, 2), 16);
+  } else {
+    // Try parenthesized binary string: /O (.....  )
+    // We need to extract from the raw PDF bytes, since these contain non-printable chars
+    const oStart = pdfBytes.indexOf(new TextEncoder().encode('/O '), 0);
+    if (oStart >= 0) {
+      const parenStart = oStart + 3;
+      // Find the opening paren after /O
+      let pos = parenStart;
+      while (pos < pdfBytes.length && pdfBytes[pos] !== 0x28) pos++;
+      if (pos < pdfBytes.length && pdfBytes[pos] === 0x28) {
+        // Parse PDF string literal (balanced parens with escape handling)
+        const bytes: number[] = [];
+        let depth = 1;
+        pos++;
+        while (pos < pdfBytes.length && depth > 0) {
+          const b = pdfBytes[pos];
+          if (b === 0x5C && pos + 1 < pdfBytes.length) { // backslash escape
+            pos++;
+            const esc = pdfBytes[pos];
+            if (esc === 0x6E) bytes.push(0x0A);      // \n
+            else if (esc === 0x72) bytes.push(0x0D);  // \r
+            else if (esc === 0x74) bytes.push(0x09);  // \t
+            else if (esc === 0x62) bytes.push(0x08);  // \b
+            else if (esc === 0x66) bytes.push(0x0C);  // \f
+            else if (esc >= 0x30 && esc <= 0x37) {    // \ddd octal
+              let octal = String.fromCharCode(esc);
+              if (pos + 1 < pdfBytes.length && pdfBytes[pos+1] >= 0x30 && pdfBytes[pos+1] <= 0x37) {
+                pos++; octal += String.fromCharCode(pdfBytes[pos]);
+              }
+              if (pos + 1 < pdfBytes.length && pdfBytes[pos+1] >= 0x30 && pdfBytes[pos+1] <= 0x37) {
+                pos++; octal += String.fromCharCode(pdfBytes[pos]);
+              }
+              bytes.push(parseInt(octal, 8));
+            } else bytes.push(pdfBytes[pos]); // escaped char (including \\, \), etc.)
+          } else if (b === 0x29) { // close paren
+            depth--;
+            if (depth === 0) break;
+            bytes.push(b);
+          } else {
+            bytes.push(b);
+          }
+          pos++;
+        }
+        o = new Uint8Array(bytes);
+      }
+    }
+  }
+
+  // Same for /U
+  const uHex = dictStr.match(/\/U\s*<([0-9a-fA-F]+)>/);
+  if (uHex) {
+    u = new Uint8Array(uHex[1].length / 2);
+    for (let i = 0; i < u.length; i++) u[i] = parseInt(uHex[1].substr(i*2, 2), 16);
+  } else {
+    const uStart = pdfBytes.indexOf(new TextEncoder().encode('/U '), 0);
+    if (uStart >= 0) {
+      let pos = uStart + 3;
+      while (pos < pdfBytes.length && pdfBytes[pos] !== 0x28) pos++;
+      if (pos < pdfBytes.length && pdfBytes[pos] === 0x28) {
+        const bytes: number[] = [];
+        let depth = 1;
+        pos++;
+        while (pos < pdfBytes.length && depth > 0) {
+          const b = pdfBytes[pos];
+          if (b === 0x5C && pos + 1 < pdfBytes.length) {
+            pos++;
+            const esc = pdfBytes[pos];
+            if (esc === 0x6E) bytes.push(0x0A);
+            else if (esc === 0x72) bytes.push(0x0D);
+            else if (esc === 0x74) bytes.push(0x09);
+            else if (esc === 0x62) bytes.push(0x08);
+            else if (esc === 0x66) bytes.push(0x0C);
+            else if (esc >= 0x30 && esc <= 0x37) {
+              let octal = String.fromCharCode(esc);
+              if (pos + 1 < pdfBytes.length && pdfBytes[pos+1] >= 0x30 && pdfBytes[pos+1] <= 0x37) {
+                pos++; octal += String.fromCharCode(pdfBytes[pos]);
+              }
+              if (pos + 1 < pdfBytes.length && pdfBytes[pos+1] >= 0x30 && pdfBytes[pos+1] <= 0x37) {
+                pos++; octal += String.fromCharCode(pdfBytes[pos]);
+              }
+              bytes.push(parseInt(octal, 8));
+            } else bytes.push(pdfBytes[pos]);
+          } else if (b === 0x29) {
+            depth--;
+            if (depth === 0) break;
+            bytes.push(b);
+          } else {
+            bytes.push(b);
+          }
+          pos++;
+        }
+        u = new Uint8Array(bytes);
+      }
+    }
+  }
+
+  if (!o || !u) return null;
+
+  // Extract first ID from the trailer's /ID array
+  const idMatch = text.match(/\/ID\s*\[\s*<([0-9a-fA-F]+)>/);
+  let id1: Uint8Array | null = null;
+  if (idMatch) {
+    id1 = new Uint8Array(idMatch[1].length / 2);
+    for (let i = 0; i < id1.length; i++) id1[i] = parseInt(idMatch[1].substr(i*2, 2), 16);
+  }
+
+  return { v, r, o, u, p, length, encryptStart: 0, id1 };
+}
+
+function needsDecryption(pdfBytes: Uint8Array): boolean {
+  const header = new TextDecoder().decode(pdfBytes.slice(0, 500));
+  return /\/Encrypt\s+\d+\s+0\s+R/.test(header) || /\/Type\s*\/Encrypt/.test(header);
+}
+
+async function tryDecryptPdf(pdfBytes: Uint8Array, password: string = ''): Promise<Uint8Array | null> {
+  const dict = parseEncryptDict(pdfBytes);
+  if (!dict) return null;
+
+  console.log(`[PDF-DECRYPT] Found encrypted PDF V=${dict.v} R=${dict.r} P=${dict.p}`);
+
+  try {
+    // Compute encryption key per PDF spec (Algorithm 3.2 for R=2)
+    const paddedPw = padPassword(password);
+    const keyInput = new Uint8Array(paddedPw.length + dict.o.length + 4 + (dict.id1 ? dict.id1.length : 0));
+    keyInput.set(paddedPw, 0);
+    keyInput.set(dict.o, paddedPw.length);
+
+    // P as 4-byte little-endian
+    const pBytes = new Uint8Array(4);
+    pBytes[0] = dict.p & 0xff;
+    pBytes[1] = (dict.p >> 8) & 0xff;
+    pBytes[2] = (dict.p >> 16) & 0xff;
+    pBytes[3] = (dict.p >> 24) & 0xff;
+    keyInput.set(pBytes, paddedPw.length + dict.o.length);
+
+    if (dict.id1) {
+      keyInput.set(dict.id1.slice(0, 16), paddedPw.length + dict.o.length + 4);
+    }
+
+    const hash = await md5(keyInput);
+    const keyLen = Math.min(dict.length / 8 + 5, 16);
+    const encKey = hash.slice(0, keyLen);
+
+    // Verify password: decrypt U with the encryption key and compare to padding
+    // For R=2: encrypt 32 padding bytes, compare first 16 to U
+    const verifyKey = encKey.length > 16 ? encKey.slice(0, 16) : encKey;
+    const paddingCopy = new Uint8Array(32);
+    paddingCopy.set(PDF_PADDING_BYTES, 0);
+    const decryptedU = rc4(verifyKey, dict.u.slice(0, 16));
+
+    // Check if decrypted U matches PDF padding pattern
+    let passwordOk = true;
+    for (let i = 0; i < Math.min(16, decryptedU.length); i++) {
+      if (decryptedU[i] !== PDF_PADDING_BYTES[i]) { passwordOk = false; break; }
+    }
+
+    if (!passwordOk) {
+      console.log('[PDF-DECRYPT] Empty password verification failed — PDF may require a real password');
+      return null;
+    }
+
+    console.log('[PDF-DECRYPT] Password verified, decrypting streams...');
+
+    // Decrypt all streams in the PDF
+    // For simplicity, re-encode the PDF with encryption removed
+    // Strategy: find all "stream ... endstream" sections and decrypt the content
+    const pdfText = new TextDecoder().decode(pdfBytes);
+    let decryptedPdf = new TextDecoder().decode(pdfBytes);
+
+    // Remove the encryption dictionary from the PDF
+    // Find the encrypt object and replace its reference with null
+    const encRefMatch = pdfText.match(/\/Encrypt\s+(\d+\s+0\s+R)/);
+    if (encRefMatch) {
+      decryptedPdf = decryptedPdf.replace(new RegExp(encRefMatch[1].replace(/\s+/g, '\\s+')), 'null');
+    }
+
+    // Remove /Encrypt reference from trailer if present
+    decryptedPdf = decryptedPdf.replace(/\/Encrypt\s+\d+\s+0\s+R/g, '');
+
+    // Decrypt each stream
+    const streamRegex = /(\d+\s+0\s+obj[\s\S]*?\/Length\s+\d+[\s\S]*?)\nstream\n([\s\S]*?)endstream/g;
+    let match: RegExpExecArray | null;
+    let result = decryptedPdf;
+    const encoder = new TextEncoder();
+
+    while ((match = streamRegex.exec(decryptedPdf)) !== null) {
+      const streamHeader = match[1];
+      const streamContent = match[2];
+      const streamStart = match.index + match[1].length + 9; // after "stream\n"
+
+      // Get object number for this stream
+      const objMatch = streamHeader.match(/^(\d+)\s+0\s+obj/);
+      const objNum = objMatch ? parseInt(objMatch[1]) : 0;
+
+      // Determine if this stream should be decrypted (not metadata streams)
+      // In standard encrypted PDFs, all streams except the metadata stream are encrypted
+      const isMetadata = streamHeader.includes('/Type /Metadata') || streamHeader.includes('/Type/Metadata');
+
+      if (!isMetadata && streamContent.length > 0) {
+        const streamBytes = encoder.encode(streamContent);
+
+        // For each stream, the RC4 key = encKey + object_number (3 bytes, little-endian)
+        const streamKeyInput = new Uint8Array(encKey.length + 5);
+        streamKeyInput.set(encKey, 0);
+        streamKeyInput[encKey.length] = objNum & 0xff;
+        streamKeyInput[encKey.length + 1] = (objNum >> 8) & 0xff;
+        streamKeyInput[encKey.length + 2] = (objNum >> 16) & 0xff;
+        streamKeyInput[encKey.length + 3] = 0; // generation 0
+        streamKeyInput[encKey.length + 4] = 0;
+
+        const streamHash = await md5(streamKeyInput);
+        const streamKey = streamHash.slice(0, Math.min(encKey.length + 5, 16));
+
+        const decryptedBytes = rc4(streamKey, streamBytes);
+        const decryptedContent = new TextDecoder().decode(decryptedBytes);
+
+        // Replace the encrypted stream content with decrypted content
+        result = result.substring(0, streamStart) + decryptedContent + result.substring(streamStart + streamContent.length);
+      }
+    }
+
+    // Reset regex state for second pass
+    const resultBytes = encoder.encode(result);
+    console.log(`[PDF-DECRYPT] Decrypted PDF, size: ${pdfBytes.length} → ${resultBytes.length} bytes`);
+    return resultBytes;
+  } catch (e: any) {
+    console.log('[PDF-DECRYPT] Decryption error:', e?.message || e);
+    return null;
+  }
+}
+
+// ── End PDF Decryption ─────────────────────────────────────────────────────
+
+// Helper: read file from R2, decrypt if encrypted, return base64 data-URI
+async function fetchAndDecryptFile(
+  r2Key: string, mimeType: string, fileBucket: R2Bucket
+): Promise<string | null> {
+  try {
+    const obj = await fileBucket.get(r2Key);
+    if (!obj) return null;
+    const buffer = await obj.arrayBuffer();
+    let bytes = new Uint8Array(buffer);
+
+    if (mimeType.includes('pdf') && needsDecryption(bytes)) {
+      console.log(`[PDF-DECRYPT] Encrypted PDF detected for ${r2Key}, attempting decryption...`);
+      // Try empty password (standard for view-only encrypted PDFs like HSBC eStatements)
+      const decrypted = await tryDecryptPdf(bytes, '');
+      if (decrypted) {
+        bytes = decrypted;
+      } else {
+        console.log(`[PDF-DECRYPT] Empty-password decryption failed, sending original bytes to OCR`);
+      }
+    }
+
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  } catch (e: any) {
+    console.log(`[PDF-DECRYPT] Error:`, e?.message || e);
+    return null;
+  }
+}
+
+// ── End PDF Helpers ────────────────────────────────────────────────────────
 
 function extractTextFromGlmOcr(glmData: any): string {
   if (typeof glmData === 'string') return glmData;
@@ -1744,21 +2082,16 @@ files.post('/upload', async (c) => {
         let ocrText = '';
         if (c.env.GLM_API_KEY) {
           try {
-            const obj = await c.env.FILE_BUCKET.get(r2Key);
-            if (obj) {
-              const buffer = await obj.arrayBuffer();
-              const bytes = new Uint8Array(buffer);
-              let binary = '';
-              for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-              const base64 = btoa(binary);
-
+            const mimeType = file_type || 'application/pdf';
+            const base64 = await fetchAndDecryptFile(r2Key, mimeType, c.env.FILE_BUCKET);
+            if (base64) {
               const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                   'Authorization': `Bearer ${c.env.GLM_API_KEY}`,
                 },
-                body: JSON.stringify({ model: 'glm-ocr', file: `data:${file_type || 'application/pdf'};base64,${base64}` }),
+                body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
               });
               if (glmResp.ok) {
                 const glmData = await glmResp.json() as any;
