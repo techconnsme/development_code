@@ -767,114 +767,85 @@ function parseEncryptDict(pdfBytes: Uint8Array): {
   const p = parseInt(pMatch[1]);
   const length = lenMatch ? parseInt(lenMatch[1]) : 40;
 
-  // Extract O and U strings (hex in angle brackets OR raw binary in parentheses)
-  let o: Uint8Array | null = null;
-  let u: Uint8Array | null = null;
+  // Extract O and U strings using Latin-1 text (1:1 byte-to-char mapping)
+  // We work with the FULL Latin-1 decoded PDF so indexOf works on multi-char strings
+  const latin1Full = new TextDecoder('latin1').decode(pdfBytes);
 
-  const oHex = dictStr.match(/\/O\s*<([0-9a-fA-F]+)>/);
-  if (oHex) {
-    o = new Uint8Array(oHex[1].length / 2);
-    for (let i = 0; i < o.length; i++) o[i] = parseInt(oHex[1].substr(i*2, 2), 16);
-  } else {
-    // Try parenthesized binary string: /O (.....  )
-    // We need to extract from the raw PDF bytes, since these contain non-printable chars
-    const oStart = indexOfBytes(pdfBytes, new TextEncoder().encode('/O '), 0);
-    if (oStart >= 0) {
-      const parenStart = oStart + 3;
-      // Find the opening paren after /O
-      let pos = parenStart;
-      while (pos < pdfBytes.length && pdfBytes[pos] !== 0x28) pos++;
-      if (pos < pdfBytes.length && pdfBytes[pos] === 0x28) {
-        // Parse PDF string literal (balanced parens with escape handling)
-        const bytes: number[] = [];
-        let depth = 1;
-        pos++;
-        while (pos < pdfBytes.length && depth > 0) {
-          const b = pdfBytes[pos];
-          if (b === 0x5C && pos + 1 < pdfBytes.length) { // backslash escape
-            pos++;
-            const esc = pdfBytes[pos];
-            if (esc === 0x6E) bytes.push(0x0A);      // \n
-            else if (esc === 0x72) bytes.push(0x0D);  // \r
-            else if (esc === 0x74) bytes.push(0x09);  // \t
-            else if (esc === 0x62) bytes.push(0x08);  // \b
-            else if (esc === 0x66) bytes.push(0x0C);  // \f
-            else if (esc >= 0x30 && esc <= 0x37) {    // \ddd octal
-              let octal = String.fromCharCode(esc);
-              if (pos + 1 < pdfBytes.length && pdfBytes[pos+1] >= 0x30 && pdfBytes[pos+1] <= 0x37) {
-                pos++; octal += String.fromCharCode(pdfBytes[pos]);
-              }
-              if (pos + 1 < pdfBytes.length && pdfBytes[pos+1] >= 0x30 && pdfBytes[pos+1] <= 0x37) {
-                pos++; octal += String.fromCharCode(pdfBytes[pos]);
-              }
-              bytes.push(parseInt(octal, 8));
-            } else bytes.push(pdfBytes[pos]); // escaped char (including \\, \), etc.)
-          } else if (b === 0x29) { // close paren
-            depth--;
-            if (depth === 0) break;
-            bytes.push(b);
-          } else {
-            bytes.push(b);
-          }
-          pos++;
-        }
-        o = new Uint8Array(bytes);
-      }
+  function extractPdfString(fullText: string, keyName: string): Uint8Array | null {
+    const keyWithParen = '/' + keyName + ' (';
+    const idx = fullText.indexOf(keyWithParen);
+    if (idx < 0) {
+      // Try with newline variant: /O\n(
+      const altIdx = fullText.indexOf('/' + keyName + '\n(');
+      if (altIdx < 0) return null;
+      return extractParenString(fullText, altIdx + keyName.length + 3); // skip "/O\n("
     }
+    return extractParenString(fullText, idx + keyWithParen.length - 1); // position at the '('
   }
 
-  // Same for /U
-  const uHex = dictStr.match(/\/U\s*<([0-9a-fA-F]+)>/);
-  if (uHex) {
-    u = new Uint8Array(uHex[1].length / 2);
-    for (let i = 0; i < u.length; i++) u[i] = parseInt(uHex[1].substr(i*2, 2), 16);
-  } else {
-    const uStart = indexOfBytes(pdfBytes, new TextEncoder().encode('/U '), 0);
-    if (uStart >= 0) {
-      let pos = uStart + 3;
-      while (pos < pdfBytes.length && pdfBytes[pos] !== 0x28) pos++;
-      if (pos < pdfBytes.length && pdfBytes[pos] === 0x28) {
-        const bytes: number[] = [];
-        let depth = 1;
+  function extractParenString(text: string, parenPos: number): Uint8Array | null {
+    // parenPos points to '(' — parse balanced parens with PDF escape handling
+    const bytes: number[] = [];
+    let depth = 1;
+    let pos = parenPos + 1; // skip opening '('
+    while (pos < text.length && depth > 0) {
+      let b = text.charCodeAt(pos); // Latin-1 char code = original byte value
+      if (b === 0x5C && pos + 1 < text.length) { // backslash escape
         pos++;
-        while (pos < pdfBytes.length && depth > 0) {
-          const b = pdfBytes[pos];
-          if (b === 0x5C && pos + 1 < pdfBytes.length) {
-            pos++;
-            const esc = pdfBytes[pos];
-            if (esc === 0x6E) bytes.push(0x0A);
-            else if (esc === 0x72) bytes.push(0x0D);
-            else if (esc === 0x74) bytes.push(0x09);
-            else if (esc === 0x62) bytes.push(0x08);
-            else if (esc === 0x66) bytes.push(0x0C);
-            else if (esc >= 0x30 && esc <= 0x37) {
-              let octal = String.fromCharCode(esc);
-              if (pos + 1 < pdfBytes.length && pdfBytes[pos+1] >= 0x30 && pdfBytes[pos+1] <= 0x37) {
-                pos++; octal += String.fromCharCode(pdfBytes[pos]);
-              }
-              if (pos + 1 < pdfBytes.length && pdfBytes[pos+1] >= 0x30 && pdfBytes[pos+1] <= 0x37) {
-                pos++; octal += String.fromCharCode(pdfBytes[pos]);
-              }
-              bytes.push(parseInt(octal, 8));
-            } else bytes.push(pdfBytes[pos]);
-          } else if (b === 0x29) {
-            depth--;
-            if (depth === 0) break;
-            bytes.push(b);
-          } else {
-            bytes.push(b);
+        const esc = text.charCodeAt(pos);
+        if (esc === 0x6E || esc === 0x6E) bytes.push(0x0A);      // \n
+        else if (esc === 0x72 || esc === 0x72) bytes.push(0x0D);  // \r
+        else if (esc === 0x74 || esc === 0x74) bytes.push(0x09);  // \t
+        else if (esc === 0x62 || esc === 0x62) bytes.push(0x08);  // \b
+        else if (esc === 0x66 || esc === 0x66) bytes.push(0x0C);  // \f
+        else if (esc >= 0x30 && esc <= 0x37) {                    // \ddd octal
+          let octal = String.fromCharCode(esc);
+          if (pos + 1 < text.length && text.charCodeAt(pos+1) >= 0x30 && text.charCodeAt(pos+1) <= 0x37) {
+            pos++; octal += text.charAt(pos);
           }
-          pos++;
+          if (pos + 1 < text.length && text.charCodeAt(pos+1) >= 0x30 && text.charCodeAt(pos+1) <= 0x37) {
+            pos++; octal += text.charAt(pos);
+          }
+          bytes.push(parseInt(octal, 8));
+        } else {
+          bytes.push(text.charCodeAt(pos)); // escaped literal: \\, \), etc.
         }
-        u = new Uint8Array(bytes);
+      } else if (b === 0x29) { // close paren ')'
+        depth--;
+        if (depth === 0) break;
+        bytes.push(b);
+      } else {
+        bytes.push(b);
       }
+      pos++;
+    }
+    return bytes.length > 0 ? new Uint8Array(bytes) : null;
+  }
+
+  let o = extractPdfString(latin1Full, 'O');
+  let u = extractPdfString(latin1Full, 'U');
+
+  // Fallback: try hex format
+  if (!o) {
+    const oHex = dictStr.match(/\/O\s*<([0-9a-fA-F]+)>/);
+    if (oHex) {
+      o = new Uint8Array(oHex[1].length / 2);
+      for (let i = 0; i < o.length; i++) o[i] = parseInt(oHex[1].substr(i*2, 2), 16);
+    }
+  }
+  if (!u) {
+    const uHex = dictStr.match(/\/U\s*<([0-9a-fA-F]+)>/);
+    if (uHex) {
+      u = new Uint8Array(uHex[1].length / 2);
+      for (let i = 0; i < u.length; i++) u[i] = parseInt(uHex[1].substr(i*2, 2), 16);
     }
   }
 
   if (!o || !u) return null;
 
-  // Extract first ID from the trailer's /ID array
-  const idMatch = text.match(/\/ID\s*\[\s*<([0-9a-fA-F]+)>/);
+  // Extract first ID from the trailer's /ID array (at the END of PDF, not beginning)
+  const trailerText = new TextDecoder('latin1').decode(pdfBytes.slice(Math.max(0, pdfBytes.length - 2000)));
+  const idMatch = trailerText.match(/\/ID\s*\[\s*<([0-9a-fA-F]+)>/);
   let id1: Uint8Array | null = null;
   if (idMatch) {
     id1 = new Uint8Array(idMatch[1].length / 2);
@@ -905,9 +876,9 @@ async function tryDecryptPdf(pdfBytes: Uint8Array, password: string = ''): Promi
     // P as 4-byte little-endian
     const pBytes = new Uint8Array(4);
     pBytes[0] = dict.p & 0xff;
-    pBytes[1] = (dict.p >> 8) & 0xff;
-    pBytes[2] = (dict.p >> 16) & 0xff;
-    pBytes[3] = (dict.p >> 24) & 0xff;
+    pBytes[1] = (dict.p >>>8) & 0xff;
+    pBytes[2] = (dict.p >>>16) & 0xff;
+    pBytes[3] = (dict.p >>>24) & 0xff;
     keyInput.set(pBytes, paddedPw.length + dict.o.length);
 
     if (dict.id1) {
@@ -1015,8 +986,13 @@ async function fetchAndDecryptFile(
 
     if (mimeType.includes('pdf') && needsDecryption(bytes)) {
       console.log(`[PDF-DECRYPT] Encrypted PDF detected for ${r2Key}, attempting decryption...`);
-      // Try empty password (standard for view-only encrypted PDFs like HSBC eStatements)
-      const decrypted = await tryDecryptPdf(bytes, '');
+      // Try empty password first, then common HSBC passwords
+      const passwords = ['', 'hsbc', 'HSBC'];
+      let decrypted: Uint8Array | null = null;
+      for (const pw of passwords) {
+        decrypted = await tryDecryptPdf(bytes, pw);
+        if (decrypted) break;
+      }
       if (decrypted) {
         bytes = decrypted;
       } else {
@@ -3466,68 +3442,6 @@ files.post('/:id/import-document', async (c) => {
     return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText,
       needs_review: !!(forcedType || result.needs_direction_review || result.company_not_detected || result.total_mismatch || result.needs_review) }, 201);
   }
-});
-
-// Temporary debug endpoint for PDF decryption
-files.post('/debug-decrypt/:id', async (c) => {
-  const user = c.get('user');
-  const tenantId = c.get('client_user_id') || user.id;
-  const fileId = c.req.param('id');
-
-  const fileRow = await c.env.DB.prepare(
-    'SELECT id, r2_key, file_type, original_name FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(fileId, tenantId).first<{ id: string; r2_key: string; file_type: string; original_name: string }>();
-  if (!fileRow) return c.json({ error: 'File not found' }, 404);
-
-  const obj = await c.env.FILE_BUCKET.get(fileRow.r2_key);
-  if (!obj) return c.json({ error: 'R2 object not found' }, 404);
-  const buffer = await obj.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-
-  const rawText = new TextDecoder('latin1').decode(bytes.slice(0, 3000));
-  const result: any = {
-    fileId, size: bytes.length,
-    isEncrypted: needsDecryption(bytes),
-    rawPdf: rawText.replace(/[^\x20-\x7E\n\r\t]/g, '?').slice(0, 1500),
-  };
-
-  if (result.isEncrypted) {
-    // Debug: try to extract V,R,P from the encrypt section
-    const text3 = new TextDecoder('latin1').decode(bytes.slice(0, 6000));
-    const eIdx = text3.indexOf('/Type /Encrypt');
-    if (eIdx >= 0) {
-      const oB = text3.lastIndexOf('<<', eIdx);
-      const cB = text3.indexOf('>>', eIdx);
-      const section = oB >= 0 && cB > oB ? text3.slice(oB + 2, cB) : '';
-      result.encDictV = (section.match(/\/V\s+(\d+)/) || [])[1] || null;
-      result.encDictR = (section.match(/\/R\s+(\d+)/) || [])[1] || null;
-      result.encDictP = (section.match(/\/P\s+(-?\d+)/) || [])[1] || null;
-      result.encDictLen = (section.match(/\/Length\s+(\d+)/) || [])[1] || null;
-      const oHexM = section.match(/\/O\s*<([0-9a-fA-F]+)>/);
-      const uHexM = section.match(/\/U\s*<([0-9a-fA-F]+)>/);
-      result.oFormat = oHexM ? 'hex' : 'paren';
-      result.uFormat = uHexM ? 'hex' : 'paren';
-
-      // Try binary O/U extraction — search for /O, /U, check surrounding bytes
-      const oStart = indexOfBytes(bytes, new TextEncoder().encode('/O'), 0);
-      result.oByteIdx = oStart;
-      if (oStart >= 0) {
-        result.oChar1 = bytes[oStart + 2];  // should be space (32) or LF
-        result.oChar2 = bytes[oStart + 3];  // should be paren (40)
-        result.oAfter = String.fromCharCode(...Array.from(bytes.slice(oStart, oStart + 8)));
-      }
-    }
-
-    // Try decryption
-    const decrypted = await tryDecryptPdf(bytes, '');
-    result.decryptionSuccess = !!decrypted;
-    if (decrypted) {
-      const decText = new TextDecoder().decode(decrypted.slice(0, 2000));
-      result.decryptedPreview = decText.slice(0, 500);
-    }
-  }
-
-  return c.json(result);
 });
 
 export { files as fileStorageRoutes };
