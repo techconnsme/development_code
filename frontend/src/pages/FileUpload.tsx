@@ -435,6 +435,7 @@ export default function FileUpload() {
 
     let ok = 0;
     let reviewCount = 0;
+    let encryptedCount = 0;
     let hasError = false;
     let idx = 0;
     for (const file of files) {
@@ -445,6 +446,7 @@ export default function FileUpload() {
         setBatchProgress(prev => ({ ...prev, currentFile: file.name }));
         const status = await uploadFile(file, isBatch, idx, files.length);
         if (status === 'review') reviewCount++;
+        if (status === 'encrypted') encryptedCount++;
         ok++;
         setFileStatuses(prev => ({ ...prev, [fileIdx]: 'success' }));
       } catch (e: any) {
@@ -459,6 +461,25 @@ export default function FileUpload() {
     setUploading(false);
 
     if (hasError) return;
+
+    // If ALL files are encrypted, stay on this page — the password modal is open
+    if (encryptedCount > 0 && encryptedCount === ok) {
+      toast.info(tr(
+        `${encryptedCount} encrypted file(s) need a password. Enter it in the pop-up window.`,
+        `${encryptedCount} 個加密文件需要密碼。請在彈出窗口中輸入。`,
+        `${encryptedCount} 个加密文件需要密码。请在弹出窗口中输入。`
+      ));
+      // Don't clear files — user may want to re-upload or check status
+      return;
+    }
+
+    if (encryptedCount > 0 && encryptedCount < ok) {
+      toast.info(tr(
+        `${encryptedCount} file(s) are encrypted and need a password. ${ok - encryptedCount} file(s) processed.`,
+        `${encryptedCount} 個文件已加密需要密碼。${ok - encryptedCount} 個文件已處理。`,
+        `${encryptedCount} 个文件已加密需要密码。${ok - encryptedCount} 个文件已处理。`
+      ));
+    }
 
     setFiles([]);
     setDescription('');
