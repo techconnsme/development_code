@@ -267,6 +267,16 @@ export default function FileUpload() {
       return 'duplicate';
     }
 
+    // Encrypted PDF — show password prompt
+    if (result?.status === 'password_required' || result?.type === 'encrypted_pdf') {
+      toast.info(tr(
+        'This PDF is encrypted. Go to File Storage and click "🔒 Encrypted" to unlock with your password.',
+        '此 PDF 已加密。請前往 File Storage 並點擊「🔒 已加密」以輸入密碼解鎖。',
+        '此 PDF 已加密。请前往 File Storage 并点击「🔒 已加密」以输入密码解锁。'
+      ));
+      return 'encrypted';
+    }
+
     // Hard errors
     if (result?.error) throw new Error(result.error);
     if (result?.ocr_failed) {
