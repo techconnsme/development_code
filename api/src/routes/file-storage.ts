@@ -646,9 +646,73 @@ function padPassword(pw: string): Uint8Array {
   return bytes;
 }
 
-async function md5(data: Uint8Array): Promise<Uint8Array> {
-  const hash = await crypto.subtle.digest('MD5', data);
-  return new Uint8Array(hash);
+// MD5 using Node.js crypto (nodejs_compat), with pure-JS fallback
+let nodeCrypto: any = null;
+try { nodeCrypto = require('crypto'); } catch {}
+
+function md5(data: Uint8Array): Uint8Array {
+  if (nodeCrypto) {
+    const hash = nodeCrypto.createHash('md5');
+    hash.update(Buffer.from(data));
+    return new Uint8Array(hash.digest());
+  }
+  // Pure-JS MD5 fallback
+  function rotateLeft(x: number, n: number) { return (x << n) | (x >>> (32 - n)); }
+  function toUint32(x: number) { return x >>> 0; }
+
+  const msg = new Uint8Array(data.length + 72);
+  msg.set(data);
+  const origLen = data.length * 8;
+  msg[data.length] = 0x80;
+  const padLen = ((data.length + 8) % 64 <= 56) ? (56 - (data.length + 1) % 64) : (120 - (data.length + 1) % 64);
+  for (let i = 0; i < 8; i++) {
+    msg[data.length + 1 + padLen + i] = (origLen >>> (i * 8)) & 0xff;
+  }
+  const totalLen = data.length + 1 + padLen + 8;
+
+  let a = 0x67452301, b = 0xefcdab89, c = 0x98badcfe, d = 0x10325476;
+
+  const S = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+  const K = new Array(64);
+  for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000);
+
+  for (let offset = 0; offset < totalLen; offset += 64) {
+    const M = new Array(16);
+    for (let i = 0; i < 16; i++) {
+      M[i] = msg[offset + i*4] | (msg[offset + i*4 + 1] << 8) | (msg[offset + i*4 + 2] << 16) | (msg[offset + i*4 + 3] << 24);
+    }
+    let A = a, B = b, C = c, D = d;
+    for (let i = 0; i < 64; i++) {
+      let F: number, g: number;
+      if (i < 16) { F = (B & C) | (~B & D); g = i; }
+      else if (i < 32) { F = (D & B) | (~D & C); g = (5*i + 1) % 16; }
+      else if (i < 48) { F = B ^ C ^ D; g = (3*i + 5) % 16; }
+      else { F = C ^ (B | ~D); g = (7*i) % 16; }
+      F = toUint32(F + A + K[i] + M[g]);
+      A = D; D = C; C = B;
+      B = toUint32(B + rotateLeft(F, S[i]));
+    }
+    a = toUint32(a + A); b = toUint32(b + B); c = toUint32(c + C); d = toUint32(d + D);
+  }
+
+  const result = new Uint8Array(16);
+  const words = [a, b, c, d];
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) result[i*4 + j] = (words[i] >>> (j*8)) & 0xff;
+  }
+  return result;
+}
+
+// Helper: find byte sequence in Uint8Array
+function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, startPos: number = 0): number {
+  for (let i = startPos; i <= haystack.length - needle.length; i++) {
+    let match = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) { match = false; break; }
+    }
+    if (match) return i;
+  }
+  return -1;
 }
 
 // RC4 (ARC4) stream cipher — used by older PDF encryption
@@ -675,13 +739,23 @@ function parseEncryptDict(pdfBytes: Uint8Array): {
   v: number; r: number; o: Uint8Array; u: Uint8Array; p: number;
   length: number; encryptStart: number; id1: Uint8Array | null;
 } | null {
-  const text = new TextDecoder().decode(pdfBytes.slice(0, 4000));
-  // Find the encryption object number: "N 0 obj ... /Type /Encrypt"
-  const encMatch = text.match(/(\d+)\s+0\s+obj[\s\S]*?\/Type\s*\/Encrypt/);
-  if (!encMatch) return null;
+  const text = new TextDecoder('latin1').decode(pdfBytes.slice(0, 6000));
+
+  // Find the encrypt dict: look for /Type /Encrypt within a << ... >> block
+  const encIdx = text.indexOf('/Type /Encrypt');
+  if (encIdx < 0) return null;
+
+  // Find the enclosing << and >>
+  let openIdx = text.lastIndexOf('<<', encIdx);
+  let closeIdx = text.indexOf('>>', encIdx);
+  if (openIdx < 0 || closeIdx < 0 || openIdx >= closeIdx) return null;
+
+  // Include the full << ... >> but exclude the delimiters
+  const encSection = text.slice(openIdx + 2, closeIdx);
+
+  const dictStr = encSection;
 
   // Extract V, R, O, U, P, Length from the encryption dict
-  const dictStr = encMatch[0];
   const vMatch = dictStr.match(/\/V\s+(\d+)/);
   const rMatch = dictStr.match(/\/R\s+(\d+)/);
   const pMatch = dictStr.match(/\/P\s+(-?\d+)/);
@@ -704,7 +778,7 @@ function parseEncryptDict(pdfBytes: Uint8Array): {
   } else {
     // Try parenthesized binary string: /O (.....  )
     // We need to extract from the raw PDF bytes, since these contain non-printable chars
-    const oStart = pdfBytes.indexOf(new TextEncoder().encode('/O '), 0);
+    const oStart = indexOfBytes(pdfBytes, new TextEncoder().encode('/O '), 0);
     if (oStart >= 0) {
       const parenStart = oStart + 3;
       // Find the opening paren after /O
@@ -755,7 +829,7 @@ function parseEncryptDict(pdfBytes: Uint8Array): {
     u = new Uint8Array(uHex[1].length / 2);
     for (let i = 0; i < u.length; i++) u[i] = parseInt(uHex[1].substr(i*2, 2), 16);
   } else {
-    const uStart = pdfBytes.indexOf(new TextEncoder().encode('/U '), 0);
+    const uStart = indexOfBytes(pdfBytes, new TextEncoder().encode('/U '), 0);
     if (uStart >= 0) {
       let pos = uStart + 3;
       while (pos < pdfBytes.length && pdfBytes[pos] !== 0x28) pos++;
@@ -840,20 +914,15 @@ async function tryDecryptPdf(pdfBytes: Uint8Array, password: string = ''): Promi
       keyInput.set(dict.id1.slice(0, 16), paddedPw.length + dict.o.length + 4);
     }
 
-    const hash = await md5(keyInput);
+    const hash = md5(keyInput);
     const keyLen = Math.min(dict.length / 8 + 5, 16);
     const encKey = hash.slice(0, keyLen);
 
-    // Verify password: decrypt U with the encryption key and compare to padding
-    // For R=2: encrypt 32 padding bytes, compare first 16 to U
-    const verifyKey = encKey.length > 16 ? encKey.slice(0, 16) : encKey;
-    const paddingCopy = new Uint8Array(32);
-    paddingCopy.set(PDF_PADDING_BYTES, 0);
-    const decryptedU = rc4(verifyKey, dict.u.slice(0, 16));
-
-    // Check if decrypted U matches PDF padding pattern
-    let passwordOk = true;
-    for (let i = 0; i < Math.min(16, decryptedU.length); i++) {
+    // Verify password: for R=2, U is RC4-encrypted 32 padding bytes.
+    // Decrypt U with encKey and compare to PDF padding.
+    const decryptedU = rc4(encKey, dict.u);
+    let passwordOk = decryptedU.length >= 16;
+    for (let i = 0; i < Math.min(32, decryptedU.length); i++) {
       if (decryptedU[i] !== PDF_PADDING_BYTES[i]) { passwordOk = false; break; }
     }
 
@@ -911,7 +980,7 @@ async function tryDecryptPdf(pdfBytes: Uint8Array, password: string = ''): Promi
         streamKeyInput[encKey.length + 3] = 0; // generation 0
         streamKeyInput[encKey.length + 4] = 0;
 
-        const streamHash = await md5(streamKeyInput);
+        const streamHash = md5(streamKeyInput);
         const streamKey = streamHash.slice(0, Math.min(encKey.length + 5, 16));
 
         const decryptedBytes = rc4(streamKey, streamBytes);
@@ -3397,6 +3466,68 @@ files.post('/:id/import-document', async (c) => {
     return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText,
       needs_review: !!(forcedType || result.needs_direction_review || result.company_not_detected || result.total_mismatch || result.needs_review) }, 201);
   }
+});
+
+// Temporary debug endpoint for PDF decryption
+files.post('/debug-decrypt/:id', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const fileId = c.req.param('id');
+
+  const fileRow = await c.env.DB.prepare(
+    'SELECT id, r2_key, file_type, original_name FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(fileId, tenantId).first<{ id: string; r2_key: string; file_type: string; original_name: string }>();
+  if (!fileRow) return c.json({ error: 'File not found' }, 404);
+
+  const obj = await c.env.FILE_BUCKET.get(fileRow.r2_key);
+  if (!obj) return c.json({ error: 'R2 object not found' }, 404);
+  const buffer = await obj.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+
+  const rawText = new TextDecoder('latin1').decode(bytes.slice(0, 3000));
+  const result: any = {
+    fileId, size: bytes.length,
+    isEncrypted: needsDecryption(bytes),
+    rawPdf: rawText.replace(/[^\x20-\x7E\n\r\t]/g, '?').slice(0, 1500),
+  };
+
+  if (result.isEncrypted) {
+    // Debug: try to extract V,R,P from the encrypt section
+    const text3 = new TextDecoder('latin1').decode(bytes.slice(0, 6000));
+    const eIdx = text3.indexOf('/Type /Encrypt');
+    if (eIdx >= 0) {
+      const oB = text3.lastIndexOf('<<', eIdx);
+      const cB = text3.indexOf('>>', eIdx);
+      const section = oB >= 0 && cB > oB ? text3.slice(oB + 2, cB) : '';
+      result.encDictV = (section.match(/\/V\s+(\d+)/) || [])[1] || null;
+      result.encDictR = (section.match(/\/R\s+(\d+)/) || [])[1] || null;
+      result.encDictP = (section.match(/\/P\s+(-?\d+)/) || [])[1] || null;
+      result.encDictLen = (section.match(/\/Length\s+(\d+)/) || [])[1] || null;
+      const oHexM = section.match(/\/O\s*<([0-9a-fA-F]+)>/);
+      const uHexM = section.match(/\/U\s*<([0-9a-fA-F]+)>/);
+      result.oFormat = oHexM ? 'hex' : 'paren';
+      result.uFormat = uHexM ? 'hex' : 'paren';
+
+      // Try binary O/U extraction — search for /O, /U, check surrounding bytes
+      const oStart = indexOfBytes(bytes, new TextEncoder().encode('/O'), 0);
+      result.oByteIdx = oStart;
+      if (oStart >= 0) {
+        result.oChar1 = bytes[oStart + 2];  // should be space (32) or LF
+        result.oChar2 = bytes[oStart + 3];  // should be paren (40)
+        result.oAfter = String.fromCharCode(...Array.from(bytes.slice(oStart, oStart + 8)));
+      }
+    }
+
+    // Try decryption
+    const decrypted = await tryDecryptPdf(bytes, '');
+    result.decryptionSuccess = !!decrypted;
+    if (decrypted) {
+      const decText = new TextDecoder().decode(decrypted.slice(0, 2000));
+      result.decryptedPreview = decText.slice(0, 500);
+    }
+  }
+
+  return c.json(result);
 });
 
 export { files as fileStorageRoutes };
