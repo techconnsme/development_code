@@ -827,15 +827,17 @@ ${ocrText.slice(0, 8000)}`;
       const hintBlock = hints.length > 0 ? `HINTS (use these to guide your extraction):\n${hints.join('\n')}\n\n` : '';
 
       const promptForInvoice = `${hintBlock}Parse this invoice OCR text into structured JSON. Extract:
-- vendor_name: the company that ISSUED this invoice (the sender/supplier). If HINTS provide a PDF Author or letterhead vendor, use that. The vendor is the company that will receive payment.
-- customer_name: the company being BILLED (the client/buyer). If HINTS provide a billed party, use that. The customer is the company that needs to pay this invoice.
+- vendor_name: the company that ISSUED this invoice (the sender/supplier). If HINTS provide a PDF Author or letterhead vendor, use that. The vendor is the company that will receive payment. If you cannot determine the vendor name, use null — NEVER use "User", "Unknown", "N/A", or generic placeholder names.
+- customer_name: the company being BILLED (the client/buyer). If HINTS provide a billed party, use that. The customer is the company that needs to pay this invoice. If you cannot determine the customer name, use null — NEVER use "User", "Unknown", or generic placeholder names.
 - customer_email: optional customer email
 - invoice_number: the invoice number/ID
 - issue_date: YYYY-MM-DD
 - due_date: YYYY-MM-DD if visible
 - currency: default "HKD"
-- items: array of { description, quantity (number — copy EXACTLY from PDF, if PDF shows 0 then quantity MUST be 0, NEVER change 0 to 1), unit_price (number), amount (number — if quantity is 0 then amount MUST be 0, copy total from PDF exactly) }
-- total: the total amount
+- items: array of { description, quantity (number — copy EXACTLY from PDF, if PDF shows 0 then quantity MUST be 0, NEVER change 0 to 1), unit_price (number), amount (number — if quantity is 0 then amount MUST be 0, copy total from PDF exactly) } for each product/service line item. Do NOT include discount/rebate lines here.
+- discount_amount: any discount, rebate, or deduction applied (as a POSITIVE number, e.g. 1000 means $1,000 off). Look for lines labeled "Discount", "Rebate", "Less:", "Deduction", or where the total is less than the sum of line items. If no discount, use 0.
+- discount_description: short description of the discount if present (e.g. "Early payment discount", "Promotional rebate"), or null
+- total: the FINAL total amount AFTER all discounts (the amount actually to be paid)
 - notes: any additional notes
 
 Return ONLY valid JSON, no explanation. Use null for missing values.
@@ -861,6 +863,15 @@ ${ocrText.slice(0, 8000)}`;
     } catch {}
   }
   const deepseekRaw = parsed ? JSON.stringify(parsed).slice(0, 3000) : null;
+
+  // ── Post-AI cleanup: filter out generic placeholder names ──
+  if (parsed) {
+    const isGenericName = (s: string | null | undefined) =>
+      !s || /^(user|unknown|n\/a|none|someone|test|admin|client|customer|supplier|vendor)$/i.test(s.trim());
+    if (isGenericName(parsed.vendor_name)) parsed.vendor_name = null;
+    if (isGenericName(parsed.customer_name)) parsed.customer_name = null;
+    if (isGenericName(parsed.payer_name)) parsed.payer_name = null;
+  }
 
   // ── Post-AI correction: if AI swapped vendor/customer, fix using regex extraction ──
   if (!isReceipt && parsed && regexParties.letterheadVendor) {
@@ -1174,12 +1185,23 @@ ${ocrText.slice(0, 8000)}`;
   }
 
   const subtotal = items.reduce((s: number, it: any) => s + it.amount, 0);
-  const total = parsed?.total || subtotal;
 
-  // ── Total validation: check if AI line items sum matches AI total ──
+  // ── Discount handling: use LLM-detected discount if available ──
+  const llmDiscount = typeof parsed?.discount_amount === 'number' && parsed.discount_amount > 0
+    ? parsed.discount_amount : 0;
+  const llmDiscountDesc = parsed?.discount_description || null;
+
+  // Compute total: prefer parsed total, but if the LLM detected a discount, use subtotal - discount
+  const computedTotal = llmDiscount > 0 ? subtotal - llmDiscount : subtotal;
+  const total = parsed?.total || computedTotal;
+
+  // ── Total validation: check if AI line items sum matches AI total, accounting for discounts ──
   let totalMismatch: { expected: number; actual: number; diff: number } | null = null;
-  if (parsed?.total && items.length > 0 && Math.abs(subtotal - parsed.total) > 0.01) {
-    totalMismatch = { expected: subtotal, actual: parsed.total, diff: parsed.total - subtotal };
+  if (parsed?.total && items.length > 0) {
+    const expectedAfterDiscount = subtotal - llmDiscount;
+    if (Math.abs(expectedAfterDiscount - parsed.total) > 0.01) {
+      totalMismatch = { expected: expectedAfterDiscount, actual: parsed.total, diff: parsed.total - expectedAfterDiscount };
+    }
   }
 
   // Smart number detection: check if OCR-extracted number matches client's pattern
@@ -1266,9 +1288,9 @@ ${ocrText.slice(0, 8000)}`;
   // Clean imports → 'active' (auto-confirmed). Needs-review imports → 'pending_review'.
   const invStatus = needsReview ? 'pending_review' : 'active';
   await db.prepare(
-    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(invId, userId, invNumber, customerId, supplierId || null, invStatus, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef).run();
+    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref, discount_amount, tax_rate, tax_amount)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(invId, userId, invNumber, customerId, supplierId || null, invStatus, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef, llmDiscount || 0, parsed?.tax_rate || 0, (parsed?.tax_amount || parsed?.tax) || 0).run();
   console.log('[INVOICE-CREATED] id:', invId, '| direction:', direction, '| status:', invStatus, '| needsReview:', needsReview, '| vendor:', customerName, '| total:', total, '| currency:', parsed?.currency || 'HKD');
 
   // Auto-link: if this is a receipt, try to find a matching invoice by amount
@@ -1322,6 +1344,8 @@ ${ocrText.slice(0, 8000)}`;
     needs_direction_review: needsDirectionReview,
     company_not_detected: companyNotDetected,
     total_mismatch: totalMismatch,
+    discount_amount: llmDiscount || 0,
+    discount_description: llmDiscountDesc,
     usage,
     glm_usage: glmUsage,
     deepseek_raw: deepseekRaw,
@@ -1649,18 +1673,62 @@ files.post('/upload', async (c) => {
                 await c.env.DB.prepare(
                   "UPDATE file_records SET ocr_text = ?, ocr_status = 'completed' WHERE id = ?"
                 ).bind(ocrText.slice(0, 10000), id).run();
+              } else {
+                console.log('[OCR-AUTO-IMPORT] GLM-OCR failed with status:', glmResp.status);
               }
             }
-          } catch { /* GLM-OCR fallback */ }
+          } catch (e: any) {
+            console.log('[OCR-AUTO-IMPORT] GLM-OCR error:', e?.message || e);
+          }
+        }
+
+        // Fallback: if GLM-OCR produced no text, try Cloudflare AI toMarkdown (fast, built-in)
+        if ((!ocrText || ocrText.length < 20) && c.env.AI) {
+          try {
+            const obj = await c.env.FILE_BUCKET.get(r2Key);
+            if (obj) {
+              const arrayBuffer = await obj.arrayBuffer();
+              const ui8 = new Uint8Array(arrayBuffer);
+              const base64ForAI = btoa(Array.from(ui8).map(b => String.fromCharCode(b)).join(''));
+              const aiResp = await c.env.AI.run('@cf/unum/uform-gen2-qwen-500m', {
+                prompt: 'Extract all text from this document. Return all visible text including company names, invoice numbers, dates, amounts, line items, and totals.',
+                image: base64ForAI,
+              });
+              if (aiResp?.description) {
+                ocrText = aiResp.description;
+                console.log('[OCR-AUTO-IMPORT] Cloudflare AI fallback OCR result:', ocrText.slice(0, 200));
+                await c.env.DB.prepare(
+                  "UPDATE file_records SET ocr_text = ? WHERE id = ?"
+                ).bind(ocrText.slice(0, 10000), id).run();
+              }
+            }
+          } catch (e: any) {
+            console.log('[OCR-AUTO-IMPORT] Cloudflare AI fallback error:', e?.message || e);
+          }
         }
 
         // If we have OCR text, try to import
         if (ocrText && ocrText.length > 20) {
-          await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+          try {
+            const importResult = await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+            if (importResult.success && importResult.invoice_id) {
+              await c.env.DB.prepare("UPDATE file_records SET invoice_id = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
+                .bind(importResult.invoice_id, id).run();
+              console.log(`[OCR-AUTO-IMPORT] Invoice ${importResult.invoice_id} created from file ${id}`);
+            } else {
+              console.log(`[OCR-AUTO-IMPORT] Import failed for file ${id}: ${importResult.error || 'unknown'}`);
+              await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
+                .bind(id).run();
+            }
+          } catch (importErr: any) {
+            console.log(`[OCR-AUTO-IMPORT] Import error for file ${id}: ${importErr?.message || importErr}`);
+            await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
+              .bind(id).run();
+          }
+        } else {
+          await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
+            .bind(id).run();
         }
-
-        await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
-          .bind(id).run();
       } catch (e) {
         await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'failed', updated_at = datetime('now') WHERE id = ?")
           .bind(id).run();
