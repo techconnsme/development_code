@@ -1707,25 +1707,22 @@ files.post('/upload', async (c) => {
           }
         }
 
-        // If we have OCR text, try to import
-        if (ocrText && ocrText.length > 20) {
-          try {
-            const importResult = await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
-            if (importResult.success && importResult.invoice_id) {
-              await c.env.DB.prepare("UPDATE file_records SET invoice_id = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
-                .bind(importResult.invoice_id, id).run();
-              console.log(`[OCR-AUTO-IMPORT] Invoice ${importResult.invoice_id} created from file ${id}`);
-            } else {
-              console.log(`[OCR-AUTO-IMPORT] Import failed for file ${id}: ${importResult.error || 'unknown'}`);
-              await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
-                .bind(id).run();
-            }
-          } catch (importErr: any) {
-            console.log(`[OCR-AUTO-IMPORT] Import error for file ${id}: ${importErr?.message || importErr}`);
+        // Import the invoice — even if our background OCR failed,
+        // importInvoiceFromFile has its own OCR fallback and creates an
+        // empty draft when the file is truly unreadable.
+        try {
+          const importResult = await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+          if (importResult.success && importResult.invoice_id) {
+            await c.env.DB.prepare("UPDATE file_records SET invoice_id = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
+              .bind(importResult.invoice_id, id).run();
+            console.log(`[OCR-AUTO-IMPORT] Invoice ${importResult.invoice_id} created from file ${id}`);
+          } else {
+            console.log(`[OCR-AUTO-IMPORT] Import failed for file ${id}: ${importResult.error || 'unknown'}`);
             await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
               .bind(id).run();
           }
-        } else {
+        } catch (importErr: any) {
+          console.log(`[OCR-AUTO-IMPORT] Import error for file ${id}: ${importErr?.message || importErr}`);
           await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
             .bind(id).run();
         }
@@ -1736,7 +1733,123 @@ files.post('/upload', async (c) => {
     })());
   }
 
-  await auditLog(c.env.DB, tenantId, 'upload', 'file', id, { filename: displayName, folder, category: classification.category });
+  // Auto-import bank statements with dual OCR (same pattern as invoices above)
+  if (classification.category === 'bank_statement') {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'processing', updated_at = datetime('now') WHERE id = ?")
+          .bind(id).run();
+
+        // Try GLM-OCR first for better bank statement recognition
+        let ocrText = '';
+        if (c.env.GLM_API_KEY) {
+          try {
+            const obj = await c.env.FILE_BUCKET.get(r2Key);
+            if (obj) {
+              const buffer = await obj.arrayBuffer();
+              const bytes = new Uint8Array(buffer);
+              let binary = '';
+              for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+              const base64 = btoa(binary);
+
+              const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${c.env.GLM_API_KEY}`,
+                },
+                body: JSON.stringify({ model: 'glm-ocr', file: `data:${file_type || 'application/pdf'};base64,${base64}` }),
+              });
+              if (glmResp.ok) {
+                const glmData = await glmResp.json() as any;
+                ocrText = extractTextFromGlmOcr(glmData);
+                console.log('[OCR-AUTO-STATEMENT] GLM-OCR result:', ocrText.slice(0, 200));
+                await c.env.DB.prepare(
+                  "UPDATE file_records SET ocr_text = ? WHERE id = ?"
+                ).bind(ocrText.slice(0, 50000), id).run();
+              } else {
+                console.log('[OCR-AUTO-STATEMENT] GLM-OCR failed with status:', glmResp.status);
+              }
+            }
+          } catch (e: any) {
+            console.log('[OCR-AUTO-STATEMENT] GLM-OCR error:', e?.message || e);
+          }
+        }
+
+        // Fallback: Cloudflare AI toMarkdown
+        if ((!ocrText || ocrText.length < 20) && c.env.AI) {
+          try {
+            const obj = await c.env.FILE_BUCKET.get(r2Key);
+            if (obj) {
+              const arrayBuffer = await obj.arrayBuffer();
+              const ui8 = new Uint8Array(arrayBuffer);
+              const base64ForAI = btoa(Array.from(ui8).map(b => String.fromCharCode(b)).join(''));
+              const aiResp = await c.env.AI.run('@cf/unum/uform-gen2-qwen-500m', {
+                prompt: 'Extract all text from this bank statement. Return: Bank Name, Account Number, Statement Period, Opening Balance, Closing Balance, and all transactions with dates, descriptions, deposits, withdrawals, and balances.',
+                image: base64ForAI,
+              });
+              if (aiResp?.description) {
+                ocrText = aiResp.description;
+                console.log('[OCR-AUTO-STATEMENT] Cloudflare AI fallback result:', ocrText.slice(0, 200));
+                await c.env.DB.prepare(
+                  "UPDATE file_records SET ocr_text = ? WHERE id = ?"
+                ).bind(ocrText.slice(0, 10000), id).run();
+              }
+            }
+          } catch (e: any) {
+            console.log('[OCR-AUTO-STATEMENT] Cloudflare AI fallback error:', e?.message || e);
+          }
+        }
+
+        // Reclassification check: if OCR text looks like an invoice, switch category
+        if (ocrText && ocrText.length > 20) {
+          const isActuallyInvoice = /(?:TAX\s*INVOICE|PURCHASE\s*BILL|BILL\s*TO|INVOICE\s*#|發票|发票)/i.test(ocrText)
+            && !/(?:BANK|STATEMENT|eStatement|月結單|月结单|ACCOUNT\s*NUMBER|BALANCE\s*BROUGHT|OPENING\s*BALANCE|CLOSING\s*BALANCE)/i.test(ocrText);
+          if (isActuallyInvoice) {
+            console.log('[OCR-AUTO-STATEMENT] Reclassifying file as invoice based on OCR content');
+            await c.env.DB.prepare(
+              "UPDATE file_records SET category = 'invoice', folder = 'Invoices', ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?"
+            ).bind(id).run();
+            // Re-run as invoice import
+            try {
+              const invResult = await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+              if (invResult.success && invResult.invoice_id) {
+                await c.env.DB.prepare("UPDATE file_records SET invoice_id = ? WHERE id = ?")
+                  .bind(invResult.invoice_id, id).run();
+                console.log(`[OCR-AUTO-STATEMENT] Reclassified as invoice ${invResult.invoice_id}`);
+              }
+            } catch (e: any) {
+              console.log('[OCR-AUTO-STATEMENT] Reclassification import error:', e?.message || e);
+            }
+            return; // Don't create a bank statement
+          }
+        }
+
+        // Import the bank statement — even if our background OCR failed,
+        // importStatementFromFile has its own OCR fallback and creates an
+        // empty draft when the file is truly unreadable.
+        try {
+          const stmtResult = await importStatementFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+          if (stmtResult.success && stmtResult.statement_id) {
+            await c.env.DB.prepare("UPDATE file_records SET statement_id = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
+              .bind(stmtResult.statement_id, id).run();
+            console.log(`[OCR-AUTO-STATEMENT] Bank statement ${stmtResult.statement_id} created from file ${id}, ${stmtResult.transactions_count || 0} transactions, ocr_failed: ${stmtResult.ocr_failed || false}`);
+          } else {
+            console.log(`[OCR-AUTO-STATEMENT] Import failed for file ${id}: ${stmtResult.error || 'unknown'}`);
+            await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
+              .bind(id).run();
+          }
+        } catch (importErr: any) {
+          console.log(`[OCR-AUTO-STATEMENT] Import error for file ${id}: ${importErr?.message || importErr}`);
+          await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
+            .bind(id).run();
+        }
+      } catch (e) {
+        await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'failed', updated_at = datetime('now') WHERE id = ?")
+          .bind(id).run();
+      }
+    })());
+  }
 
   return c.json(row, 201);
 });
