@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
+import EncryptedPdfModal from '../components/EncryptedPdfModal';
 import { Upload, FileText, Image, File, Loader2, AlertCircle, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 import { writeTokenUsage, clearTokenUsage } from '../components/TokenPopup';
@@ -136,6 +137,7 @@ export default function FileUpload() {
   const batchRef = useRef({ total: 0, done: 0, bank: 0, invoice: 0, card: 0 });
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0, currentFile: '' });
   const [tokenCardDismissed, setTokenCardDismissed] = useState(false);
+  const [encryptedFile, setEncryptedFile] = useState<{ fileId: string; fileName: string } | null>(null);
   const [fileErrors, setFileErrors] = useState<Record<number, string>>({});
   const [fileStatuses, setFileStatuses] = useState<Record<number, 'pending' | 'processing' | 'success' | 'error'>>({});
 
@@ -267,13 +269,9 @@ export default function FileUpload() {
       return 'duplicate';
     }
 
-    // Encrypted PDF — show password prompt
+    // Encrypted PDF — show password modal immediately
     if (result?.status === 'password_required' || result?.type === 'encrypted_pdf') {
-      toast.info(tr(
-        'This PDF is encrypted. Go to File Storage and click "🔒 Encrypted" to unlock with your password.',
-        '此 PDF 已加密。請前往 File Storage 並點擊「🔒 已加密」以輸入密碼解鎖。',
-        '此 PDF 已加密。请前往 File Storage 并点击「🔒 已加密」以输入密码解锁。'
-      ));
+      setEncryptedFile({ fileId, fileName: file.name });
       return 'encrypted';
     }
 
@@ -668,6 +666,23 @@ export default function FileUpload() {
           onForce={() => { const resolve = mismatchResolveRef.current; setMismatch(null); resolve?.('force'); }}
           onSwitch={() => { const resolve = mismatchResolveRef.current; setMismatch(null); resolve?.('switch'); }}
           onClose={() => { const resolve = mismatchResolveRef.current; setMismatch(null); resolve?.('cancel'); }}
+        />
+      )}
+
+      {/* ── Encrypted PDF password prompt ── */}
+      {encryptedFile && (
+        <EncryptedPdfModal
+          fileId={encryptedFile.fileId}
+          fileName={encryptedFile.fileName}
+          onClose={() => setEncryptedFile(null)}
+          onSuccess={() => {
+            setEncryptedFile(null);
+            toast.success(tr(
+              'PDF decrypted! Your bank statement is now being processed.',
+              'PDF 已解密！銀行月結單正在處理中。',
+              'PDF 已解密！银行月结单正在处理中。'
+            ));
+          }}
         />
       )}
     </div>
