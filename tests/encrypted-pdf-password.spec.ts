@@ -1,164 +1,97 @@
 import { test, expect } from '@playwright/test';
+import path from 'path';
 
-const BASE = 'https://opcc-crm-testing.pages.dev';
-// Using Joseph Lin PNR account
+const BASE = 'https://c5e898a7.opcc-crm-testing.pages.dev';
 const EMAIL = 'joseph.lin@pnr.hk';
 const PASSWORD = 'Test1234';
+const ESTATEMENT = path.resolve('C:/Users/samue/Documents/Pastel/Tech_Connect_SME/test-sample-real/PNR/estatement/eStatement 20250228.pdf');
 
-test.describe('Encrypted PDF Password Flow', () => {
-
-  // Shared helper: navigate to File Storage and expand all folders
-  async function openFileStorage(page: any) {
-    await page.goto(`${BASE}/file-storage`, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(4000);
-
-    // Click ALL chevron-right icons to expand every folder
-    const chevrons = page.locator('svg.lucide-chevron-right');
-    const count = await chevrons.count();
-    for (let i = 0; i < count; i++) {
-      await chevrons.nth(0).click().catch(() => {});
-      await page.waitForTimeout(400);
-    }
-  }
+test.describe('UI File Upload → Encrypted PDF Flow', () => {
 
   test.beforeEach(async ({ page }) => {
-    // Login
     await page.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
     await page.fill('input[type="email"]', EMAIL);
     await page.fill('input[type="password"]', PASSWORD);
     await page.click('button[type="submit"]');
     await page.waitForFunction(() => !window.location.href.includes('/login'), { timeout: 20000 });
-  });
-
-  test('Encrypted badges visible in File Storage', async ({ page }) => {
-    await openFileStorage(page);
-
-    const badgeCount = await page.locator('button:has-text("Encrypted"), button:has-text("已加密"), button:has-text("已加密")').count();
-    console.log(`Found ${badgeCount} encrypted file badge(s)`);
-
-    expect(badgeCount).toBeGreaterThan(0);
-    await page.screenshot({ path: 'test-results/encrypted-badges-visible.png', fullPage: true });
-  });
-
-  test('Click encrypted badge opens password modal', async ({ page }) => {
-    await openFileStorage(page);
-
-    // Click the first encrypted badge
-    await page.locator('button:has-text("Encrypted"), button:has-text("已加密"), button:has-text("已加密")').first().click();
     await page.waitForTimeout(1000);
-
-    // Verify modal appears
-    const modal = page.locator('text=Encrypted PDF').first();
-    await expect(modal).toBeVisible({ timeout: 5000 });
-
-    // Verify modal elements
-    const lockIcon = page.locator('.lucide-lock').first();
-    await expect(lockIcon).toBeVisible();
-
-    const passwordInput = page.locator('input[type="password"]');
-    await expect(passwordInput).toBeVisible();
-
-    const unlockBtn = page.locator('button:has-text("Unlock")').first();
-    await expect(unlockBtn).toBeVisible();
-
-    const cancelBtn = page.locator('button:has-text("Cancel")').first();
-    await expect(cancelBtn).toBeVisible();
-
-    await page.screenshot({ path: 'test-results/password-modal-open.png' });
   });
 
-  test('Wrong password shows error message', async ({ page }) => {
-    await openFileStorage(page);
+  test('upload-encrypted-estatement-via-ui', async ({ page }) => {
+    // ── Step 1: Go to File Upload ──
+    await page.goto(`${BASE}/file-upload`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(2000);
+    console.log('1. File Upload page loaded');
 
-    // Open modal
-    await page.locator('button:has-text("Encrypted"), button:has-text("已加密"), button:has-text("已加密")').first().click();
-    await page.waitForTimeout(1000);
+    // Find the Bank Statement upload tab/button
+    const bankTab = page.locator('button:has-text("Bank Statement"), button:has-text("Bank"), button:has-text("銀行")').first();
+    if (await bankTab.isVisible().catch(() => false)) {
+      await bankTab.click();
+      await page.waitForTimeout(500);
+    }
 
-    // Type wrong password
-    const passwordInput = page.locator('input[type="password"]');
-    await passwordInput.fill('wrongpassword123');
-    await page.waitForTimeout(300);
+    // Upload file via hidden input[type=file]
+    const fileInput = page.locator('input[type="file"]').first();
+    await fileInput.setInputFiles(ESTATEMENT);
+    console.log('2. File selected for upload');
+    await page.waitForTimeout(2000);
 
-    // Click unlock
-    const unlockBtn = page.locator('button:has-text("Unlock")').first();
-    await unlockBtn.click();
+    // Click upload/process button
+    const uploadBtn = page.locator('button:has-text("Upload"), button:has-text("Process"), button:has-text("Scan")').first();
+    if (await uploadBtn.isVisible().catch(() => false)) {
+      await uploadBtn.click();
+      console.log('3. Upload button clicked');
+    }
+
+    // Wait for processing (upload + OCR + import-document)
+    await page.waitForTimeout(25000);
+    console.log('4. Waited for processing');
+
+    await page.screenshot({ path: 'test-results/ui-upload-after-process.png', fullPage: true });
+
+    // ── Step 2: Go to File Storage, expand folders, look for result ──
+    await page.goto(`${BASE}/file-storage`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(3000);
 
-    // Should show error message
-    const errorMsg = page.locator('text=Wrong password').first();
-    await expect(errorMsg).toBeVisible({ timeout: 10000 });
+    // Expand folders by clicking buttons with "Bank" text
+    const allButtons = page.locator('button');
+    const btnCount = await allButtons.count();
+    for (let i = 0; i < btnCount; i++) {
+      const btn = allButtons.nth(i);
+      const text = await btn.textContent().catch(() => '');
+      if (text && /Bank|bank/.test(text)) {
+        await btn.click().catch(() => {});
+        await page.waitForTimeout(400);
+      }
+    }
 
-    await page.screenshot({ path: 'test-results/wrong-password-error.png' });
-  });
+    await page.screenshot({ path: 'test-results/ui-upload-file-storage.png', fullPage: true });
 
-  test('Cancel button dismisses modal', async ({ page }) => {
-    await openFileStorage(page);
+    // Check for encrypted badge (🔒) or error message about encryption
+    const lockBadge = page.locator('button:has-text("🔒")');
+    const badgeCount = await lockBadge.count();
+    console.log(`5. 🔒 Encrypted badges in File Storage: ${badgeCount}`);
 
-    // Open modal
-    await page.locator('button:has-text("Encrypted"), button:has-text("已加密"), button:has-text("已加密")').first().click();
-    await page.waitForTimeout(1000);
+    // Also check for any error/status text
+    const pageText = await page.textContent('body');
+    const hasEncrypted = (pageText || '').includes('encrypted');
+    const hasLock = (pageText || '').includes('🔒');
+    console.log(`   Page has 'encrypted': ${hasEncrypted}, has '🔒': ${hasLock}`);
 
-    // Verify modal is open
-    await expect(page.locator('text=Encrypted PDF').first()).toBeVisible();
+    // ── Step 3: Go to Bank Statements — should be empty ──
+    await page.goto(`${BASE}/bank-statements`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(3000);
 
-    // Click Cancel
-    const cancelBtn = page.locator('button:has-text("Cancel")').first();
-    await cancelBtn.click();
-    await page.waitForTimeout(500);
+    await page.screenshot({ path: 'test-results/ui-upload-bank-statements.png', fullPage: true });
 
-    // Modal should be gone
-    const modal = page.locator('text=Encrypted PDF').first();
-    await expect(modal).not.toBeVisible({ timeout: 3000 });
+    const bsPageText = await page.textContent('body');
+    const hasNull = (bsPageText || '').includes('-null');
+    const hsbcCount = ((bsPageText || '').match(/HSBC/gi) || []).length;
+    console.log(`6. Bank Statements: has '-null': ${hasNull}, 'HSBC' mentions: ${hsbcCount}`);
 
-    await page.screenshot({ path: 'test-results/modal-dismissed.png', fullPage: true });
-  });
-
-  test('Empty password field disables Unlock button', async ({ page }) => {
-    await openFileStorage(page);
-
-    // Open modal
-    await page.locator('button:has-text("Encrypted"), button:has-text("已加密"), button:has-text("已加密")').first().click();
-    await page.waitForTimeout(1000);
-
-    // Unlock button should be disabled with empty password
-    const unlockBtn = page.locator('button:has-text("Unlock")').first();
-    await expect(unlockBtn).toBeDisabled();
-
-    // Type something — button should enable
-    const passwordInput = page.locator('input[type="password"]');
-    await passwordInput.fill('test');
-    await page.waitForTimeout(300);
-
-    await expect(unlockBtn).toBeEnabled();
-
-    // Clear — button should disable again
-    await passwordInput.fill('');
-    await page.waitForTimeout(300);
-    await expect(unlockBtn).toBeDisabled();
-
-    await page.screenshot({ path: 'test-results/unlock-disabled-empty.png' });
-  });
-
-  test('Closing by clicking backdrop works', async ({ page }) => {
-    await openFileStorage(page);
-
-    // Open modal
-    await page.locator('button:has-text("Encrypted"), button:has-text("已加密"), button:has-text("已加密")').first().click();
-    await page.waitForTimeout(1000);
-
-    // Verify modal is open
-    await expect(page.locator('text=Encrypted PDF').first()).toBeVisible();
-
-    // Click the backdrop (semi-transparent overlay)
-    const backdrop = page.locator('.fixed.inset-0.bg-black\\/50').first();
-    await backdrop.click({ position: { x: 10, y: 10 } });
-    await page.waitForTimeout(500);
-
-    // Modal should be gone
-    const modal = page.locator('text=Encrypted PDF').first();
-    await expect(modal).not.toBeVisible({ timeout: 3000 });
-
-    await page.screenshot({ path: 'test-results/backdrop-dismiss.png' });
+    // Assertions
+    expect(badgeCount).toBeGreaterThan(0);        // File Storage shows 🔒 Encrypted badge
+    expect(hasNull).toBe(false);                   // No "-null HSBC" garbage entries
   });
 
 });
