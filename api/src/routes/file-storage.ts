@@ -176,7 +176,7 @@ ${inputOcrText.slice(0, 8000)}` }],
   // ── Dual-path: try both stored OCR + toMarkdown (pdftotext gated for future) ──
   // When a Docker host runs pdftotext and stores output in file_records.ocr_text,
   // set ENABLE_PDFTOTEXT_DUAL_PATH to true to activate dual-path comparison.
-  const ENABLE_PDFTOTEXT_DUAL_PATH = false;
+  const ENABLE_PDFTOTEXT_DUAL_PATH = true;
   let pdftotextOcrText = '';
   if (ENABLE_PDFTOTEXT_DUAL_PATH && deepseekKey) {
     // Path A: the existing stored OCR text (could be pdftotext from Docker worker, or toMarkdown)
