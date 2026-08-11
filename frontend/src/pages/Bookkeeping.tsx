@@ -324,7 +324,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
           {!isStaff && (
             <button onClick={() => setShowEntryForm(true)}
               className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
-              <Plus className="h-4 w-4" /> {tr('+ New General Journal Entry', '新增日誌帳', '新增日志帐')}
+              <Plus className="h-4 w-4" /> {tr('New General Journal Entry', '新增日誌帳', '新增日志帐')}
             </button>
           )}
           {!isStaff && (
