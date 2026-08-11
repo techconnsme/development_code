@@ -1886,6 +1886,7 @@ files.get('/', async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const folder = c.req.query('folder') || '';
   const q = c.req.query('q') || '';
+  const limit = parseInt(c.req.query('limit') || '0', 10);
 
   let sql = `SELECT fr.id, fr.folder, fr.filename, fr.original_name, fr.file_type, fr.file_size,
     fr.description, fr.ocr_status, fr.category, fr.direction, fr.payment_status, fr.amount,
@@ -1909,6 +1910,7 @@ files.get('/', async (c) => {
     params.push(`%${q}%`, `%${q}%`, `%${q}%`);
   }
   sql += ' ORDER BY fr.created_at DESC';
+  if (limit > 0) { sql += ' LIMIT ?'; params.push(limit); }
 
   const rows = await c.env.DB.prepare(sql).bind(...params).all();
   return c.json({ data: rows.results });

@@ -8,6 +8,8 @@ import Chatbot from './Chatbot';
 import CookieConsent from './CookieConsent';
 import TokenPopup from './TokenPopup';
 import CompanySwitcher from './FirmClientSwitcher';
+import DateFilterSelect from './DateFilterSelect';
+import { DateFilterProvider } from '../contexts/DateFilterContext';
 import { tr } from '../lib/i18nHelpers';
 import {
   LayoutDashboard, Users, Truck, Package, FileText, FileSpreadsheet, Mail,
@@ -273,6 +275,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Firm client switcher */}
       {!collapsed && <CompanySwitcher />}
 
+      {/* Global fiscal year filter */}
+      {!collapsed && <DateFilterSelect />}
+
       {/* Navigation */}
       <nav className={`flex-1 space-y-0.5 overflow-y-auto ${collapsed ? 'p-0' : 'px-2 py-2 pr-3'}`}>
         {(user?.role === 'admin' ? adminNavGroups : navGroups).map((group: any) => {
@@ -417,6 +422,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   );
 
   return (
+    <DateFilterProvider>
     <div className="min-h-screen bg-background">
       {/* ====== MOBILE HEADER ====== */}
       <div className="lg:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between p-4 bg-background border-b">
@@ -527,5 +533,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <CookieConsent />
       <TokenPopup />
     </div>
+    </DateFilterProvider>
   );
 }

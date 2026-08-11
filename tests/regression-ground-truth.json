@@ -1,0 +1,223 @@
+{
+  "test_company": "Proficient and Reliance Company Limited (PNR)",
+  "test_user": "joseph.lin@pnr.hk",
+  "sample_base": "../../test-sample-real/PNR",
+
+  "bank_statements": [
+    {
+      "file": "estatement/eStatement 20250228.pdf",
+      "expected": {
+        "doc_type": "bank_statement",
+        "bank_name_contains": "HSBC",
+        "account_number": "147-162101-838",
+        "period_start": "non_null",
+        "period_end": "2025-02-28",
+        "currency": "HKD",
+        "has_transactions": true,
+        "has_opening_balance": true,
+        "has_closing_balance": true
+      }
+    },
+    {
+      "file": "estatement/eStatement 20250128.pdf",
+      "expected": {
+        "doc_type": "bank_statement",
+        "bank_name_contains": "HSBC",
+        "account_number": "147-162101-838",
+        "period_start": "2025-01-09",
+        "period_end": "2025-01-28",
+        "currency": "HKD",
+        "has_transactions": true
+      }
+    },
+    {
+      "file": "estatement/eStatement 20250331.pdf",
+      "expected": {
+        "doc_type": "bank_statement",
+        "bank_name_contains": "HSBC",
+        "account_number": "147-162101-838",
+        "period_start": "2025-02-28",
+        "period_end": "2025-03-28",
+        "currency": "HKD",
+        "has_transactions": true
+      }
+    }
+  ],
+
+  "ap_invoices": [
+    {
+      "file": "Pastel/01383 - invoice#001397.pdf",
+      "expected": {
+        "doc_type": "invoice",
+        "direction": "incoming",
+        "vendor_name_contains": "Pastel",
+        "has_invoice_number": true,
+        "has_total": true,
+        "has_issue_date": true
+      }
+    },
+    {
+      "file": "Pastel/01383 - invoice#001414.pdf",
+      "expected": {
+        "doc_type": "invoice",
+        "direction": "incoming",
+        "vendor_name_contains": "Pastel",
+        "has_invoice_number": true,
+        "has_total": true
+      }
+    },
+    {
+      "file": "Pastel/01383 - invoice#001547-v3.pdf",
+      "expected": {
+        "doc_type": "invoice",
+        "direction": "incoming",
+        "vendor_name_contains": "Pastel",
+        "has_invoice_number": true,
+        "has_total": true
+      }
+    },
+    {
+      "file": "Muselab/INV022-1319 @$500 to Proficiency and Reliance Company Limited.pdf",
+      "expected": {
+        "doc_type": "invoice",
+        "direction": "incoming",
+        "vendor_name_contains": "MuseLabs",
+        "has_invoice_number": true,
+        "has_total": true
+      }
+    },
+    {
+      "file": "Respect/I0105 Proficiency And Reliance.pdf",
+      "expected": {
+        "doc_type": "invoice",
+        "direction": "incoming",
+        "vendor_name_contains": "Respect",
+        "has_invoice_number": true,
+        "has_total": true
+      }
+    }
+  ],
+
+  "ar_invoices": [
+    {
+      "file": "VEII/Invoice 2025001.pdf",
+      "expected": {
+        "doc_type": "invoice",
+        "direction": "outgoing",
+        "customer_name_contains": "Value Exchange",
+        "has_invoice_number": true,
+        "has_total": true
+      }
+    },
+    {
+      "file": "VEII/Invoice 2026001.pdf",
+      "expected": {
+        "doc_type": "invoice",
+        "direction": "outgoing",
+        "customer_name_contains": "Value Exchange",
+        "has_invoice_number": true,
+        "has_total": true
+      }
+    },
+    {
+      "file": "EHSIA/Invoice #E2025501.pdf",
+      "expected": {
+        "doc_type": "invoice",
+        "direction": "incoming",
+        "vendor_name_contains": "Empower Health",
+        "has_invoice_number": true,
+        "has_total": true
+      }
+    }
+  ],
+
+  "receipts": [
+    {
+      "file": "Pastel/001397-receipt#001260.pdf",
+      "expected": {
+        "doc_type": "receipt",
+        "direction": "incoming",
+        "has_receipt_number": true,
+        "has_total": true,
+        "should_link_to_invoice_containing": "001397"
+      }
+    },
+    {
+      "file": "Pastel/001414, 001417-receipt#001281.pdf",
+      "expected": {
+        "doc_type": "receipt",
+        "direction": "incoming",
+        "has_receipt_number": true,
+        "has_total": true,
+        "should_link_to_invoice_containing": "001414"
+      }
+    },
+    {
+      "file": "VEII/Receipt 2025001.pdf",
+      "expected": {
+        "doc_type": "receipt",
+        "direction": "outgoing",
+        "has_receipt_number": true,
+        "has_total": true,
+        "should_link_to_invoice_containing": "2025001"
+      }
+    },
+    {
+      "file": "EHSIA/Receipt #E2025001.pdf",
+      "expected": {
+        "doc_type": "receipt",
+        "direction": "outgoing",
+        "has_receipt_number": true,
+        "has_total": true
+      }
+    }
+  ],
+
+  "receipt_to_invoice_links": [
+    { "receipt_file": "Pastel/001397-receipt#001260.pdf", "receipt_number": "001260", "links_to_invoice": "001397" },
+    { "receipt_file": "Pastel/001414, 001417-receipt#001281.pdf", "receipt_number": "001281", "links_to_invoice": "001414" },
+    { "receipt_file": "Pastel/001441, 001442-receipt#001294.pdf", "receipt_number": "001294", "links_to_invoice": "001441" },
+    { "receipt_file": "Pastel/001473-receipt#001316.pdf", "receipt_number": "001316", "links_to_invoice": "001473" },
+    { "receipt_file": "Pastel/001500-receipt#001355.pdf", "receipt_number": "001355", "links_to_invoice": "001500" },
+    { "receipt_file": "Pastel/001507v2-receipt#001356.pdf", "receipt_number": "001356", "links_to_invoice": "001507" },
+    { "receipt_file": "Pastel/001511-receipt#001347.pdf", "receipt_number": "001347", "links_to_invoice": "001511" },
+    { "receipt_file": "Pastel/001521-receipt#001358.pdf", "receipt_number": "001358", "links_to_invoice": "001521" },
+    { "receipt_file": "VEII/Receipt 2025001.pdf", "receipt_number": "2025001", "links_to_invoice": "2025001" },
+    { "receipt_file": "VEII/Receipt 2025002.pdf", "receipt_number": "2025002", "links_to_invoice": "2025002" }
+  ],
+
+  "bank_statement_continuity": [
+    { "from": "eStatement 20250128.pdf", "to": "eStatement 20250228.pdf", "expected": "matched" },
+    { "from": "eStatement 20250228.pdf", "to": "eStatement 20250331.pdf", "expected": "matched" }
+  ],
+
+  "cross_document_links": [
+    {
+      "type": "bank_to_invoice",
+      "description": "HSBC bank transactions (deposits/withdrawals) should have auto-match candidates against Pastel/VEII invoices",
+      "validate": "auto_match_invoices_finds_candidates",
+      "min_expected_matches": 1
+    },
+    {
+      "type": "invoice_to_receipt",
+      "description": "10 receipt→invoice pairs should be linkable via auto-match-receipts",
+      "validate": "auto_match_receipts_finds_candidates",
+      "min_expected_matches": 5
+    },
+    {
+      "type": "bank_statement_continuity",
+      "description": "2 consecutive statement pairs should have matching closing→opening balances",
+      "validate": "continuity_chain_matched",
+      "min_expected_pairs": 2
+    }
+  ],
+
+  "skip_for_now": [
+    "Travel Expense/Shanghai-Nanjing/* (32 files — expense receipts, not invoices)",
+    "Gov/* (business registration docs — not financial documents)",
+    "VTC/* (donation/proforma — edge case docs)",
+    "*.docx (duplicate of PDF, skip)",
+    "*.xlsx (master spreadsheets, not uploaded)",
+    "*.png (receipt photos — need special handling)"
+  ]
+}

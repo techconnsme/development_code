@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Receipt, Link2 } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
+import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
 import { ReceiptMatchReviewModal } from './AP';
 
@@ -47,10 +48,16 @@ export default function AR() {
   const [productSearch, setProductSearch] = useState<Record<number, string>>({});
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
+  const { startDate, endDate } = useDateFilter();
 
   const { data, isLoading } = useQuery({
-    queryKey: ['invoices-ar', search, status, page],
-    queryFn: () => api(`/invoices?q=${search}&status=${status}&page=${page}&limit=20&doc_type=invoice&direction=outgoing`),
+    queryKey: ['invoices-ar', search, status, page, startDate, endDate],
+    queryFn: () => {
+      const params = new URLSearchParams({ q: search, status, page: String(page), limit: '20', doc_type: 'invoice', direction: 'outgoing' });
+      if (startDate) params.set('start_date', startDate);
+      if (endDate) params.set('end_date', endDate);
+      return api(`/invoices?${params.toString()}`);
+    },
   });
 
   const { data: customers } = useQuery({

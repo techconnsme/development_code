@@ -129,6 +129,8 @@ bank.get('/', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const year = c.req.query('year') || '';
+  const startDate = c.req.query('start_date') || '';
+  const endDate = c.req.query('end_date') || '';
   const showDrafts = c.req.query('show_drafts') === '1';
   const onlyDrafts = c.req.query('only_drafts') === '1';
   let q = `SELECT bs.id, bs.file_name, bs.bank_name, bs.account_number, bs.branch, bs.currency, bs.account_type,
@@ -149,6 +151,9 @@ bank.get('/', async (c) => {
     q += " AND (status IS NULL OR status != 'draft')";
   }
   if (year) { q += ' AND statement_year = ?'; p.push(parseInt(year)); }
+  // Filter by period_end within fiscal year range (handles cross-year FY like Apr-Mar)
+  if (startDate) { q += ' AND bs.period_end >= ?'; p.push(startDate); }
+  if (endDate) { q += ' AND bs.period_end <= ?'; p.push(endDate); }
   q += ' ORDER BY statement_year DESC, statement_month DESC';
   const rows = await c.env.DB.prepare(q).bind(...p).all();
   return c.json({ data: rows.results });

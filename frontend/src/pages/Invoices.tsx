@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { Plus, Search, FileText, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Link2, Link, Link2Off } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
+import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
 import { ReceiptMatchReviewModal } from './AP';
 
@@ -44,6 +45,7 @@ export default function Invoices() {
   const [linkFilter, setLinkFilter] = useState<'all' | 'linked' | 'unlinked'>('all');
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
+  const { startDate, endDate } = useDateFilter();
   const [viewId, setViewId] = useState<string | null>(null);
   const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
   const [form, setForm] = useState({ invoice_number: '', customer_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, discount_type: 'flat' as string, discount_value: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
@@ -52,12 +54,14 @@ export default function Invoices() {
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
 
   const { data, isLoading } = useQuery({
-    queryKey: ['invoices', search, status, page, expenseCategory, docType],
+    queryKey: ['invoices', search, status, page, expenseCategory, docType, startDate, endDate],
     queryFn: () => {
       const params = new URLSearchParams({ q: search, status, page: String(page), limit: '20', doc_type: docType });
       if (docType === 'invoice' && expenseCategory !== 'all') {
         params.set('expense_category', expenseCategory);
       }
+      if (startDate) params.set('start_date', startDate);
+      if (endDate) params.set('end_date', endDate);
       return api(`/invoices?${params.toString()}`);
     },
   });
@@ -606,7 +610,7 @@ export default function Invoices() {
             <div className="flex-1 border rounded-lg overflow-auto bg-gray-100 flex items-center justify-center">
               {invoiceDetail.file_id ? (
                 <iframe
-                  src={`${WORKER_API_BASE}/file-storage/${invoiceDetail.file_id}/download?token=${localStorage.getItem('token') || ''}`}
+                  src={`${WORKER_API_BASE}/file-storage/${invoiceDetail.file_id}/download?inline=1&token=${localStorage.getItem('token') || ''}`}
                   className="w-full h-full border-0"
                   title="Uploaded Document"
                 />

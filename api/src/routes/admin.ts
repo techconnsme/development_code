@@ -774,4 +774,84 @@ admin.get('/audit-stats', async (c) => {
   });
 });
 
+// POST /hard-reset-data — hard-delete ALL transactional data for a user (regression testing)
+// Preserves: COA accounts, company settings, user account, compliance data
+// Deletes: bank statements+txns, journal entries+lines, invoices+items,
+//          card statements+txns, file records, customers, suppliers, products,
+//          fixed assets, todos, expense receipts, purchase orders, quotations
+admin.post('/hard-reset-data', async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'Authentication required' }, 401);
+  // Allow admin, supervisor with firm_admin, or anyone with higher tier
+  if (user.role !== 'admin' && user.firm_role !== 'admin') {
+    const ok = await requireHigherTier(c);
+    if (!ok) return c.json({ error: 'Admin or higher-tier access required' }, 403);
+  }
+
+  const targetUserId = (await c.req.json().catch(() => ({}))).user_id || user.id;
+  const db = c.env.DB;
+  const results: Record<string, number> = {};
+
+  // Break circular FKs first
+  await db.prepare('UPDATE invoices SET linked_invoice_id = NULL WHERE user_id = ?').bind(targetUserId).run();
+
+  // Delete child tables (FK order)
+  const r1 = await db.prepare('DELETE FROM invoice_items WHERE invoice_id IN (SELECT id FROM invoices WHERE user_id = ?)').bind(targetUserId).run();
+  results.invoice_items = r1.meta?.changes || 0;
+
+  const r2 = await db.prepare('DELETE FROM card_transactions WHERE user_id = ?').bind(targetUserId).run();
+  results.card_transactions = r2.meta?.changes || 0;
+
+  const r3 = await db.prepare('DELETE FROM bank_transactions WHERE user_id = ?').bind(targetUserId).run();
+  results.bank_transactions = r3.meta?.changes || 0;
+
+  const r4 = await db.prepare('DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE user_id = ?)').bind(targetUserId).run();
+  results.journal_lines = r4.meta?.changes || 0;
+
+  const r5 = await db.prepare('DELETE FROM journal_entries WHERE user_id = ?').bind(targetUserId).run();
+  results.journal_entries = r5.meta?.changes || 0;
+
+  // Delete main document tables
+  const r6 = await db.prepare('DELETE FROM invoices WHERE user_id = ?').bind(targetUserId).run();
+  results.invoices = r6.meta?.changes || 0;
+
+  const r7 = await db.prepare('DELETE FROM bank_statements WHERE user_id = ?').bind(targetUserId).run();
+  results.bank_statements = r7.meta?.changes || 0;
+
+  const r8 = await db.prepare('DELETE FROM card_statements WHERE user_id = ?').bind(targetUserId).run();
+  results.card_statements = r8.meta?.changes || 0;
+
+  const r9 = await db.prepare('DELETE FROM file_records WHERE user_id = ?').bind(targetUserId).run();
+  results.file_records = r9.meta?.changes || 0;
+
+  const r10 = await db.prepare('DELETE FROM bank_reconciliations WHERE user_id = ?').bind(targetUserId).run();
+  results.bank_reconciliations = r10.meta?.changes || 0;
+
+  // Delete related entities
+  const r11 = await db.prepare('DELETE FROM customers WHERE user_id = ?').bind(targetUserId).run();
+  results.customers = r11.meta?.changes || 0;
+
+  const r12 = await db.prepare('DELETE FROM suppliers WHERE user_id = ?').bind(targetUserId).run();
+  results.suppliers = r12.meta?.changes || 0;
+
+  const r13 = await db.prepare('DELETE FROM products WHERE user_id = ?').bind(targetUserId).run();
+  results.products = r13.meta?.changes || 0;
+
+  const r14 = await db.prepare('DELETE FROM fixed_assets WHERE user_id = ?').bind(targetUserId).run();
+  results.fixed_assets = r14.meta?.changes || 0;
+
+  const r15 = await db.prepare('DELETE FROM todos WHERE user_id = ?').bind(targetUserId).run();
+  results.todos = r15.meta?.changes || 0;
+
+  try { const r = await db.prepare('DELETE FROM expense_receipts WHERE user_id = ?').bind(targetUserId).run(); results.expense_receipts = r.meta?.changes || 0; } catch {}
+  try { const r = await db.prepare('DELETE FROM purchase_orders WHERE user_id = ?').bind(targetUserId).run(); results.purchase_orders = r.meta?.changes || 0; } catch {}
+  try { const r = await db.prepare('DELETE FROM quotations WHERE user_id = ?').bind(targetUserId).run(); results.quotations = r.meta?.changes || 0; } catch {}
+
+  // Clear localStorage-persisted fiscal year for this user
+  // (Can't do from API, but the client will reset on next load since data is gone)
+
+  const totalDeleted = Object.values(results).reduce((a, b) => a + b, 0);
+  return c.json({ success: true, user_id: targetUserId, total_deleted: totalDeleted, details: results });
+});
+
 export { admin as adminRoutes };

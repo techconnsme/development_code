@@ -10,7 +10,10 @@ dashboard.get('/', async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
   const today = new Date().toISOString().split('T')[0];
-  const monthStart = today.slice(0, 7) + '-01';
+  const reqStart = c.req.query('start_date') || '';
+  const reqEnd = c.req.query('end_date') || '';
+  const periodStart = reqStart || today.slice(0, 7) + '-01';
+  const periodEnd = reqEnd || today;
 
   // A journal entry generated from a bank transaction is "orphaned" if that transaction
   // has since been soft-deleted (e.g. its parent bank statement was moved to the recycle
@@ -66,33 +69,48 @@ dashboard.get('/', async (c) => {
     `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date >= ? AND a.account_type = 'revenue' AND je.status != 'stale' AND ${notOrphaned}`
-  ).bind(tenantId, monthStart).first<{ amount: number }>();
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND je.status != 'stale' AND ${notOrphaned}`
+  ).bind(tenantId, periodStart, periodEnd).first<{ amount: number }>();
 
   // Expenses MTD from GL
   const expFromGL = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date >= ? AND a.account_type = 'expense' AND je.status != 'stale' AND ${notOrphaned}`
-  ).bind(tenantId, monthStart).first<{ amount: number }>();
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale' AND ${notOrphaned}`
+  ).bind(tenantId, periodStart, periodEnd).first<{ amount: number }>();
 
   // Revenue MTD from bank (deposits this month)
   const revFromBank = await db.prepare(
     `SELECT COALESCE(SUM(deposit_amount), 0) as amount
-     FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND deleted_at IS NULL`
-  ).bind(tenantId, monthStart).first<{ amount: number }>();
+     FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL`
+  ).bind(tenantId, periodStart, periodEnd).first<{ amount: number }>();
 
   // Expenses MTD from bank (withdrawals this month)
   const expFromBank = await db.prepare(
     `SELECT COALESCE(SUM(withdrawal_amount), 0) as amount
-     FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND deleted_at IS NULL`
-  ).bind(tenantId, monthStart).first<{ amount: number }>();
+     FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL`
+  ).bind(tenantId, periodStart, periodEnd).first<{ amount: number }>();
 
   // Unmatched bank transactions count
   const unmatchedCount = await db.prepare(
     "SELECT COUNT(*) as cnt FROM bank_transactions WHERE user_id = ? AND match_status = 'unmatched' AND deleted_at IS NULL"
   ).bind(tenantId).first<{ cnt: number }>();
+
+  // Review queue total (same 4 queries as review-queue.ts /count)
+  const reviewBank = await db.prepare(
+    "SELECT COUNT(*) as cnt FROM bank_statements WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'"
+  ).bind(tenantId).first<{ cnt: number }>();
+  const reviewCard = await db.prepare(
+    "SELECT COUNT(*) as cnt FROM card_statements WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'"
+  ).bind(tenantId).first<{ cnt: number }>();
+  const reviewInv = await db.prepare(
+    "SELECT COUNT(*) as cnt FROM invoices WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != ''))"
+  ).bind(tenantId).first<{ cnt: number }>();
+  const reviewJE = await db.prepare(
+    "SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND status IN ('draft', 'stale')"
+  ).bind(tenantId).first<{ cnt: number }>();
+  const reviewQueueTotal = (reviewBank?.cnt || 0) + (reviewCard?.cnt || 0) + (reviewInv?.cnt || 0) + (reviewJE?.cnt || 0);
 
   // Recent journal entries
   const recentEntries = await db.prepare(
@@ -144,11 +162,60 @@ dashboard.get('/', async (c) => {
     expenses_mtd: expensesMTD,
     net_income_mtd: netIncomeMTD,
     unmatched_transactions: unmatchedCount?.cnt || 0,
+    review_queue_total: reviewQueueTotal,
     fixed_assets: assetSummary,
     recent_entries: recentEntries.results,
     upcoming_compliance: upcomingCompliance.results,
     as_of: today,
     source,
+  });
+});
+
+// ── Link coverage stats (for dashboard percentage cards) ──
+dashboard.get('/link-stats', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+
+  // Bank transactions: total + linked to invoice
+  const bankStats = await db.prepare(
+    `SELECT COUNT(*) as total,
+     COALESCE(SUM(CASE WHEN invoice_id IS NOT NULL THEN 1 ELSE 0 END), 0) as linked
+     FROM bank_transactions WHERE user_id = ? AND deleted_at IS NULL`
+  ).bind(tenantId).first<{ total: number; linked: number }>();
+
+  // Invoices (non-receipt): total + linked to a receipt via linked_invoice_id
+  const invStats = await db.prepare(
+    `SELECT COUNT(*) as total,
+     COALESCE(SUM(CASE WHEN linked_invoice_id IS NOT NULL THEN 1 ELSE 0 END), 0) as linked_receipts
+     FROM invoices WHERE user_id = ? AND receipt_number IS NULL AND deleted_at IS NULL`
+  ).bind(tenantId).first<{ total: number; linked_receipts: number }>();
+
+  // Full chain: bank transaction → invoice → receipt
+  const chainStats = await db.prepare(
+    `SELECT COUNT(*) as full_chain
+     FROM bank_transactions bt
+     WHERE bt.user_id = ? AND bt.deleted_at IS NULL
+     AND bt.invoice_id IS NOT NULL
+     AND EXISTS (
+       SELECT 1 FROM invoices r
+       WHERE r.linked_invoice_id = bt.invoice_id
+       AND r.receipt_number IS NOT NULL AND r.deleted_at IS NULL
+     )`
+  ).bind(tenantId).first<{ full_chain: number }>();
+
+  const bankTotal = bankStats?.total || 0;
+  const bankLinked = bankStats?.linked || 0;
+  const invTotal = invStats?.total || 0;
+  const invLinked = invStats?.linked_receipts || 0;
+  const chainCount = chainStats?.full_chain || 0;
+
+  const pct = (n: number, d: number) => d > 0 ? Math.round(n / d * 1000) / 10 : 0;
+
+  return c.json({
+    bank: { total: bankTotal, linked: bankLinked, pct: pct(bankLinked, bankTotal) },
+    invoices: { total: invTotal, linked_receipts: invLinked, pct: pct(invLinked, invTotal) },
+    full_chain: { count: chainCount, pct: pct(chainCount, bankTotal) },
   });
 });
 

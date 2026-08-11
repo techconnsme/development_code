@@ -1,46 +1,91 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
-import { Clock, FileSearch, GitCompare, ArrowLeftRight, FolderOpen, CalendarDays, Activity, ChevronRight } from 'lucide-react';
+import { useDateFilter } from '../contexts/DateFilterContext';
+import { FileSearch, GitCompare, ArrowLeftRight, Link2, GitMerge, FolderOpen, CalendarDays, Activity, ChevronRight } from 'lucide-react';
 import AdminDashboard from './AdminDashboard';
+import MatchSuggestionsModal from '../components/MatchSuggestionsModal';
 import { tr } from '../lib/i18nHelpers';
 
 export default function Dashboard() {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   if (user?.role === 'admin') return <AdminDashboard />;
 
-  const { data: todosData } = useQuery({ queryKey: ['todos'], queryFn: () => api('/todos?status=pending') });
-  const { data: dashData } = useQuery({ queryKey: ['dashboard'], queryFn: () => api('/dashboard'), refetchInterval: 30000 });
+  const { startDate, endDate } = useDateFilter();
+  const dashParams = [startDate, endDate].filter(Boolean).length > 0
+    ? `?start_date=${startDate || ''}&end_date=${endDate || ''}`
+    : '';
+  const { data: dashData } = useQuery({ queryKey: ['dashboard', startDate, endDate], queryFn: () => api(`/dashboard${dashParams}`), refetchInterval: 30000 });
+  const { data: reviewCount } = useQuery({ queryKey: ['review-queue-count'], queryFn: () => api('/review-queue/count'), refetchInterval: 10000 });
+  const { data: linkStats } = useQuery({ queryKey: ['link-stats'], queryFn: () => api('/dashboard/link-stats'), refetchInterval: 30000 });
   const { data: fileData } = useQuery({ queryKey: ['file-storage'], queryFn: () => api('/file-storage?limit=5') });
 
   const d = dashData || {};
-  const todos = (todosData?.data || []) as any[];
+  const rq = (reviewCount as any) || {};
+  const ls = (linkStats as any) || {};
   const files = (fileData?.data || []) as any[];
-  const overdueTodos = todos.filter((td: any) => td.due_date && new Date(td.due_date) < new Date());
 
-  // P1 Stat Cards
-  const statCards = [
-    {
-      key: 'tasks', icon: Clock, color: '#f59e0b', textColor: 'text-amber-600',
-      label: tr('Tasks Due', '待辦任務', '待办任务'),
-      value: todos.length,
-      sub: overdueTodos.length > 0 ? `${overdueTodos.length} ${tr('overdue', '已逾期', '已逾期')}` : undefined,
-    },
+  const [showMatchModal, setShowMatchModal] = useState(false);
+
+  // Row 1 — 2 cards
+  const statCardsRow1 = [
     {
       key: 'documents', icon: FileSearch, color: 'hsl(var(--primary))', textColor: 'text-primary',
       label: tr('Documents to Review', '待檢視文件', '待检视文件'),
-      value: files.length,
-      sub: files.length > 0 ? `${files.length} ${tr('files', '個文件', '个文件')}` : undefined,
+      value: rq.total || 0,
+      sub: rq.total > 0
+        ? [
+            rq.counts?.bank_statements > 0 ? `${rq.counts.bank_statements} ${tr('bank', '銀行', '银行')}` : '',
+            rq.counts?.invoices > 0 ? `${rq.counts.invoices} ${tr('invoices', '發票', '发票')}` : '',
+            rq.counts?.card_statements > 0 ? `${rq.counts.card_statements} ${tr('cards', '信用卡', '信用卡')}` : '',
+            rq.counts?.journal_entries > 0 ? `${rq.counts.journal_entries} ${tr('JE', '分錄', '分录')}` : '',
+          ].filter(Boolean).join(' · ') || undefined
+        : undefined,
+      onClick: () => navigate('/review-queue'),
     },
     {
       key: 'unreconciled', icon: GitCompare, color: '#ef4444', textColor: 'text-red-600',
       label: tr('Unreconciled', '未對賬', '未对账'),
       value: d.unmatched_transactions || 0,
-      sub: `${tr('HKD', '港幣', '港币')} ${((d.unmatched_transactions || 0) * 6800).toLocaleString()} ${tr('unmatched', '未匹配', '未匹配')}`,
+      sub: (d.unmatched_transactions || 0) > 0
+        ? tr('Click to review suggestions', '點擊查看建議', '点击查看建议')
+        : tr('All matched!', '全部已匹配！', '全部已匹配！'),
+      onClick: () => setShowMatchModal(true),
+    },
+  ];
+
+  // Row 2 — 4 cards (link coverage + AP/AR)
+  const bankPct = ls.bank?.pct ?? 0;
+  const invPct = ls.invoices?.pct ?? 0;
+  const chainPct = ls.full_chain?.pct ?? 0;
+
+  const statCardsRow2 = [
+    {
+      key: 'bank-inv', icon: Link2, color: '#3b82f6', textColor: 'text-blue-600',
+      label: tr('Bank → Invoice Linked', '銀行→發票已連結', '银行→发票已连结'),
+      value: `${bankPct}%`,
+      sub: ls.bank ? `${ls.bank.linked} / ${ls.bank.total} ${tr('txns', '筆', '笔')}` : undefined,
+      progress: bankPct,
+    },
+    {
+      key: 'inv-receipt', icon: FileSearch, color: '#8b5cf6', textColor: 'text-purple-600',
+      label: tr('Invoice → Receipt Linked', '發票→收據已連結', '发票→收据已连结'),
+      value: `${invPct}%`,
+      sub: ls.invoices ? `${ls.invoices.linked_receipts} / ${ls.invoices.total} ${tr('invoices', '張發票', '张发票')}` : undefined,
+      progress: invPct,
+    },
+    {
+      key: 'full-chain', icon: GitMerge, color: '#10b981', textColor: 'text-green-600',
+      label: tr('Full Chain Linked', '完整鏈已連結', '完整链已连结'),
+      value: `${chainPct}%`,
+      sub: ls.full_chain ? `${ls.full_chain.count} ${tr('txns', '筆', '笔')}` : undefined,
+      progress: chainPct,
     },
     {
       key: 'outstanding', icon: ArrowLeftRight, color: '#10b981', textColor: 'text-green-600',
@@ -49,6 +94,7 @@ export default function Dashboard() {
       sub: null as any,
       ap: d.ap_balance,
       ar: d.ar_balance,
+      progress: undefined as number | undefined,
     },
   ];
 
@@ -72,15 +118,37 @@ export default function Dashboard() {
         </p>
       </div>
 
-      {/* P1 Summary Cards */}
+      {/* Row 1 — 2 cards */}
+      <div className="grid grid-cols-2 gap-4">
+        {statCardsRow1.map(s => {
+          const Icon = s.icon;
+          return (
+            <button
+              key={s.key}
+              onClick={s.onClick}
+              className="bg-card border rounded-xl p-4 text-left hover:shadow-md transition-shadow cursor-pointer"
+              style={{ borderTop: `3px solid ${s.color}` }}
+            >
+              <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
+                <Icon className="h-4 w-4" style={{ color: s.color }} />
+                {s.label}
+              </div>
+              <div className="text-2xl font-bold">{s.value ?? '—'}</div>
+              {s.sub && <div className="text-xs text-muted-foreground mt-1">{s.sub}</div>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Row 2 — 4 cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {statCards.map((s) => {
+        {statCardsRow2.map(s => {
           const Icon = s.icon;
           if (s.key === 'outstanding') {
             return (
-              <div key={s.key} className="bg-card border rounded-xl p-4 cursor-pointer hover:shadow-md transition-shadow" style={{ borderTop: `3px solid ${s.color}` }}>
+              <div key={s.key} className="bg-card border rounded-xl p-4" style={{ borderTop: `3px solid ${s.color}` }}>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
-                  <Icon className={`h-4 w-4`} style={{ color: s.color }} />
+                  <Icon className="h-4 w-4" style={{ color: s.color }} />
                   {s.label}
                 </div>
                 <div className="text-lg font-bold">
@@ -93,12 +161,20 @@ export default function Dashboard() {
             );
           }
           return (
-            <div key={s.key} className="bg-card border rounded-xl p-4 cursor-pointer hover:shadow-md transition-shadow" style={{ borderTop: `3px solid ${s.color}` }}>
+            <div key={s.key} className="bg-card border rounded-xl p-4" style={{ borderTop: `3px solid ${s.color}` }}>
               <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
-                <Icon className={`h-4 w-4`} style={{ color: s.color }} />
+                <Icon className="h-4 w-4" style={{ color: s.color }} />
                 {s.label}
               </div>
               <div className="text-2xl font-bold">{s.value ?? '—'}</div>
+              {s.progress !== undefined && (
+                <div className="mt-2 h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min(s.progress, 100)}%`, backgroundColor: s.color }}
+                  />
+                </div>
+              )}
               {s.sub && <div className="text-xs text-muted-foreground mt-1">{s.sub}</div>}
             </div>
           );
@@ -106,7 +182,7 @@ export default function Dashboard() {
       </div>
 
       {/* Dashboard Body */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Recent Documents */}
         <div className="bg-card border rounded-xl p-4">
           <div className="flex items-center justify-between mb-3">
@@ -122,7 +198,7 @@ export default function Dashboard() {
             <div className="space-y-0">
               {files.slice(0, 5).map((f: any, i: number) => (
                 <div key={f.id || i} className={`flex items-center justify-between py-2 ${i < Math.min(files.length, 5) - 1 ? 'border-b border-border/50' : ''}`}>
-                  <span className="text-sm truncate flex-1">{f.file_name || f.name || `File #${i + 1}`}</span>
+                  <span className="text-sm truncate flex-1">{f.original_name || f.filename || f.name || `File #${i + 1}`}</span>
                   <span className="text-xs font-mono text-muted-foreground ml-2">{f.id || f.ref || ''}</span>
                 </div>
               ))}
@@ -132,33 +208,6 @@ export default function Dashboard() {
               {tr('No documents yet. Upload bank statements or invoices to get started.', '暫無文件。上傳銀行月結單或發票以開始使用。', '暂无文件。上传银行月结单或发票以开始使用。')}
             </div>
           )}
-        </div>
-
-        {/* Reconciliation Status */}
-        <div className="bg-card border rounded-xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold flex items-center gap-2">
-              <GitCompare className="h-4 w-4 text-green-600" />
-              {tr('Reconciliation Status', '銀行對賬狀態', '银行对账状态')}
-            </h3>
-            <a href="/reconciliation" className="text-xs text-primary hover:underline flex items-center gap-1">
-              {tr('Open reconciliation', '開啟對賬', '开启对账')} <ChevronRight className="h-3 w-3" />
-            </a>
-          </div>
-          <div className="flex gap-3">
-            <div className="flex-1 rounded-lg p-3 text-center border" style={{ background: '#10b9810d', borderColor: '#10b98133' }}>
-              <div className="text-2xl font-bold" style={{ color: '#10b981' }}>—</div>
-              <div className="text-xs mt-1 text-muted-foreground">{tr('Matched', '已匹配', '已匹配')}</div>
-            </div>
-            <div className="flex-1 rounded-lg p-3 text-center border" style={{ background: '#f59e0b0d', borderColor: '#f59e0b33' }}>
-              <div className="text-2xl font-bold" style={{ color: '#f59e0b' }}>—</div>
-              <div className="text-xs mt-1 text-muted-foreground">{tr('Partial', '部分', '部分')}</div>
-            </div>
-            <div className="flex-1 rounded-lg p-3 text-center border" style={{ background: '#ef44440d', borderColor: '#ef444433' }}>
-              <div className="text-2xl font-bold" style={{ color: '#ef4444' }}>{d.unmatched_transactions || 0}</div>
-              <div className="text-xs mt-1 text-muted-foreground">{tr('Unmatched', '未匹配', '未匹配')}</div>
-            </div>
-          </div>
         </div>
 
         {/* Upcoming Deadlines */}
@@ -226,6 +275,11 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Match Suggestions Modal */}
+      {showMatchModal && (
+        <MatchSuggestionsModal onClose={() => setShowMatchModal(false)} />
+      )}
     </div>
   );
 }

@@ -7,26 +7,7 @@ import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriang
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import DropdownSelect from '../components/DropdownSelect';
-
-// ── Fiscal year helpers (mirrors ChartOfAccounts.tsx) ──────────────────────
-interface FiscalYearOption { label: string; startDate: string; endDate: string; }
-function buildFiscalYearOptions(fiscalStartMD: string, fiscalEndMD: string): FiscalYearOption[] {
-  const [sm, sd] = fiscalStartMD.split('-').map(Number);
-  const [em, ed] = fiscalEndMD.split('-').map(Number);
-  const now = new Date();
-  const currentMonth = now.getMonth() + 1;
-  let baseYear = now.getFullYear();
-  if (currentMonth < sm) baseYear--;
-  const opts: FiscalYearOption[] = [];
-  for (let i = 5; i >= 0; i--) {
-    const sy = baseYear - i;
-    const ey = em <= sm ? sy + 1 : sy;
-    const sD = `${sy}-${String(sm).padStart(2, '0')}-${String(sd).padStart(2, '0')}`;
-    const eD = `${ey}-${String(em).padStart(2, '0')}-${String(ed).padStart(2, '0')}`;
-    opts.push({ label: `${sy}-${sy + 1} (Apr ${sy} - Mar ${sy + 1})`, startDate: sD, endDate: eD });
-  }
-  return opts;
-}
+import { useDateFilter } from '../contexts/DateFilterContext';
 
 export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'entries' | 'accounts' | 'trial' | 'pl' | 'bs' | 'ledger' | 'export'; hideTabs?: boolean }) {
   const { i18n } = useTranslation();
@@ -42,7 +23,6 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     if (tab === 'entries') queryClient.invalidateQueries({ queryKey: ['entries'] });
     if (tab === 'pl') queryClient.invalidateQueries({ queryKey: ['income-statement'] });
   }, [tab]);
-  const [selectedFY, setSelectedFY] = useState('');
   const [showEntryForm, setShowEntryForm] = useState(false);
   const [ledgerAccount, setLedgerAccount] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -50,37 +30,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const [expandedPL, setExpandedPL] = useState<Record<string, boolean>>({});
 
-  // ── Fiscal year — mirrors ChartOfAccounts.tsx pattern ──────────────────
-  const { data: fiscalData } = useQuery({
-    queryKey: ['fiscal-period'],
-    queryFn: () => api('/bookkeeping/fiscal-period'),
-    staleTime: 0, // always fetch fresh on mount — critical for fyOptions init
-  });
-  const rawStart = (fiscalData as any)?.fiscal_year_start || '04-01';
-  const rawEnd = (fiscalData as any)?.fiscal_year_end || '03-31';
-  // Handle both "04-01" and "2026-04-01" formats — extract MM-DD portion
-  const fyStartMD = rawStart.length > 5 ? rawStart.slice(5) : rawStart;
-  const fyEndMD = rawEnd.length > 5 ? rawEnd.slice(5) : rawEnd;
-
-  // useState for fyOptions + selectedFY, set atomically in useEffect (like COA)
-  const [fyOptions, setFyOptions] = useState<FiscalYearOption[]>([]);
-
-  useEffect(() => {
-    const opts = buildFiscalYearOptions(fyStartMD, fyEndMD);
-    setFyOptions(opts);
-    if (!selectedFY) {
-      const now = new Date();
-      const [sm] = fyStartMD.split('-').map(Number);
-      const baseYear = now.getFullYear() - (now.getMonth() + 1 < sm ? 1 : 0);
-      const def = opts.find(o => o.label.startsWith(String(baseYear))) || opts[0];
-      if (def) setSelectedFY(def.label);
-    }
-  }, [fyStartMD]);
-
-  // Dates derived from selectedFY — always in sync
-  const selectedFYOption = useMemo(() => fyOptions.find(o => o.label === selectedFY) || null, [fyOptions, selectedFY]);
-  const startDate = selectedFYOption?.startDate || '';
-  const endDate = selectedFYOption?.endDate || '';
+  const { startDate, endDate } = useDateFilter();
   const [entryForm, setEntryForm] = useState({
     entry_number: '', entry_date: new Date().toISOString().split('T')[0], description: '',
     lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0, project: '' }],
@@ -312,14 +262,8 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       )}
 
       {/* Header controls bar for standalone GJE page */}
-      {hideTabs && tab === 'entries' && fyOptions.length > 0 && (
+      {hideTabs && tab === 'entries' && (
         <div className="flex flex-wrap items-center gap-3 bg-card border rounded-xl px-4 py-3">
-          <DropdownSelect
-            value={selectedFY}
-            options={fyOptions.map(o => ({ value: o.label, label: o.label }))}
-            onChange={setSelectedFY}
-            className="min-w-[260px]"
-          />
           <div className="flex-1" />
           {!isStaff && (
             <button onClick={() => setShowEntryForm(true)}
@@ -342,16 +286,6 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             </button>
           )}
         </div>
-      )}
-
-      {/* Fiscal year filter — for other tabs (not standalone entries) */}
-      {!hideTabs && (tab === 'entries' || tab === 'pl' || tab === 'ledger' || tab === 'export') && fyOptions.length > 0 && (
-        <DropdownSelect
-          value={selectedFY}
-          options={fyOptions.map(o => ({ value: o.label, label: o.label }))}
-          onChange={setSelectedFY}
-          className="min-w-[260px]"
-        />
       )}
 
       {/* Entries Tab */}

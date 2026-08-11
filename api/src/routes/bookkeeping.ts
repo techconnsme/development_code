@@ -24,8 +24,21 @@ export function getCodeType(code: string): string {
 
 function getParentCandidates(code: string): string[] {
   const parents: string[] = [];
-  if (code.length >= 5) parents.push(code.slice(0, 3) + '00');
-  if (code.length >= 4) parents.push(code[0] + '000');
+  // Mid-level parent: first 3 digits + '00' (e.g., 31201 → 31200)
+  if (code.length >= 5) {
+    const mid = code.slice(0, 3) + '00';
+    if (mid !== code) parents.push(mid); // skip self (e.g., 31200 → 31200)
+  }
+  // Root-level parent: first digit + '0000' (e.g., 31201 → 30000)
+  if (code.length >= 5) {
+    const root = code[0] + '0000';
+    if (root !== code) parents.push(root);
+  }
+  // Also include the template-defined parent from HK_COA_NAMES (e.g., 31200 parent is 31000)
+  const tmpl = HK_COA_NAMES[code];
+  if (tmpl?.parent && !parents.includes(tmpl.parent)) {
+    parents.push(tmpl.parent);
+  }
   return parents;
 }
 
@@ -410,6 +423,151 @@ bookkeeping.get('/accounts/missing-codes', async (c) => {
   return c.json({ missing, total_existing: existingSet.size, total_expected: codes.length });
 });
 
+// GET /accounts/missing-codes/details — extended: includes transactions referencing each missing code
+bookkeeping.get('/accounts/missing-codes/details', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+
+  const codes = await collectTransactionCodes(db, tenantId);
+  const existingRows = await db.prepare(
+    `SELECT account_code FROM accounts WHERE user_id = ?`
+  ).bind(tenantId).all();
+  const existingSet = new Set((existingRows.results as any[]).map(r => r.account_code));
+  const missingCodes = codes.filter(c => !existingSet.has(c));
+
+  const missing: any[] = [];
+  for (const code of missingCodes) {
+    // Find bank transactions using this code
+    const btRows = await db.prepare(
+      `SELECT id, transaction_date, description, deposit_amount, withdrawal_amount
+       FROM bank_transactions
+       WHERE user_id = ? AND account_code = ? AND deleted_at IS NULL
+       ORDER BY transaction_date DESC LIMIT 20`
+    ).bind(tenantId, code).all();
+
+    // Find journal lines using this code
+    const jlRows = await db.prepare(
+      `SELECT jl.id, je.id as entry_id, je.entry_number, je.entry_date, jl.description, jl.debit, jl.credit
+       FROM journal_lines jl
+       JOIN journal_entries je ON jl.entry_id = je.id
+       WHERE je.user_id = ? AND jl.account_code = ? AND je.status != 'stale'
+       ORDER BY je.entry_date DESC LIMIT 20`
+    ).bind(tenantId, code).all();
+
+    const transactions: any[] = [];
+    for (const bt of btRows.results as any[]) {
+      transactions.push({
+        source: 'bank_transaction',
+        id: bt.id,
+        date: bt.transaction_date,
+        description: bt.description,
+        deposit_amount: bt.deposit_amount,
+        withdrawal_amount: bt.withdrawal_amount,
+      });
+    }
+    for (const jl of jlRows.results as any[]) {
+      transactions.push({
+        source: 'journal_line',
+        id: jl.id,
+        entry_id: jl.entry_id,
+        entry_number: jl.entry_number,
+        date: jl.entry_date,
+        description: jl.description,
+        debit: jl.debit,
+        credit: jl.credit,
+      });
+    }
+
+    missing.push({
+      code,
+      name: HK_COA_NAMES[code]?.name || null,
+      type: HK_COA_NAMES[code]?.type || getCodeType(code),
+      transactions: transactions.slice(0, 20),
+    });
+  }
+
+  return c.json({ missing, total_existing: existingSet.size, total_expected: codes.length });
+});
+
+// Helper: recursively find missing parent codes for an account code
+function getMissingParentChain(code: string, existingSet: Set<string>, visited: Set<string> = new Set()): string[] {
+  if (visited.has(code)) return []; // guard against infinite recursion (parent == self for XX000 codes)
+  visited.add(code);
+  const missing: string[] = [];
+  const candidates = getParentCandidates(code);
+  for (const pc of candidates) {
+    if (pc === code) continue; // skip self-reference (e.g., 31200 → getParentCandidates returns ['31200', ...])
+    if (!HK_COA_NAMES[pc]) continue;
+    if (!existingSet.has(pc)) {
+      missing.push(pc);
+      // Recurse: check this parent's parents too
+      const grandParents = getMissingParentChain(pc, existingSet, visited);
+      for (const gp of grandParents) {
+        if (!missing.includes(gp)) missing.push(gp);
+      }
+    }
+  }
+  return missing;
+}
+
+// POST /accounts/ensure — create a specific account + any missing parent accounts recursively
+bookkeeping.post('/accounts/ensure', bookkeeperMiddleware, async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const body = await c.req.json();
+  const code = body.code as string;
+  if (!code) return c.json({ error: 'code required' }, 400);
+
+  const existingRows = await db.prepare(
+    `SELECT account_code FROM accounts WHERE user_id = ?`
+  ).bind(tenantId).all();
+  const existingSet = new Set((existingRows.results as any[]).map(r => r.account_code));
+
+  const created: string[] = [];
+  const skipped: string[] = [];
+
+  // Find and create missing parents first (bottom-up: deepest parent first)
+  const missingParents = getMissingParentChain(code, existingSet);
+  // Sort so that root-level parents are created first
+  missingParents.sort((a, b) => a.length - b.length || a.localeCompare(b));
+
+  for (const pc of missingParents) {
+    if (existingSet.has(pc)) { skipped.push(pc); continue; }
+    const info = HK_COA_NAMES[pc];
+    const name = (body.name && pc === code) ? body.name : (info?.name || `${pc} (${getCodeType(pc)})`);
+    const type = (body.type && pc === code) ? body.type : (info?.type || getCodeType(pc));
+    const grandParent = info?.parent || null;
+    try {
+      await db.prepare(
+        'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, pc, name, type, grandParent).run();
+      created.push(pc);
+      existingSet.add(pc);
+    } catch { skipped.push(pc); }
+  }
+
+  // Now create the target account if not already created
+  if (!existingSet.has(code) && !created.includes(code)) {
+    const info = HK_COA_NAMES[code];
+    const name = body.name || info?.name || `${code} (${getCodeType(code)})`;
+    const type = body.type || info?.type || getCodeType(code);
+    const parent = info?.parent || null;
+    try {
+      await db.prepare(
+        'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, code, name, type, parent).run();
+      created.push(code);
+    } catch { skipped.push(code); }
+  } else if (!created.includes(code)) {
+    skipped.push(code);
+  }
+
+  await auditLog(db, user.id, 'ensure_accounts', 'account', code, { created, skipped });
+  return c.json({ created, skipped }, created.length > 0 ? 201 : 200);
+});
+
 // Create a single account manually
 const createAccountSchema = z.object({
   account_code: z.string().min(1).max(20),
@@ -425,6 +583,13 @@ bookkeeping.post('/accounts', bookkeeperMiddleware, zValidator('json', createAcc
   const db = c.env.DB;
   const data = c.req.valid('json');
 
+  // Auto-resolve bare-code names from HK COA template
+  let accountName = data.account_name;
+  if (accountName === data.account_code || !accountName || accountName.trim() === '') {
+    const resolved = HK_COA_NAMES[data.account_code];
+    if (resolved?.name) accountName = resolved.name;
+  }
+
   // Check for duplicate code
   const existing = await db.prepare('SELECT id FROM accounts WHERE user_id = ? AND account_code = ?')
     .bind(tenantId, data.account_code).first();
@@ -432,15 +597,34 @@ bookkeeping.post('/accounts', bookkeeperMiddleware, zValidator('json', createAcc
 
   // Check for duplicate name
   const existingName = await db.prepare('SELECT id FROM accounts WHERE user_id = ? AND account_name = ?')
-    .bind(tenantId, data.account_name).first();
+    .bind(tenantId, accountName).first();
   if (existingName) return c.json({ error: 'Account name already exists' }, 409);
+
+  // Auto-create missing parent accounts up the chain
+  const allExistingRows = await db.prepare(
+    `SELECT account_code FROM accounts WHERE user_id = ?`
+  ).bind(tenantId).all();
+  const existingSet = new Set((allExistingRows.results as any[]).map(r => r.account_code));
+  const missingParents = getMissingParentChain(data.account_code, existingSet);
+  missingParents.sort((a, b) => a.length - b.length || a.localeCompare(b));
+  for (const pc of missingParents) {
+    if (existingSet.has(pc)) continue;
+    const info = HK_COA_NAMES[pc];
+    const pName = info?.name || `${pc} (${getCodeType(pc)})`;
+    const pType = info?.type || getCodeType(pc);
+    const pParent = info?.parent || null;
+    await db.prepare(
+      'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, pc, pName, pType, pParent).run();
+    existingSet.add(pc);
+  }
 
   const id = `acc-${uuidv4().slice(0, 8)}`;
   await db.prepare(
     'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code, opening_balance) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, tenantId, data.account_code, data.account_name, data.account_type, data.parent_code || null, data.opening_balance || 0).run();
+  ).bind(id, tenantId, data.account_code, accountName, data.account_type, data.parent_code || null, data.opening_balance || 0).run();
 
-  await auditLog(db, user.id, 'create', 'account', data.account_code, { account_name: data.account_name, account_type: data.account_type });
+  await auditLog(db, user.id, 'create', 'account', data.account_code, { account_name: accountName, account_type: data.account_type });
   const account = await db.prepare('SELECT * FROM accounts WHERE id = ?').bind(id).first();
   return c.json(account, 201);
 });
@@ -1373,6 +1557,82 @@ bookkeeping.post('/post-payment/:transactionId', bookkeeperMiddleware, async (c)
 
   await auditLog(db, user.id, 'post_payment', 'payment', txId, { invoice_number: tx.invoice_number, amount });
   return c.json({ entry_id: jeId, entry_number: jeNum, transaction_id: txId, direction: isDeposit ? 'AR' : 'AP' }, 201);
+});
+
+// POST /post-transaction/:id — post a single bank transaction to GL as a simple journal entry
+// Does NOT require a matched invoice. Uses the transaction's account_code as the counter-account.
+bookkeeping.post('/post-transaction/:transactionId', bookkeeperMiddleware, async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const txId = c.req.param('transactionId');
+  if (!txId) return c.json({ error: 'transactionId required' }, 400);
+
+  const tx = await db.prepare(
+    `SELECT bt.*, bs.bank_name, bs.account_number
+     FROM bank_transactions bt
+     LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+     WHERE bt.id = ? AND bt.user_id = ? AND bt.deleted_at IS NULL`
+  ).bind(txId, tenantId).first<any>();
+  if (!tx) return c.json({ error: 'Transaction not found' }, 404);
+
+  // Check not already posted
+  const existing = await db.prepare(
+    "SELECT id FROM journal_entries WHERE reference_type = 'bank_transaction' AND reference_id = ? AND user_id = ?"
+  ).bind(txId, tenantId).first();
+  if (existing) return c.json({ error: 'Transaction already posted to GL', entry_id: (existing as any).id }, 409);
+
+  const isDeposit = (tx.deposit_amount || 0) > 0;
+  const amount = isDeposit ? tx.deposit_amount : tx.withdrawal_amount;
+  const desc = tx.description || '';
+  const acctCode = tx.account_code || (isDeposit ? '41101' : '62303');
+  const bankCode = (tx.bank_name || 'BANK').replace(/[^A-Z0-9]/gi, '').slice(0, 6).toUpperCase() || 'BANK';
+  const txDate = tx.transaction_date || new Date().toISOString().split('T')[0];
+
+  // Generate voucher number
+  const ym = txDate.slice(0, 7).replace(/-/g, '');
+  const like = `B-${bankCode}-${ym}-%`;
+  const lastRow = await db.prepare(
+    `SELECT entry_number FROM journal_entries WHERE user_id = ? AND entry_number LIKE ? ORDER BY entry_number DESC LIMIT 1`
+  ).bind(tenantId, like).first<{ entry_number: string }>();
+  let seq = 1;
+  if (lastRow?.entry_number) {
+    const parts = lastRow.entry_number.split('-');
+    const lastSeq = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(lastSeq)) seq = lastSeq + 1;
+  }
+  const entryNum = `B-${bankCode}-${ym}-${String(seq).padStart(3, '0')}`;
+  const jeId = `je-${uuidv4().slice(0, 8)}`;
+
+  // Load account name for the code
+  const acctInfo = await db.prepare(
+    'SELECT account_name FROM accounts WHERE user_id = ? AND account_code = ? AND is_active = 1'
+  ).bind(tenantId, acctCode).first<{ account_name: string }>();
+  const acctName = acctInfo?.account_name || acctCode;
+
+  // Simple double-entry: Dr Cash / Cr [account] for deposits, Dr [account] / Cr Cash for withdrawals
+  await db.prepare(
+    'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
+  ).bind(jeId, tenantId, entryNum, txDate, desc, 'bank_transaction', txId).run();
+
+  if (isDeposit) {
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11101', 'Cash on Hand', desc, amount, 0, 0).run();
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, acctCode, acctName, desc, 0, amount, 1).run();
+  } else {
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, acctCode, acctName, desc, amount, 0, 0).run();
+    await db.prepare(
+      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)'
+    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11101', 'Cash on Hand', desc, 0, amount, 1).run();
+  }
+
+  await auditLog(db, user.id, 'post_single_tx', 'bank_transaction', txId, { amount, account_code: acctCode });
+  return c.json({ entry_id: jeId, entry_number: entryNum, transaction_id: txId, amount, account_code: acctCode }, 201);
 });
 
 // Year-End Close: transfer P&L to Retained Earnings and roll forward

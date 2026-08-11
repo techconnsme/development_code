@@ -6,6 +6,7 @@ import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
 import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil, CreditCard, AlertTriangle, Ban, Sparkles, CheckCircle2 } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
+import { useDateFilter } from '../contexts/DateFilterContext';
 import { useAuth } from '../contexts/AuthContext';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import { tr } from '../lib/i18nHelpers';
@@ -41,6 +42,7 @@ export default function BankStatements() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const isStaff = user?.role === 'staff' || user?.role === 'viewer';
+  const { startDate, endDate } = useDateFilter();
   const [supModal, setSupModal] = useState<{ show: boolean; onConfirm: () => void } | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
@@ -54,8 +56,13 @@ export default function BankStatements() {
   const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['bank-statements'],
-    queryFn: () => api('/bank-statements'),
+    queryKey: ['bank-statements', startDate, endDate],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (startDate) params.set('start_date', startDate);
+      if (endDate) params.set('end_date', endDate);
+      return api(`/bank-statements?${params.toString()}`);
+    },
   });
 
   const { data: accountsData } = useQuery({
@@ -1065,7 +1072,7 @@ function LinkedDocModal({ txId, onClose, onLinkInvoice, onLinkCard }: {
           {/* Right: PDF preview */}
           <div className="w-1/2 border-l pl-4 flex flex-col min-h-0">
             {previewId ? (
-              <iframe src={`${WORKER_API_BASE}/file-storage/${previewId}/download?token=${localStorage.getItem('token') || ''}`}
+              <iframe src={`${WORKER_API_BASE}/file-storage/${previewId}/download?inline=1&token=${localStorage.getItem('token') || ''}`}
                 className="w-full flex-1 border rounded" title="Document Preview" />
             ) : (
               <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">

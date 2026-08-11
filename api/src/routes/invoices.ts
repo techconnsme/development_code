@@ -22,6 +22,8 @@ invoices.get('/', async (c) => {
   const docType = c.req.query('doc_type') || ''; // 'receipt' | 'invoice' | ''
   const direction = c.req.query('direction') || ''; // 'incoming' | 'outgoing' | ''
   const expenseCategory = c.req.query('expense_category') || ''; // 'cash' | 'reimburse' | 'director' | ''
+  const startDate = c.req.query('start_date') || '';
+  const endDate = c.req.query('end_date') || '';
 
   // Default: exclude pending_review unless explicitly requested
   const showPendingReview = status === 'pending_review';
@@ -36,6 +38,8 @@ invoices.get('/', async (c) => {
   if (direction === 'incoming') { query += " AND i.direction = 'incoming'"; }
   else if (direction === 'outgoing') { query += " AND i.direction = 'outgoing'"; }
   if (expenseCategory) { query += ' AND i.expense_category = ?'; params.push(expenseCategory); }
+  if (startDate) { query += ' AND i.issue_date >= ?'; params.push(startDate); }
+  if (endDate) { query += ' AND i.issue_date <= ?'; params.push(endDate); }
   query += ' ORDER BY i.created_at DESC LIMIT ? OFFSET ?';
   params.push(limit, offset);
 

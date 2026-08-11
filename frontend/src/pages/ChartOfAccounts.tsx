@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 import DropdownSelect from '../components/DropdownSelect';
 import ConfirmDialog from '../components/ConfirmDialog';
+import MissingCodesModal from '../components/MissingCodesModal';
+import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
 
 const TYPE_ORDER = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;
@@ -46,35 +48,6 @@ function formatBalance(v: number | null | undefined, forceZero = false): string 
   const abs = Math.abs(v);
   const formatted = abs.toLocaleString('en-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return v < 0 ? `(${formatted})` : formatted;
-}
-
-interface FiscalYearOption {
-  label: string;
-  startDate: string;
-  endDate: string;
-}
-
-function buildFiscalYearOptions(fiscalStartMD: string, fiscalEndMD: string): FiscalYearOption[] {
-  const [sm, sd] = fiscalStartMD.split('-').map(Number);
-  const [em, ed] = fiscalEndMD.split('-').map(Number);
-  const now = new Date();
-  const currentMonth = now.getMonth() + 1;
-  let baseYear = now.getFullYear();
-  if (currentMonth < sm) baseYear--;
-
-  const opts: FiscalYearOption[] = [];
-  for (let i = 5; i >= 0; i--) {
-    const sy = baseYear - i;
-    const ey = em <= sm ? sy + 1 : sy;
-    const sD = `${sy}-${String(sm).padStart(2, '0')}-${String(sd).padStart(2, '0')}`;
-    const eD = `${ey}-${String(em).padStart(2, '0')}-${String(ed).padStart(2, '0')}`;
-    opts.push({
-      label: `${sy}-${sy + 1} (Apr ${sy} - Mar ${sy + 1})`,
-      startDate: sD,
-      endDate: eD,
-    });
-  }
-  return opts;
 }
 
 function getReferenceLabel(type: string | null): string {
@@ -128,44 +101,13 @@ export default function ChartOfAccounts() {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [addFormParent, setAddFormParent] = useState<string | null>(null);
   const [showDisabled, setShowDisabled] = useState(false);
+  const [showMissingModal, setShowMissingModal] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState<{ code: string; name: string } | null>(null);
   const [newAccount, setNewAccount] = useState({
     account_code: '', account_name: '', account_type: 'asset', parent_code: '', opening_balance: 0,
   });
-  const [selectedFY, setSelectedFY] = useState('');
-  const [fyOptions, setFyOptions] = useState<FiscalYearOption[]>([]);
-  const [asOfDate, setAsOfDate] = useState('');
-
-  const { data: fiscalData } = useQuery({
-    queryKey: ['fiscal-period'],
-    queryFn: () => api('/bookkeeping/fiscal-period'),
-  });
-
-  const rawStart = (fiscalData as any)?.fiscal_year_start || '04-01';
-  const rawEnd = (fiscalData as any)?.fiscal_year_end || '03-31';
-  // Handle both "04-01" and "2026-04-01" formats — extract MM-DD portion
-  const fyStart = rawStart.length > 5 ? rawStart.slice(5) : rawStart;
-  const fyEnd = rawEnd.length > 5 ? rawEnd.slice(5) : rawEnd;
-
-  useEffect(() => {
-    const opts = buildFiscalYearOptions(fyStart, fyEnd);
-    setFyOptions(opts);
-    const now = new Date();
-    const [sm] = fyStart.split('-').map(Number);
-    const baseYear = now.getFullYear() - (now.getMonth() + 1 < sm ? 1 : 0);
-    const defaultOpt = opts.find(o => o.label.startsWith(String(baseYear)));
-    if (defaultOpt) {
-      setSelectedFY(defaultOpt.label);
-      setAsOfDate(now.toISOString().split('T')[0]);
-    }
-  }, [fyStart]);
-
-  const selectedFYOption = useMemo(() => fyOptions.find(o => o.label === selectedFY), [fyOptions, selectedFY]);
-
-  const queryAsOf = useMemo(() => {
-    if (!selectedFYOption) return asOfDate || '';
-    return selectedFYOption.endDate < (asOfDate || '2099-12-31') ? selectedFYOption.endDate : asOfDate;
-  }, [selectedFYOption, asOfDate]);
+  const { startDate, endDate } = useDateFilter();
+  const queryAsOf = endDate;
 
   const { data, isLoading } = useQuery({
     queryKey: ['accounts', queryAsOf],
@@ -174,7 +116,7 @@ export default function ChartOfAccounts() {
       const path = `${base}${base.includes('?') ? '&' : '?'}include_inactive=true`;
       return api(path) as Promise<{ data?: any[]; results?: any[] }>;
     },
-    enabled: !!fiscalData,
+    enabled: true,
   });
 
   const accounts = ((data as any)?.data || (data as any)?.results || []) as any[];
@@ -241,14 +183,6 @@ export default function ChartOfAccounts() {
   });
   const missingCodes = missingCodesData?.missing || [];
 
-  const createMissingMut = useMutation({
-    mutationFn: () => api('/bookkeeping/auto-generate-entries', { method: 'POST' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['accounts'] });
-      queryClient.invalidateQueries({ queryKey: ['missing-codes'] });
-    },
-  });
-
   const toggleType = (t: string) => setExpandedTypes(prev => ({ ...prev, [t]: !prev[t] }));
 
   // ── Drag-and-drop type reordering ──
@@ -291,8 +225,8 @@ export default function ChartOfAccounts() {
       if (!accountTxns[code] && !accountTxnLoading[code]) {
         setAccountTxnLoading(prev => ({ ...prev, [code]: true }));
         try {
-          const sd = selectedFYOption?.startDate || '2000-01-01';
-          const ed = selectedFYOption?.endDate || '2099-12-31';
+          const sd = startDate || '2000-01-01';
+          const ed = endDate || '2099-12-31';
           const res = await api(`/bookkeeping/accounts/${code}/transactions?start_date=${sd}&end_date=${ed}`);
           setAccountTxns(prev => ({ ...prev, [code]: (res as any).transactions || [] }));
         } catch {
@@ -301,7 +235,7 @@ export default function ChartOfAccounts() {
         setAccountTxnLoading(prev => ({ ...prev, [code]: false }));
       }
     }
-  }, [selectedFYOption, accountTxns, accountTxnLoading]);
+  }, [startDate, endDate, accountTxns, accountTxnLoading]);
 
   const handleAddChild = useCallback((parentCode: string, parentType: string) => {
     setNewAccount({
@@ -363,6 +297,13 @@ export default function ChartOfAccounts() {
           <p className="text-muted-foreground mt-1">
             {tr('5-digit tiered Hong Kong account structure.', '五位數分層香港會計科目結構。', '五位数分层香港会计科目结构。')}
           </p>
+          <p className="text-xs text-muted-foreground mt-1 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded px-3 py-1.5 inline-block">
+            ℹ️ {tr(
+              'Balances are cumulative totals from all periods up to the as-of date shown at the bottom. They are not filtered by the sidebar fiscal year.',
+              '結餘為截至頁尾所示日期的累計總額，不受側邊欄財政年度篩選影響。',
+              '结余为截至页尾所示日期的累计总额，不受侧边栏财政年度筛选影响。'
+            )}
+          </p>
         </div>
       </div>
 
@@ -412,35 +353,18 @@ export default function ChartOfAccounts() {
               '个交易代码尚未在会计科目表中。',
             )}
           </p>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => createMissingMut.mutate()}
-              disabled={createMissingMut.isPending}
-              className="px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
-            >
-              {createMissingMut.isPending ? tr('Creating...', '建立中...', '建立中...') : tr('Create Missing', '建立缺失科目', '建立缺失科目')}
-            </button>
-            <button
-              onClick={() => seedMut.mutate()}
-              disabled={seedMut.isPending}
-              className="px-3 py-1.5 text-xs font-medium border border-amber-300 dark:border-amber-700 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-800/30 disabled:opacity-50"
-            >
-              {tr('Use Industry Template', '使用行業模板', '使用行业模板')}
-            </button>
-          </div>
+          <button
+            onClick={() => setShowMissingModal(true)}
+            className="px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700"
+          >
+            {tr('View Details', '查看詳情', '查看详情')}
+          </button>
         </div>
       )}
 
       {/* Toolbar */}
       {hasAccounts && (
         <div className="flex items-center gap-3 flex-wrap">
-          {fyOptions.length > 0 && (
-            <DropdownSelect
-              value={selectedFY}
-              options={fyOptions.map(o => ({ value: o.label, label: o.label }))}
-              onChange={setSelectedFY}
-            />
-          )}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <input
@@ -808,6 +732,13 @@ export default function ChartOfAccounts() {
         onConfirm={() => confirmDisable && updateStatusMut.mutate({ code: confirmDisable.code, is_active: 0 })}
         onCancel={() => setConfirmDisable(null)}
       />
+
+      {showMissingModal && (
+        <MissingCodesModal onClose={() => {
+          setShowMissingModal(false);
+          queryClient.invalidateQueries({ queryKey: ['missing-codes'] });
+        }} />
+      )}
     </div>
   );
 }
