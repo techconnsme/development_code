@@ -176,8 +176,8 @@ export default function AP() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="text-left p-3">{tr('Bill No.', '帳單號碼', '账单号码')}</th>
-                <th className="text-left p-3 hidden md:table-cell">{tr('Supplier', '供應商', '供应商')}</th>
+                <th className="text-left p-3">{tr('Invoice No.', '帳單號碼', '账单号码')}</th>
+                <th className="text-left p-3 hidden md:table-cell">{tr('Customer / Supplier', '客戶 / 供應商', '客户 / 供应商')}</th>
                 <th className="text-left p-3 w-16">{tr('Type', '類型', '类型')}</th>
                 <th className="text-left p-3">{tr('Status', '狀態', '状态')}</th>
                 <th className="text-right p-3 hidden lg:table-cell">{tr('Amount', '金額', '金额')}</th>
