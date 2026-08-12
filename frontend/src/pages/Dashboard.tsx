@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useDateFilter } from '../contexts/DateFilterContext';
-import { FileSearch, GitCompare, ArrowLeftRight, Link2, GitMerge, FolderOpen, CalendarDays, Activity, ChevronRight, ChevronDown, DollarSign, TrendingUp, TrendingDown, FileText, Receipt } from 'lucide-react';
+import { FileSearch, GitCompare, ArrowLeftRight, Link2, GitMerge, FolderOpen, CalendarDays, Activity, ChevronRight, DollarSign, TrendingUp, TrendingDown, Receipt } from 'lucide-react';
 import AdminDashboard from './AdminDashboard';
 import { tr } from '../lib/i18nHelpers';
 
@@ -36,7 +36,7 @@ export default function Dashboard() {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { startDate, endDate, setSelectedFY, selectedFY } = useDateFilter();
+  const { startDate, endDate } = useDateFilter();
 
   if (user?.role === 'admin') return <AdminDashboard />;
 
@@ -49,32 +49,6 @@ export default function Dashboard() {
   const d = dashData || {};
   const files = (fileData?.data || []) as any[];
   const periods = (d.period_comparison || []) as any[];
-
-  // Convert period label like "FY 2025-26" to FY value like "2025-2026"
-  const periodToFY = (label: string) => {
-    const m = label.match(/FY\s+(\d{4})-(\d{2})/);
-    if (m) return `${m[1]}-20${m[2]}`;
-    return label;
-  };
-
-  const switchFY = (label: string) => {
-    const fy = periodToFY(label);
-    if (fy && fy !== selectedFY) setSelectedFY(fy);
-  };
-
-  const [expandedPeriods, setExpandedPeriods] = useState<Set<string>>(() => {
-    // First period (current FY) expanded by default
-    if (periods.length > 0) return new Set([periods[0].label]);
-    return new Set();
-  });
-
-  const togglePeriod = (label: string) => {
-    setExpandedPeriods(prev => {
-      const next = new Set(prev);
-      if (next.has(label)) next.delete(label); else next.add(label);
-      return next;
-    });
-  };
 
   // Compliance deadlines
   const deadlines = (d.upcoming_compliance || []) as any[];
@@ -162,78 +136,54 @@ export default function Dashboard() {
       </div>
 
       {/* ═══════════════════════════════════════════════════════════
-          SECTION 2 — PERIODS (each with 7 tiles, 2 rows, flex-wrap)
+          SECTION 2 — CURRENT PERIOD (matches selected FY)
           ═══════════════════════════════════════════════════════════ */}
-      <div>
+      <div className={dashFetching && dashData ? 'opacity-70 transition-opacity duration-200' : ''}>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
           {tr('Period Summary', '期間摘要', '期间摘要')}
+          {periods[0] && <span className="ml-2 font-normal normal-case text-muted-foreground">— {periods[0].label}</span>}
         </h3>
-        <div className="space-y-3">
-          {periods.map((p: any, idx: number) => {
-            const isExpanded = expandedPeriods.has(p.label);
-            const isCurrent = idx === 0;
-            return (
-              <div key={p.label} className={`border rounded-xl overflow-hidden ${isCurrent ? 'bg-card' : 'bg-muted/30'}`}>
-                {/* Period header */}
-                <button
-                  onClick={() => togglePeriod(p.label)}
-                  className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-muted/50 transition-colors"
-                >
-                  <span className={`font-semibold text-sm ${isCurrent ? '' : 'text-muted-foreground'}`}>
-                    {p.label}
-                    {isCurrent && (
-                      <span className="ml-2 text-[10px] font-normal text-muted-foreground">
-                        ({tr('current', '當前', '当前')})
-                      </span>
-                    )}
-                  </span>
-                  {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                </button>
-
-                {/* Period tiles (collapsible) */}
-                {isExpanded && (
-                  <div className="px-4 pb-4 space-y-2">
-                    {/* Row 1: Docs, Revenue, Expenses, Net P&L */}
-                    <div className="flex flex-wrap gap-2">
-                      <MiniCard
-                        icon={FileSearch} color="#6366f1"
-                        label="Docs to Review" value={String(p.review_count || 0)}
-                        onClick={() => { switchFY(p.label); navigate('/review-queue'); }}
-                      />
-                      <MiniCard
-                        icon={TrendingUp} color="#22c55e"
-                        label="Revenue" value={`HKD ${Fmt(p.revenue || 0)}`}
-                      />
-                      <MiniCard
-                        icon={TrendingDown} color="#ef4444"
-                        label="Expenses" value={`HKD ${Fmt(p.expenses || 0)}`}
-                      />
-                      <MiniCard
-                        icon={Activity} color={p.net_income >= 0 ? '#10b981' : '#ef4444'}
-                        label="Net P&L" value={`HKD ${Fmt(p.net_income || 0)}`}
-                      />
-                    </div>
-                    {/* Row 2: Bank→Inv, Inv→Rec, Full Chain */}
-                    <div className="flex flex-wrap gap-2">
-                      <MiniCard
-                        icon={Link2} color="#3b82f6"
-                        label="Bank → Invoice" value={`${p.bank_pct || 0}%`}
-                      />
-                      <MiniCard
-                        icon={Receipt} color="#8b5cf6"
-                        label="Inv → Receipt" value={`${p.invoice_pct || 0}%`}
-                      />
-                      <MiniCard
-                        icon={GitMerge} color="#10b981"
-                        label="Full Chain" value={`${p.chain_pct || 0}%`}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        {periods[0] ? (
+          <div className="space-y-2">
+            {/* Row 1: Docs, Revenue, Expenses, Net P&L */}
+            <div className="flex flex-wrap gap-2">
+              <MiniCard
+                icon={FileSearch} color="#6366f1"
+                label="Docs to Review" value={String(periods[0].review_count || 0)}
+                onClick={() => navigate('/review-queue')}
+              />
+              <MiniCard
+                icon={TrendingUp} color="#22c55e"
+                label="Revenue" value={`HKD ${Fmt(periods[0].revenue || 0)}`}
+              />
+              <MiniCard
+                icon={TrendingDown} color="#ef4444"
+                label="Expenses" value={`HKD ${Fmt(periods[0].expenses || 0)}`}
+              />
+              <MiniCard
+                icon={Activity} color={periods[0].net_income >= 0 ? '#10b981' : '#ef4444'}
+                label="Net P&L" value={`HKD ${Fmt(periods[0].net_income || 0)}`}
+              />
+            </div>
+            {/* Row 2: Bank→Inv, Inv→Rec, Full Chain */}
+            <div className="flex flex-wrap gap-2">
+              <MiniCard
+                icon={Link2} color="#3b82f6"
+                label="Bank → Invoice" value={`${periods[0].bank_pct || 0}%`}
+              />
+              <MiniCard
+                icon={Receipt} color="#8b5cf6"
+                label="Inv → Receipt" value={`${periods[0].invoice_pct || 0}%`}
+              />
+              <MiniCard
+                icon={GitMerge} color="#10b981"
+                label="Full Chain" value={`${periods[0].chain_pct || 0}%`}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="text-sm text-muted-foreground py-4">{tr('Loading…', '載入中…', '载入中…')}</div>
+        )}
       </div>
 
       {/* ═══════════════════════════════════════════════════════════
