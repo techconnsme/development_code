@@ -72,25 +72,25 @@ async function importStatementFromFile(
         const mimeType = fileRow.file_type || 'application/pdf';
         const decryptedFile = await fetchAndDecryptFile(fileRow.r2_key, mimeType, fileBucket);
         if (decryptedFile?.base64) {
-          console.log('[OCR-DEBUG] Calling GLM, mime:', mimeType);
+          console.log('[GLM-OCR|debug] Calling, mime:', mimeType);
           const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${glmApiKey}` },
             body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${decryptedFile.base64}` }),
           });
-          console.log('[OCR-DEBUG] GLM response status:', glmResp.status);
+          console.log('[GLM-OCR|debug] Response status:', glmResp.status);
           if (glmResp.ok) {
             const glmData = await glmResp.json() as any;
             glmUsage = glmData.usage || null;
             ocrText = typeof glmData === 'string' ? glmData : JSON.stringify(glmData);
-            console.log('[OCR-DEBUG] GLM ocrText length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
+            console.log('[GLM-OCR|debug] Text length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
           } else {
             const errBody = await glmResp.text();
-            console.log('[OCR-DEBUG] GLM error body:', errBody.slice(0, 500));
+            console.log('[GLM-OCR|debug] Error body:', errBody.slice(0, 500));
           }
         }
       } catch (e: any) {
-        console.log('[OCR-DEBUG] GLM exception:', e?.message || String(e));
+        console.log('[GLM-OCR|debug] Exception:', e?.message || String(e));
       }
       if (ocrText) {
         await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
@@ -124,8 +124,9 @@ async function importStatementFromFile(
   let glmUsage: any = null;
   let ocrSource: 'tomarkdown' | 'glm-ocr' = 'tomarkdown';
 
-  const tryDeepSeekParse = async (inputOcrText: string): Promise<any> => {
+  const tryDeepSeekParse = async (inputOcrText: string, ocrLabel: string): Promise<any> => {
     if (!deepseekKey) return null;
+    console.log(`[DS-BANK|${ocrLabel}] Sending to DeepSeek, OCR text length: ${inputOcrText.length}`);
     const resp = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
@@ -167,7 +168,7 @@ ${inputOcrText.slice(0, 8000)}` }],
     });
     const data = await resp.json() as any;
     const raw = data.choices?.[0]?.message?.content || '';
-    console.log('[DEEPSEEK-RAW-BANK]', raw.slice(0, 2000));
+    console.log(`[DS-BANK|${ocrLabel}] Raw response:`, raw.slice(0, 2000));
     const m = raw.match(/\{[\s\S]*\}/);
     if (m) return JSON.parse(m[0]);
     return null;
@@ -180,7 +181,7 @@ ${inputOcrText.slice(0, 8000)}` }],
   let pdftotextOcrText = '';
   if (ENABLE_PDFTOTEXT_DUAL_PATH && deepseekKey) {
     // Path A: the existing stored OCR text (could be pdftotext from Docker worker, or toMarkdown)
-    try { parsed = await tryDeepSeekParse(ocrText); } catch {}
+    try { parsed = await tryDeepSeekParse(ocrText, 'tomarkdown'); } catch {}
     if (parsed) usage = (parsed as any)._usage;
 
     // Path B (if available): check if file has pdftotext output from Docker worker.
@@ -196,7 +197,7 @@ ${inputOcrText.slice(0, 8000)}` }],
           const mdResult = await (ai as any).toMarkdown([{ name: fileRow.original_name || 'file.pdf', blob: new Blob([buffer], { type: 'application/pdf' }) }]);
           const tmText = Array.isArray(mdResult) ? mdResult.map((r: any) => r?.data || r?.content || '').join('\n') : String(mdResult || '');
           if (tmText.length > 20) pdftotextOcrText = ocrText; // save pdftotext for reference
-          const tmParsed = await tryDeepSeekParse(tmText);
+          const tmParsed = await tryDeepSeekParse(tmText, 'tomarkdown-dualpath');
           if (tmParsed?.transactions?.length > 0) {
             // Quick balance check to compare paths
             const origTxs = parsed.transactions || [];
@@ -211,14 +212,14 @@ ${inputOcrText.slice(0, 8000)}` }],
 
             // If toMarkdown passes balance but pdftotext doesn't, use toMarkdown
             if (tmOk && !origOk && tmParsed.transactions.length > 0) {
-              console.log('[BANK-DUAL-PATH] toMarkdown passed balance, pdftotext failed — switching to toMarkdown');
+              console.log('[DUAL-PATH|tomarkdown] Passed balance check, pdftotext failed — choosing toMarkdown');
               parsed = tmParsed;
               ocrText = tmText;
               ocrSource = 'tomarkdown';
             }
           }
         }
-      } catch (e: any) { console.log('[BANK-DUAL-PATH] toMarkdown comparison error:', e?.message || String(e)); }
+      } catch (e: any) { console.log('[DUAL-PATH|tomarkdown] Comparison error:', e?.message || String(e)); }
     }
   }
 
@@ -231,7 +232,7 @@ ${inputOcrText.slice(0, 8000)}` }],
     const balanceMismatched = Math.abs(preComputed - parsed.closing_balance) > 0.01;
 
     if (balanceMismatched) {
-      console.log(`[BANK-OCR-RETRY] toMarkdown balance mismatch (expected=${preComputed} actual=${parsed.closing_balance}), retrying with GLM-OCR...`);
+      console.log(`[RETRY|tomarkdown→GLM] Balance MISMATCH (computed=${preComputed} stated=${parsed.closing_balance}), triggering GLM-OCR retry...`);
       try {
         const obj = await fileBucket.get(fileRow.r2_key);
         if (obj) {
@@ -247,7 +248,7 @@ ${inputOcrText.slice(0, 8000)}` }],
           for (let glmAttempt = 0; glmAttempt < 3; glmAttempt++) {
             if (glmAttempt > 0) {
               const delay = glmAttempt * 3000;
-              console.log(`[BANK-OCR-RETRY] GLM rate-limited, waiting ${delay}ms before retry ${glmAttempt + 1}/3...`);
+              console.log(`[RETRY|GLM-OCR] Rate-limited (429), waiting ${delay}ms before retry ${glmAttempt + 1}/3...`);
               await new Promise(r => setTimeout(r, delay));
             }
             glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
@@ -256,7 +257,7 @@ ${inputOcrText.slice(0, 8000)}` }],
               body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
             });
             if (glmResp.status !== 429) break;
-            console.log(`[BANK-OCR-RETRY] GLM returned 429 (rate limited), attempt ${glmAttempt + 1}/3`);
+            console.log(`[RETRY|GLM-OCR] 429 rate limited, attempt ${glmAttempt + 1}/3`);
           }
 
           if (glmResp && glmResp.ok) {
@@ -281,8 +282,8 @@ ${inputOcrText.slice(0, 8000)}` }],
             const glmFormatted = newParts.join('\n').trim();
 
             if (glmFormatted.length > 20) {
-              console.log('[BANK-OCR-RETRY] GLM-OCR formatted, length:', glmFormatted.length);
-              const retryParsed = await tryDeepSeekParse(glmFormatted);
+              console.log('[RETRY|GLM-OCR] Formatted positional output, length:', glmFormatted.length);
+              const retryParsed = await tryDeepSeekParse(glmFormatted, 'glm-ocr');
               if (retryParsed?.transactions?.length > 0) {
                 // Re-validate balance on retry
                 const retryTxs = retryParsed.transactions || [];
@@ -291,7 +292,7 @@ ${inputOcrText.slice(0, 8000)}` }],
                 const retryComputed = (retryParsed.opening_balance ?? 0) + retryTotalDep - retryTotalWit;
                 const retryOk = retryParsed.closing_balance == null || Math.abs(retryComputed - retryParsed.closing_balance) <= 0.01;
 
-                console.log(`[BANK-OCR-RETRY] GLM retry balance: computed=${retryComputed} actual=${retryParsed.closing_balance} ok=${retryOk}`);
+                console.log(`[DS-BANK|glm-ocr] Balance check: computed=${retryComputed} stated=${retryParsed.closing_balance} ok=${retryOk}`);
 
                 if (retryOk) {
                   // GLM-OCR retry passed — use this result
@@ -302,14 +303,14 @@ ${inputOcrText.slice(0, 8000)}` }],
                   await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL")
                     .bind(glmFormatted.slice(0, 50000), fileId).run();
                 } else {
-                  console.log('[BANK-OCR-RETRY] GLM retry also failed balance check, keeping toMarkdown result flagged as draft');
+                  console.log('[RETRY|GLM-OCR] Balance also failed, keeping toMarkdown result flagged as draft');
                 }
               }
             }
           }
         }
       } catch (e: any) {
-        console.log('[BANK-OCR-RETRY] GLM-OCR retry error:', e?.message || String(e));
+        console.log('[RETRY|GLM-OCR] Error:', e?.message || String(e));
       }
     }
   }
@@ -1083,13 +1084,13 @@ function extractTextFromGlmOcr(glmData: any): string {
     while (parts.length > 0 && parts[parts.length - 1] === '') parts.pop();
     const result = parts.join('\n').trim();
     if (result.length > 10) {
-      console.log('[GLM-OCR-EXTRACT] Extracted', parts.length, 'text elements,', result.length, 'chars');
+      console.log('[GLM-OCR|invoice] Extracted', parts.length, 'text elements,', result.length, 'chars');
       return result;
     }
-    console.log('[GLM-OCR-EXTRACT] Extraction produced too little text, falling back to raw JSON');
+    console.log('[GLM-OCR|invoice] Too little text, falling back to raw JSON');
     return JSON.stringify(glmData);
   } catch (e: any) {
-    console.log('[GLM-OCR-EXTRACT] Error extracting text:', e?.message || e);
+    console.log('[GLM-OCR|invoice] Error extracting text:', e?.message || e);
     return JSON.stringify(glmData);
   }
 }
@@ -1126,7 +1127,7 @@ async function importInvoiceFromFile(
             const glmData = await glmResp.json() as any;
             glmUsage = glmData.usage || null;
             const candidate = extractTextFromGlmOcr(glmData);
-            console.log('[OCR-IMPORT-INVOICE] GLM-OCR result:', candidate.slice(0, 200));
+            console.log('[OCR|GLM-OCR] Invoice result:', candidate.slice(0, 200));
             if (candidate && candidate.length > 20) ocrText = candidate;
           }
         } catch {}
@@ -1142,10 +1143,10 @@ async function importInvoiceFromFile(
           const candidate = Array.isArray(mdResult) ? mdResult.map((r: any) => r?.data || r?.content || '').join('\n') : String(mdResult || '');
           if (candidate && candidate.length > 20) {
             if (isPdfMetadataOnly(candidate)) {
-              console.log('[OCR-IMPORT-INVOICE] toMarkdown produced only PDF metadata, discarding for GLM-OCR');
+              console.log('[OCR|tomarkdown] Invoice: only PDF metadata, discarding for GLM-OCR');
             } else {
               ocrText = candidate;
-              console.log('[OCR-IMPORT-INVOICE] toMarkdown succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
+              console.log('[OCR|tomarkdown] Invoice succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
             }
           }
         } catch {}
@@ -1295,7 +1296,7 @@ ${ocrText.slice(0, 8000)}`;
       const data = await resp.json() as any;
       const raw = data.choices?.[0]?.message?.content || '';
       usage = data.usage || null;
-      console.log('[DEEPSEEK-RAW-INVOICE]', raw.slice(0, 2000));
+      console.log('[DS-INVOICE|tomarkdown] Raw response:', raw.slice(0, 2000));
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
     } catch {}
@@ -1435,7 +1436,7 @@ ${ocrText.slice(0, 8000)}`;
 
   // ── GLM-OCR retry on direction uncertainty ──
   if (!isReceipt && (needsDirectionReview || companyNotDetected) && glmApiKey && parsed) {
-    console.log('[INVOICE-OCR-RETRY] Direction uncertain, retrying with GLM-OCR...');
+    console.log('[RETRY|tomarkdown→GLM] Invoice direction uncertain, retrying with GLM-OCR...');
     try {
       const obj = await fileBucket.get(fileRow.r2_key);
       if (obj) {
@@ -1497,7 +1498,7 @@ ${ocrText.slice(0, 8000)}`;
               const retryCustOurs = retryCustMatch?.best ? retryCustMatch.best.score >= 70 : false;
 
               if (retryCustOurs || retryVendorOurs) {
-                console.log('[INVOICE-OCR-RETRY] GLM-OCR resolved direction: customerIsOurs=', retryCustOurs, 'vendorIsOurs=', retryVendorOurs);
+                console.log('[DS-INVOICE|glm-ocr] Direction resolved: customerIsOurs=', retryCustOurs, 'vendorIsOurs=', retryVendorOurs);
                 parsed = retryParsed;
                 isIncoming = retryCustOurs;
                 counterpartyName = retryCustOurs ? (retryParsed.vendor_name || null) : (retryParsed.customer_name || null);
@@ -1506,14 +1507,14 @@ ${ocrText.slice(0, 8000)}`;
                 glmUsage = glmData.usage || null;
                 ocrText = glmFormatted; // Use GLM OCR text going forward
               } else {
-                console.log('[INVOICE-OCR-RETRY] GLM-OCR still uncertain, keeping original');
+                console.log('[DS-INVOICE|glm-ocr] Still uncertain, keeping original');
               }
             }
           }
         }
       }
     } catch (e: any) {
-      console.log('[INVOICE-OCR-RETRY] Error:', e?.message || String(e));
+      console.log('[RETRY|GLM-OCR] Invoice error:', e?.message || String(e));
     }
   }
 
@@ -1873,7 +1874,7 @@ async function runGlmOcr(fileData: string, fileType: string, glmApiKey?: string)
     if (!resp.ok) return { text: '', status: 'failed' };
     const data = await resp.json() as any;
     const text = extractTextFromGlmOcr(data);
-    console.log('[OCR-RUN-GLM] GLM-OCR result:', text.slice(0, 200));
+    console.log('[GLM-OCR|raw] Result:', text.slice(0, 200));
     return { text, status: text.length > 20 ? 'completed' : 'unclear' };
   } catch {
     return { text: '', status: 'failed' };
@@ -2109,16 +2110,16 @@ files.post('/upload', async (c) => {
               if (glmResp.ok) {
                 const glmData = await glmResp.json() as any;
                 ocrText = extractTextFromGlmOcr(glmData);
-                console.log('[OCR-AUTO-IMPORT] GLM-OCR result:', ocrText.slice(0, 200));
+                console.log('[OCR|GLM-OCR] Auto-import result:', ocrText.slice(0, 200));
                 await c.env.DB.prepare(
                   "UPDATE file_records SET ocr_text = ?, ocr_status = 'completed' WHERE id = ?"
                 ).bind(ocrText.slice(0, 10000), id).run();
               } else {
-                console.log('[OCR-AUTO-IMPORT] GLM-OCR failed with status:', glmResp.status);
+                console.log('[GLM-OCR|auto-import] Failed with status:', glmResp.status);
               }
             }
           } catch (e: any) {
-            console.log('[OCR-AUTO-IMPORT] GLM-OCR error:', e?.message || e);
+            console.log('[GLM-OCR|auto-import] Error:', e?.message || e);
           }
         }
 
@@ -2136,14 +2137,14 @@ files.post('/upload', async (c) => {
               });
               if (aiResp?.description) {
                 ocrText = aiResp.description;
-                console.log('[OCR-AUTO-IMPORT] Cloudflare AI fallback OCR result:', ocrText.slice(0, 200));
+                console.log('[OCR|tomarkdown] Auto-import fallback:', ocrText.slice(0, 200));
                 await c.env.DB.prepare(
                   "UPDATE file_records SET ocr_text = ? WHERE id = ?"
                 ).bind(ocrText.slice(0, 10000), id).run();
               }
             }
           } catch (e: any) {
-            console.log('[OCR-AUTO-IMPORT] Cloudflare AI fallback error:', e?.message || e);
+            console.log('[OCR|tomarkdown] Auto-import fallback error:', e?.message || e);
           }
         }
 
@@ -2155,14 +2156,14 @@ files.post('/upload', async (c) => {
           if (importResult.success && importResult.invoice_id) {
             await c.env.DB.prepare("UPDATE file_records SET invoice_id = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
               .bind(importResult.invoice_id, id).run();
-            console.log(`[OCR-AUTO-IMPORT] Invoice ${importResult.invoice_id} created from file ${id}`);
+            console.log(`[AUTO-IMPORT|Invoice] ${importResult.invoice_id} created from file ${id}`);
           } else {
-            console.log(`[OCR-AUTO-IMPORT] Import failed for file ${id}: ${importResult.error || 'unknown'}`);
+            console.log(`[AUTO-IMPORT|Fail] File ${id}: ${importResult.error || 'unknown'}`);
             await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
               .bind(id).run();
           }
         } catch (importErr: any) {
-          console.log(`[OCR-AUTO-IMPORT] Import error for file ${id}: ${importErr?.message || importErr}`);
+          console.log(`[AUTO-IMPORT|Error] File ${id}: ${importErr?.message || importErr}`);
           await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
             .bind(id).run();
         }
@@ -2193,7 +2194,7 @@ files.post('/upload', async (c) => {
                 await c.env.DB.prepare(
                   "UPDATE file_records SET ocr_status = 'encrypted', updated_at = datetime('now') WHERE id = ?"
                 ).bind(id).run();
-                console.log('[OCR-AUTO-STATEMENT] File is encrypted — marked as needs password');
+                console.log('[AUTO-STMT|Encrypted] File is encrypted — marked as needs password');
                 return; // Don't attempt OCR on encrypted PDF
               }
               const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
@@ -2207,16 +2208,16 @@ files.post('/upload', async (c) => {
               if (glmResp.ok) {
                 const glmData = await glmResp.json() as any;
                 ocrText = extractTextFromGlmOcr(glmData);
-                console.log('[OCR-AUTO-STATEMENT] GLM-OCR result:', ocrText.slice(0, 200));
+                console.log('[OCR|GLM-OCR] Auto-statement result:', ocrText.slice(0, 200));
                 await c.env.DB.prepare(
                   "UPDATE file_records SET ocr_text = ? WHERE id = ?"
                 ).bind(ocrText.slice(0, 50000), id).run();
               } else {
-                console.log('[OCR-AUTO-STATEMENT] GLM-OCR failed with status:', glmResp.status);
+                console.log('[GLM-OCR|auto-stmt] Failed with status:', glmResp.status);
               }
             }
           } catch (e: any) {
-            console.log('[OCR-AUTO-STATEMENT] GLM-OCR error:', e?.message || e);
+            console.log('[GLM-OCR|auto-stmt] Error:', e?.message || e);
           }
         }
 
@@ -2234,14 +2235,14 @@ files.post('/upload', async (c) => {
               });
               if (aiResp?.description) {
                 ocrText = aiResp.description;
-                console.log('[OCR-AUTO-STATEMENT] Cloudflare AI fallback result:', ocrText.slice(0, 200));
+                console.log('[OCR|tomarkdown] Auto-stmt fallback:', ocrText.slice(0, 200));
                 await c.env.DB.prepare(
                   "UPDATE file_records SET ocr_text = ? WHERE id = ?"
                 ).bind(ocrText.slice(0, 10000), id).run();
               }
             }
           } catch (e: any) {
-            console.log('[OCR-AUTO-STATEMENT] Cloudflare AI fallback error:', e?.message || e);
+            console.log('[OCR|tomarkdown] Auto-stmt fallback error:', e?.message || e);
           }
         }
 
@@ -2250,7 +2251,7 @@ files.post('/upload', async (c) => {
           const isActuallyInvoice = /(?:TAX\s*INVOICE|PURCHASE\s*BILL|BILL\s*TO|INVOICE\s*#|發票|发票)/i.test(ocrText)
             && !/(?:BANK|STATEMENT|eStatement|月結單|月结单|ACCOUNT\s*NUMBER|BALANCE\s*BROUGHT|OPENING\s*BALANCE|CLOSING\s*BALANCE)/i.test(ocrText);
           if (isActuallyInvoice) {
-            console.log('[OCR-AUTO-STATEMENT] Reclassifying file as invoice based on OCR content');
+            console.log('[AUTO-STMT|Reclassify] Reclassifying as invoice based on OCR content');
             await c.env.DB.prepare(
               "UPDATE file_records SET category = 'invoice', folder = 'Invoices', ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?"
             ).bind(id).run();
@@ -2260,10 +2261,10 @@ files.post('/upload', async (c) => {
               if (invResult.success && invResult.invoice_id) {
                 await c.env.DB.prepare("UPDATE file_records SET invoice_id = ? WHERE id = ?")
                   .bind(invResult.invoice_id, id).run();
-                console.log(`[OCR-AUTO-STATEMENT] Reclassified as invoice ${invResult.invoice_id}`);
+                console.log(`[AUTO-STMT|Reclassify] Invoice ${invResult.invoice_id} created`);
               }
             } catch (e: any) {
-              console.log('[OCR-AUTO-STATEMENT] Reclassification import error:', e?.message || e);
+              console.log('[AUTO-STMT|Error] Reclassification:', e?.message || e);
             }
             return; // Don't create a bank statement
           }
@@ -2277,14 +2278,14 @@ files.post('/upload', async (c) => {
           if (stmtResult.success && stmtResult.statement_id) {
             await c.env.DB.prepare("UPDATE file_records SET statement_id = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
               .bind(stmtResult.statement_id, id).run();
-            console.log(`[OCR-AUTO-STATEMENT] Bank statement ${stmtResult.statement_id} created from file ${id}, ${stmtResult.transactions_count || 0} transactions, ocr_failed: ${stmtResult.ocr_failed || false}`);
+            console.log(`[AUTO-STMT|Bank] ${stmtResult.statement_id} from ${id}, ${stmtResult.transactions_count || 0} txns, ocr_failed=${stmtResult.ocr_failed || false}`);
           } else {
-            console.log(`[OCR-AUTO-STATEMENT] Import failed for file ${id}: ${stmtResult.error || 'unknown'}`);
+            console.log(`[AUTO-STMT|Fail] File ${id}: ${stmtResult.error || 'unknown'}`);
             await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
               .bind(id).run();
           }
         } catch (importErr: any) {
-          console.log(`[OCR-AUTO-STATEMENT] Import error for file ${id}: ${importErr?.message || importErr}`);
+          console.log(`[AUTO-STMT|Error] File ${id}: ${importErr?.message || importErr}`);
           await c.env.DB.prepare("UPDATE file_records SET ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
             .bind(id).run();
         }
@@ -3055,7 +3056,7 @@ ${ocrText.slice(0, 12000)}` }],
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
       }
-    } catch (e: any) { console.log('[CARD-PARSE] DeepSeek error:', e.message); }
+    } catch (e: any) { console.log('[DS-CARD|tomarkdown] Error:', e.message); }
   }
 
   // ── GLM-OCR retry on balance mismatch ──
@@ -3068,7 +3069,7 @@ ${ocrText.slice(0, 12000)}` }],
     }, 0);
     const preComputed = (parsed.opening_balance ?? 0) + totalCharges;
     if (Math.abs(preComputed - parsed.closing_balance) > 0.01) {
-      console.log(`[CARD-OCR-RETRY] toMarkdown balance mismatch, retrying with GLM-OCR...`);
+      console.log('[RETRY|tomarkdown→GLM] Card balance mismatch, retrying with GLM-OCR...');
       try {
         const obj = await fileBucket.get(fileRow.r2_key);
         if (obj) {
@@ -3125,7 +3126,7 @@ ${ocrText.slice(0, 12000)}` }],
                 }, 0);
                 const rtComputed = (retryParsed.opening_balance ?? 0) + rtChange;
                 if (retryParsed.closing_balance == null || Math.abs(rtComputed - retryParsed.closing_balance) <= 0.01) {
-                  console.log('[CARD-OCR-RETRY] GLM-OCR balance passed, using retry result');
+                  console.log('[DS-CARD|glm-ocr] Balance passed, using retry result');
                   parsed = retryParsed;
                   glmUsage = glmUsageData;
                   ocrText = glmFormatted;
@@ -3134,7 +3135,7 @@ ${ocrText.slice(0, 12000)}` }],
             }
           }
         }
-      } catch (e: any) { console.log('[CARD-OCR-RETRY] Error:', e?.message || String(e)); }
+      } catch (e: any) { console.log('[RETRY|GLM-OCR] Card error:', e?.message || String(e)); }
     }
   }
 
@@ -3278,7 +3279,7 @@ files.post('/:id/import-document', async (c) => {
             : String(mdResult || '');
           if (candidate && candidate.length > 20) {
             if (isPdfMetadataOnly(candidate)) {
-              console.log('[OCR-IMPORT-DOC] toMarkdown produced only PDF metadata');
+              console.log('[OCR|tomarkdown] Import-doc: only PDF metadata, using GLM-OCR');
               // Check if this is an encrypted PDF that toMarkdown can't read
               const isEncrypted = await (async () => {
                 try {
@@ -3302,12 +3303,12 @@ files.post('/:id/import-document', async (c) => {
               // Not encrypted — just a bad scan, fall through to GLM-OCR
             } else {
               ocrText = candidate;
-              console.log('[OCR-IMPORT-DOC] toMarkdown succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
+              console.log('[OCR|tomarkdown] Import-doc succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
               await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
             }
           }
         } catch (e: any) {
-          console.log('[SMART-IMPORT] toMarkdown failed:', e?.message || e);
+          console.log('[OCR|tomarkdown] Import-doc failed:', e?.message || e);
         }
       }
 
@@ -3326,14 +3327,14 @@ files.post('/:id/import-document', async (c) => {
           if (glmResp.ok) {
             const glmData = await glmResp.json() as any;
             const candidate = extractTextFromGlmOcr(glmData);
-            console.log('[OCR-IMPORT-DOC] GLM-OCR result:', candidate.slice(0, 200));
+            console.log('[OCR|GLM-OCR] Import-doc result:', candidate.slice(0, 200));
             if (candidate && candidate.length > 20) {
               ocrText = candidate;
               await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
             }
           }
         } catch (e: any) {
-          console.log('[SMART-IMPORT] GLM OCR error:', e?.message || e);
+          console.log('[OCR|GLM-OCR] Import-doc error:', e?.message || e);
         }
       }
     }
@@ -3588,6 +3589,189 @@ files.post('/:id/try-decrypt', async (c) => {
     ocr_text_length: ocrText.length,
     import: importResult,
   });
+});
+
+// ── Diagnostic endpoint: trace full OCR→DeepSeek pipeline for a file ──────────
+// Mirrors the PRODUCTION pipeline: toMarkdown → DeepSeek → balance check →
+// ONLY if mismatch → GLM-OCR → DeepSeek re-parse
+files.post('/debug-pipeline', authMiddleware, async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const { file_id } = await c.req.json();
+
+  if (!file_id) return c.json({ error: 'file_id required' }, 400);
+
+  const db = c.env.DB;
+  const fileBucket = c.env.FILE_BUCKET;
+  const ai = c.env.AI;
+  const deepseekKey = c.env.DEEPSEEK_API_KEY;
+  const glmApiKey = c.env.GLM_API_KEY;
+
+  const fileRow = await db.prepare(
+    'SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_status, category FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(file_id, tenantId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string; category: string }>();
+
+  if (!fileRow) return c.json({ error: 'File not found' }, 404);
+
+  const diagnostics: any = { stages: {} };
+  let ocrText = '';
+  let balanceMismatched = false;
+
+  // ── helper: DeepSeek parse ──
+  async function deepSeekParse(text: string, label: string) {
+    const dsPrompt = `You are a bank statement parser.
+Return JSON: { "bank_name": string or null, "account_number": string or null, "currency": string, "period_start": "YYYY-MM-DD", "period_end": "YYYY-MM-DD", "opening_balance": number, "closing_balance": number, "transactions": [ { "transaction_date": "YYYY-MM-DD", "description": string, "deposit_amount": number (0 if withdrawal), "withdrawal_amount": number (0 if deposit), "balance": number|null } ] }
+
+IMPORTANT — deciding whether a line's amount is a deposit or a withdrawal:
+- Judge ONLY by which column (Deposit vs Withdrawal) the number is printed under / aligned with in the original layout. Never infer it from wording in the description such as "CR", "CR TO", "credit", "DR", "debit", etc.
+- For HTML tables: read each <td> position relative to the header row (columns: Date | Details | Deposit | Withdrawal | Balance). An amount in the Deposit column = deposit_amount. An amount in the Withdrawal column = withdrawal_amount.
+- For [L]/[M]/[R] tagged text: [L]=left columns (date/description), [M]=middle columns, [R]=right columns (Deposit/Withdrawal/Balance). Cross-reference with HTML tables for column mapping.
+- Self-check: keep a running total from B/F BALANCE and verify against every printed balance checkpoint. If it doesn't reconcile, you've swapped a deposit/withdrawal — correct it before returning JSON.
+
+OCR TEXT:
+${text.slice(0, 8000)}`;
+
+    const dsResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
+      body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'user', content: dsPrompt }], max_tokens: 4000 }),
+    });
+    const dsData = await dsResp.json() as any;
+    const raw = dsData.choices?.[0]?.message?.content || '';
+    const result: any = { raw_response: raw, usage: dsData.usage || null };
+
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) {
+      const parsed = JSON.parse(m[0]);
+      result.parsed = parsed;
+      const txs = parsed.transactions || [];
+      const totalDep = txs.reduce((s: number, t: any) => s + (Number(t.deposit_amount) || 0), 0);
+      const totalWit = txs.reduce((s: number, t: any) => s + (Number(t.withdrawal_amount) || 0), 0);
+      const computedClosing = (parsed.opening_balance ?? 0) + totalDep - totalWit;
+      const ok = parsed.closing_balance == null || Math.abs(computedClosing - parsed.closing_balance) <= 0.01;
+      result.balance_check = {
+        opening: parsed.opening_balance,
+        total_deposits: totalDep,
+        total_withdrawals: totalWit,
+        computed_closing: computedClosing,
+        stated_closing: parsed.closing_balance,
+        matches: ok,
+      };
+    }
+    return result;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // STEP 1: toMarkdown (Cloudflare AI) — primary OCR
+  // ═══════════════════════════════════════════════════════════════
+  let tmText = '';
+  try {
+    const obj = await fileBucket.get(fileRow.r2_key);
+    if (obj && (ai as any)?.toMarkdown) {
+      const buffer = await obj.arrayBuffer();
+      const mdResult = await (ai as any).toMarkdown([{ name: fileRow.original_name || 'file.pdf', blob: new Blob([buffer], { type: 'application/pdf' }) }]);
+      tmText = Array.isArray(mdResult) ? mdResult.map((r: any) => r?.data || r?.content || '').join('\n') : String(mdResult || '');
+      diagnostics.stages.step1_tomarkdown = { text: tmText, length: tmText.length };
+    } else {
+      diagnostics.stages.step1_tomarkdown = { error: 'toMarkdown not available or file not in R2' };
+    }
+  } catch (e: any) {
+    diagnostics.stages.step1_tomarkdown = { error: e?.message || String(e) };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // STEP 2: DeepSeek parse on toMarkdown output
+  // ═══════════════════════════════════════════════════════════════
+  if (tmText) {
+    ocrText = tmText;
+    diagnostics.stages.step2_deepseek_on_tomarkdown = await deepSeekParse(tmText, 'tomarkdown');
+    balanceMismatched = !diagnostics.stages.step2_deepseek_on_tomarkdown?.balance_check?.matches;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // STEP 3: GLM-OCR — ONLY if toMarkdown balance mismatched
+  // ═══════════════════════════════════════════════════════════════
+  if (balanceMismatched && glmApiKey) {
+    diagnostics.stages.step3_glm_trigger = { reason: `toMarkdown balance mismatch — triggering GLM-OCR retry` };
+    try {
+      const obj = await fileBucket.get(fileRow.r2_key);
+      if (obj) {
+        const buffer = await obj.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const base64 = btoa(binary);
+        const mimeType = fileRow.file_type || 'application/pdf';
+
+        const glmResp = await fetch('https://api.z.ai/api/paas/v4/layout_parsing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${glmApiKey}` },
+          body: JSON.stringify({ model: 'glm-ocr', file: `data:${mimeType};base64,${base64}` }),
+        });
+
+        if (glmResp.ok) {
+          const glmData = await glmResp.json() as any;
+          diagnostics.stages.step3_glm_ocr = { status: glmResp.status, usage: glmData.usage || null };
+
+          // Build positional format: HTML tables + [L/M/R] column tags
+          const pages = glmData?.layout_details || [];
+          const newParts: string[] = [];
+          let tableCount = 0, textCount = 0;
+          for (const p of pages) {
+            for (const el of p) {
+              if (el.label === 'table' && el.content) {
+                newParts.push(el.content);
+                tableCount++;
+              } else if (el.label === 'text' && el.content) {
+                const x = el.bbox_2d?.[0] || 0;
+                const col = x < 600 ? 'L' : x < 1200 ? 'M' : 'R';
+                newParts.push(`[${col}] ${el.content}`);
+                textCount++;
+              }
+            }
+            newParts.push('');
+          }
+          const glmFormatted = newParts.join('\n').trim();
+          diagnostics.stages.step3_glm_ocr.formatted_positional = { text: glmFormatted, length: glmFormatted.length, tables: tableCount, text_lines: textCount };
+
+          // ═══════════════════════════════════════════════════════
+          // STEP 4: DeepSeek re-parse on GLM-OCR positional output
+          // ═══════════════════════════════════════════════════════
+          if (glmFormatted.length > 20) {
+            diagnostics.stages.step4_deepseek_on_glm = await deepSeekParse(glmFormatted, 'glm-ocr');
+            const glmOk = diagnostics.stages.step4_deepseek_on_glm?.balance_check?.matches;
+            if (glmOk) {
+              ocrText = glmFormatted; // GLM result used
+            }
+          } else {
+            diagnostics.stages.step4_deepseek_on_glm = { error: 'GLM formatted output too short' };
+          }
+        } else {
+          diagnostics.stages.step3_glm_ocr = { status: glmResp.status, error: await glmResp.text().catch(() => 'unknown') };
+        }
+      }
+    } catch (e: any) {
+      diagnostics.stages.step3_glm_ocr = { error: e?.message || String(e) };
+    }
+  } else if (!balanceMismatched) {
+    diagnostics.stages.step3_glm_trigger = { reason: 'toMarkdown balance OK — GLM-OCR skipped' };
+  } else {
+    diagnostics.stages.step3_glm_trigger = { reason: 'No GLM API key — GLM-OCR skipped' };
+  }
+
+  // ── Summary ──
+  const tomarkdownOk = diagnostics.stages.step2_deepseek_on_tomarkdown?.balance_check?.matches;
+  const glmOk = diagnostics.stages.step4_deepseek_on_glm?.balance_check?.matches;
+  diagnostics.summary = {
+    tomarkdown_balance_ok: tomarkdownOk,
+    glm_triggered: balanceMismatched,
+    glm_balance_ok: glmOk,
+    winner: tomarkdownOk ? 'tomarkdown' : (glmOk ? 'glm-ocr' : 'neither'),
+    tomarkdown_tx_count: diagnostics.stages.step2_deepseek_on_tomarkdown?.parsed?.transactions?.length || 0,
+    glm_tx_count: diagnostics.stages.step4_deepseek_on_glm?.parsed?.transactions?.length || 0,
+  };
+
+  return c.json(diagnostics);
 });
 
 export { files as fileStorageRoutes };

@@ -238,8 +238,8 @@ export default function FileUpload() {
       { method: 'POST', headers }
     );
     const result = await importResp.json().catch(() => ({}));
-    if (result?.ocr_text) console.log('[OCR-RAW-TEXT]', result.ocr_text);
-    if (result?.deepseek_raw) console.log('[DEEPSEEK-OUTPUT]', JSON.parse(result.deepseek_raw));
+    if (result?.ocr_text) console.log(`[OCR-RAW|${result.ocr_source || 'unknown'}]`, result.ocr_text);
+    if (result?.deepseek_raw) console.log(`[DeepSeek|${result.ocr_source || 'unknown'}]`, JSON.parse(result.deepseek_raw));
     if (result?.usage?.total_tokens || result?.glm_usage?.total_tokens) {
       const dsTotal = result.usage?.total_tokens || 0;
       const glmTotal = result.glm_usage?.total_tokens || 0;

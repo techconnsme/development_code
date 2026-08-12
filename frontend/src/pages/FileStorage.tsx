@@ -329,8 +329,8 @@ export default function FileStorage() {
           { method: 'POST', headers: importHeaders }
         );
         const result: any = await importResp.json();
-        if (result?.ocr_text) console.log('[OCR-RAW-TEXT]', result.ocr_text);
-        if (result?.deepseek_raw) console.log('[DEEPSEEK-OUTPUT]', JSON.parse(result.deepseek_raw));
+        if (result?.ocr_text) console.log(`[OCR-RAW|${result.ocr_source || 'unknown'}]`, result.ocr_text);
+        if (result?.deepseek_raw) console.log(`[DeepSeek|${result.ocr_source || 'unknown'}]`, JSON.parse(result.deepseek_raw));
 
         setProcessingMsg(null);
         setUploading(false);
