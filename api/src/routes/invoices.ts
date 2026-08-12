@@ -44,15 +44,18 @@ invoices.get('/', async (c) => {
   params.push(limit, offset);
 
   const rows = await db.prepare(query).bind(...params).all();
-  const countRow = await db.prepare(
-    `SELECT COUNT(*) as count FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ?` +
+  // Build count query with same filters (minus LIMIT/OFFSET)
+  let countQuery = `SELECT COUNT(*) as count FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ?` +
     (showPendingReview ? '' : " AND i.status != 'pending_review'") +
     (status ? ` AND i.status IN (${status.split(',').filter(Boolean).map(() => '?').join(',')})` : '') +
     (search ? ' AND (i.invoice_number LIKE ? OR c.name LIKE ? OR s.name LIKE ? OR i.vendor_name LIKE ?)' : '') +
     (docType === 'receipt' ? ' AND i.receipt_number IS NOT NULL' : docType === 'invoice' ? ' AND i.receipt_number IS NULL' : '') +
     (direction === 'incoming' ? " AND i.direction = 'incoming'" : direction === 'outgoing' ? " AND i.direction = 'outgoing'" : '') +
-    (expenseCategory ? ' AND i.expense_category = ?' : '')
-  ).bind(...(expenseCategory ? [...params.slice(0, -2), expenseCategory] : params.slice(0, -2))).first<{ count: number }>();
+    (expenseCategory ? ' AND i.expense_category = ?' : '') +
+    (startDate ? ' AND i.issue_date >= ?' : '') +
+    (endDate ? ' AND i.issue_date <= ?' : '');
+  const countParams = params.slice(0, -2); // remove LIMIT/OFFSET
+  const countRow = await db.prepare(countQuery).bind(...countParams).first<{ count: number }>();
   return c.json({ data: rows.results, total: countRow?.count || 0, page, limit });
 });
 
