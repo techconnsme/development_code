@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react';
+import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import DropdownSelect from '../components/DropdownSelect';
@@ -30,10 +30,17 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [entryDetails, setEntryDetails] = useState<Record<string, any[]>>({});
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const [expandedPL, setExpandedPL] = useState<Record<string, boolean>>({});
+  const [selectedPLAccount, setSelectedPLAccount] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const entryRowRef = useRef<HTMLTableRowElement | null>(null);
 
   const { startDate, endDate } = useDateFilter();
+  // P&L account transaction drill-down
+  const { data: plTransactions, isFetching: plTxFetching } = useQuery({
+    queryKey: ['pl-transactions', selectedPLAccount, startDate, endDate],
+    queryFn: () => api(`/bookkeeping/income-statement/${selectedPLAccount}/transactions?start_date=${startDate}&end_date=${endDate}`),
+    enabled: tab === 'pl' && !!selectedPLAccount,
+  });
   const [entryForm, setEntryForm] = useState({
     entry_number: '', entry_date: new Date().toISOString().split('T')[0], description: '',
     lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0, project: '' }],
@@ -550,121 +557,208 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
 
       {/* P&L Tab */}
       {tab === 'pl' && incomeStatement && (
-        <div className="bg-card border rounded-xl overflow-hidden max-w-2xl">
-          {/* Revenue section */}
-          <div>
-            <button
-              onClick={() => setExpandedPL(prev => ({ ...prev, revenue: !prev.revenue }))}
-              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition-colors text-left"
-            >
-              <span className="shrink-0 text-muted-foreground">
-                {expandedPL.revenue ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-              </span>
-              <span className="flex-1 font-medium text-sm">
-                {tr('Revenue', '收入', '收入')}
-              </span>
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-200">
-                {(incomeStatement.revenue_accounts || []).length} {tr('COA Accounts', '科目', '科目')}
-              </span>
-              <span className="font-semibold text-green-600 text-sm ml-2">
-                HKD {((incomeStatement.revenue || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-              </span>
-            </button>
+        <div className="flex gap-4">
+          {/* Main P&L card */}
+          <div className={`bg-card border rounded-xl overflow-hidden ${selectedPLAccount ? 'max-w-xl' : 'max-w-2xl'} flex-1 transition-all duration-300`}>
+            {/* Revenue section */}
+            <div>
+              <button
+                onClick={() => setExpandedPL(prev => ({ ...prev, revenue: !prev.revenue }))}
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition-colors text-left"
+              >
+                <span className="shrink-0 text-muted-foreground">
+                  {expandedPL.revenue ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </span>
+                <span className="flex-1 font-medium text-sm">
+                  {tr('Revenue', '收入', '收入')}
+                </span>
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  {(incomeStatement.revenue_accounts || []).length} {tr('COA Accounts', '科目', '科目')}
+                </span>
+                <span className="font-semibold text-green-600 text-sm ml-2">
+                  HKD {((incomeStatement.revenue || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </span>
+              </button>
 
-            {/* Revenue drill-down */}
-            {expandedPL.revenue && (
-              <div className="border-t bg-muted/10">
-                {(incomeStatement.revenue_accounts || []).length === 0 ? (
-                  <p className="px-10 py-3 text-xs text-muted-foreground">
-                    {tr('No linked COA accounts', '沒有關聯科目', '没有关联科目')}
-                  </p>
-                ) : (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-xs text-muted-foreground">
-                        <th className="text-left py-2 px-4 font-medium">{tr('Account Code', '科目編號', '科目编号')}</th>
-                        <th className="text-left py-2 px-4 font-medium">{tr('Account Name', '科目名稱', '科目名称')}</th>
-                        <th className="text-right py-2 px-4 font-medium">{tr('Amount', '金額', '金额')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(incomeStatement.revenue_accounts || []).map((acct: any) => (
-                        <tr key={acct.account_code} className="border-b border-muted/20 hover:bg-muted/30">
-                          <td className="py-1.5 px-4 font-mono text-xs">{acct.account_code}</td>
-                          <td className="py-1.5 px-4">{acct.account_name}</td>
-                          <td className="py-1.5 px-4 text-right font-mono text-green-600">
-                            HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </td>
+              {/* Revenue drill-down with slide animation */}
+              <div className={`expand-collapse ${expandedPL.revenue ? 'expand-collapse-open' : 'expand-collapse-closed'}`}>
+                <div className="border-t bg-muted/10">
+                  {(incomeStatement.revenue_accounts || []).length === 0 ? (
+                    <p className="px-10 py-3 text-xs text-muted-foreground">
+                      {tr('No linked COA accounts', '沒有關聯科目', '没有关联科目')}
+                    </p>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-xs text-muted-foreground">
+                          <th className="text-left py-2 px-4 font-medium">{tr('Account Code', '科目編號', '科目编号')}</th>
+                          <th className="text-left py-2 px-4 font-medium">{tr('Account Name', '科目名稱', '科目名称')}</th>
+                          <th className="text-right py-2 px-4 font-medium">{tr('Amount', '金額', '金额')}</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+                      </thead>
+                      <tbody>
+                        {(incomeStatement.revenue_accounts || []).map((acct: any) => (
+                          <tr
+                            key={acct.account_code}
+                            onClick={() => setSelectedPLAccount(selectedPLAccount === acct.account_code ? null : acct.account_code)}
+                            className={`border-b border-muted/20 hover:bg-muted/30 cursor-pointer transition-colors ${selectedPLAccount === acct.account_code ? 'bg-blue-50 dark:bg-blue-950/30 ring-1 ring-blue-300' : ''}`}
+                          >
+                            <td className="py-1.5 px-4 font-mono text-xs">{acct.account_code}</td>
+                            <td className="py-1.5 px-4">{acct.account_name}</td>
+                            <td className="py-1.5 px-4 text-right font-mono text-green-600">
+                              HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
-            )}
+            </div>
+
+            {/* Expenses section */}
+            <div className="border-t">
+              <button
+                onClick={() => setExpandedPL(prev => ({ ...prev, expenses: !prev.expenses }))}
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition-colors text-left"
+              >
+                <span className="shrink-0 text-muted-foreground">
+                  {expandedPL.expenses ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </span>
+                <span className="flex-1 font-medium text-sm">
+                  {tr('Expenses', '支出', '支出')}
+                </span>
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800 border border-rose-200">
+                  {(incomeStatement.expense_accounts || []).length} {tr('COA Accounts', '科目', '科目')}
+                </span>
+                <span className="font-semibold text-red-600 text-sm ml-2">
+                  HKD {((incomeStatement.expenses || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </span>
+              </button>
+
+              {/* Expenses drill-down with slide animation */}
+              <div className={`expand-collapse ${expandedPL.expenses ? 'expand-collapse-open' : 'expand-collapse-closed'}`}>
+                <div className="border-t bg-muted/10">
+                  {(incomeStatement.expense_accounts || []).length === 0 ? (
+                    <p className="px-10 py-3 text-xs text-muted-foreground">
+                      {tr('No linked COA accounts', '沒有關聯科目', '没有关联科目')}
+                    </p>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-xs text-muted-foreground">
+                          <th className="text-left py-2 px-4 font-medium">{tr('Account Code', '科目編號', '科目编号')}</th>
+                          <th className="text-left py-2 px-4 font-medium">{tr('Account Name', '科目名稱', '科目名称')}</th>
+                          <th className="text-right py-2 px-4 font-medium">{tr('Amount', '金額', '金额')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(incomeStatement.expense_accounts || []).map((acct: any) => (
+                          <tr
+                            key={acct.account_code}
+                            onClick={() => setSelectedPLAccount(selectedPLAccount === acct.account_code ? null : acct.account_code)}
+                            className={`border-b border-muted/20 hover:bg-muted/30 cursor-pointer transition-colors ${selectedPLAccount === acct.account_code ? 'bg-blue-50 dark:bg-blue-950/30 ring-1 ring-blue-300' : ''}`}
+                          >
+                            <td className="py-1.5 px-4 font-mono text-xs">{acct.account_code}</td>
+                            <td className="py-1.5 px-4">{acct.account_name}</td>
+                            <td className="py-1.5 px-4 text-right font-mono text-red-600">
+                              HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Net Income — always visible */}
+            <div className="border-t flex justify-between items-center px-4 py-3 bg-muted/20">
+              <span className="font-bold text-sm">
+                {tr('Net Income', '淨利', '净利')}
+              </span>
+              <span className={`font-bold text-sm ${(incomeStatement.net_income || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                HKD {(incomeStatement.net_income || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+            </div>
           </div>
 
-          {/* Expenses section */}
-          <div className="border-t">
-            <button
-              onClick={() => setExpandedPL(prev => ({ ...prev, expenses: !prev.expenses }))}
-              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition-colors text-left"
-            >
-              <span className="shrink-0 text-muted-foreground">
-                {expandedPL.expenses ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-              </span>
-              <span className="flex-1 font-medium text-sm">
-                {tr('Expenses', '支出', '支出')}
-              </span>
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800 border border-rose-200">
-                {(incomeStatement.expense_accounts || []).length} {tr('COA Accounts', '科目', '科目')}
-              </span>
-              <span className="font-semibold text-red-600 text-sm ml-2">
-                HKD {((incomeStatement.expenses || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-              </span>
-            </button>
-
-            {/* Expenses drill-down */}
-            {expandedPL.expenses && (
-              <div className="border-t bg-muted/10">
-                {(incomeStatement.expense_accounts || []).length === 0 ? (
-                  <p className="px-10 py-3 text-xs text-muted-foreground">
-                    {tr('No linked COA accounts', '沒有關聯科目', '没有关联科目')}
-                  </p>
-                ) : (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-xs text-muted-foreground">
-                        <th className="text-left py-2 px-4 font-medium">{tr('Account Code', '科目編號', '科目编号')}</th>
-                        <th className="text-left py-2 px-4 font-medium">{tr('Account Name', '科目名稱', '科目名称')}</th>
-                        <th className="text-right py-2 px-4 font-medium">{tr('Amount', '金額', '金额')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(incomeStatement.expense_accounts || []).map((acct: any) => (
-                        <tr key={acct.account_code} className="border-b border-muted/20 hover:bg-muted/30">
-                          <td className="py-1.5 px-4 font-mono text-xs">{acct.account_code}</td>
-                          <td className="py-1.5 px-4">{acct.account_name}</td>
-                          <td className="py-1.5 px-4 text-right font-mono text-red-600">
-                            HKD {(acct.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+          {/* Slide panel — transaction detail for selected account */}
+          <div className={`slide-panel ${selectedPLAccount ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0 pointer-events-none absolute'} lg:relative bg-card border rounded-xl overflow-hidden flex-1 max-w-md self-start`}>
+            {selectedPLAccount && (
+              <div className="flex flex-col max-h-[70vh]">
+                <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/20 shrink-0">
+                  <div>
+                    <span className="font-mono text-sm font-bold">{selectedPLAccount}</span>
+                    <span className="text-xs text-muted-foreground ml-2">
+                      {plTxFetching ? '…' : `${(plTransactions?.journal_entries?.length || 0) + (plTransactions?.bank_transactions?.length || 0)} entries`}
+                    </span>
+                  </div>
+                  <button onClick={() => setSelectedPLAccount(null)} className="p-1 hover:bg-muted rounded">
+                    <X className="h-4 w-4 text-muted-foreground" />
+                  </button>
+                </div>
+                <div className="overflow-y-auto p-4 space-y-3">
+                  {plTxFetching ? (
+                    <p className="text-sm text-muted-foreground text-center py-8">{tr('Loading…', '載入中…', '载入中…')}</p>
+                  ) : (
+                    <>
+                      {(plTransactions?.journal_entries || []).length > 0 && (
+                        <div>
+                          <h4 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider">
+                            {tr('Journal Entries', '日記帳分錄', '日记账分录')}
+                          </h4>
+                          <div className="space-y-2">
+                            {(plTransactions?.journal_entries || []).map((je: any, i: number) => (
+                              <div key={je.entry_id || i} className="bg-muted/30 rounded-lg p-2.5 text-xs">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="font-mono font-medium">{je.entry_number}</span>
+                                  <span className="text-muted-foreground">{je.entry_date}</span>
+                                </div>
+                                <p className="text-muted-foreground mb-1">{je.description || je.line_desc}</p>
+                                <div className="flex gap-3 font-mono">
+                                  {je.debit > 0 && <span className="text-blue-600">Dr {je.debit.toLocaleString()}</span>}
+                                  {je.credit > 0 && <span className="text-orange-600">Cr {je.credit.toLocaleString()}</span>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {(plTransactions?.bank_transactions || []).length > 0 && (
+                        <div>
+                          <h4 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider">
+                            {tr('Bank Transactions', '銀行交易', '银行交易')}
+                          </h4>
+                          <div className="space-y-2">
+                            {(plTransactions?.bank_transactions || []).map((bt: any, i: number) => (
+                              <div key={bt.id || i} className="bg-muted/30 rounded-lg p-2.5 text-xs">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-muted-foreground">{bt.transaction_date}</span>
+                                  {bt.match_status && <span className="px-1 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700">{bt.match_status}</span>}
+                                </div>
+                                <p className="text-muted-foreground mb-1">{bt.description}</p>
+                                <div className="flex gap-3 font-mono">
+                                  {bt.deposit_amount > 0 && <span className="text-green-600">{bt.deposit_amount.toLocaleString()}</span>}
+                                  {bt.withdrawal_amount > 0 && <span className="text-red-600">({bt.withdrawal_amount.toLocaleString()})</span>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {!(plTransactions?.journal_entries || []).length && !(plTransactions?.bank_transactions || []).length && (
+                        <p className="text-sm text-muted-foreground text-center py-8">
+                          {tr('No transactions for this account in this period.', '此期間該科目沒有交易。', '此期间该科目没有交易。')}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             )}
-          </div>
-
-          {/* Net Income — always visible */}
-          <div className="border-t flex justify-between items-center px-4 py-3 bg-muted/20">
-            <span className="font-bold text-sm">
-              {tr('Net Income', '淨利', '净利')}
-            </span>
-            <span className={`font-bold text-sm ${(incomeStatement.net_income || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              HKD {(incomeStatement.net_income || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-            </span>
           </div>
         </div>
       )}

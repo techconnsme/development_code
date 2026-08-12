@@ -60,6 +60,25 @@
     transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1),
                 min-width 300ms cubic-bezier(0.4, 0, 0.2, 1);
   }
+  /* Slide-down expand/collapse for P&L account lists */
+  .expand-collapse {
+    overflow: hidden;
+    transition: max-height 300ms cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .expand-collapse-open {
+    max-height: 2000px;
+    opacity: 1;
+  }
+  .expand-collapse-closed {
+    max-height: 0;
+    opacity: 0;
+  }
+  /* Slide-in panel (transaction detail in P&L) */
+  .slide-panel {
+    transition: transform 300ms cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
 }
 
 @keyframes slideInRight {

@@ -1024,6 +1024,41 @@ bookkeeping.get('/income-statement', async (c) => {
   });
 });
 
+// ── Drill-down: transactions for a single account code within a period ──
+bookkeeping.get('/income-statement/:code/transactions', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const code = c.req.param('code');
+  const startDate = c.req.query('start_date') || '2000-01-01';
+  const endDate = c.req.query('end_date') || new Date().toISOString().split('T')[0];
+
+  // Journal entries for this account in this period
+  const entries = await db.prepare(
+    `SELECT je.id as entry_id, je.entry_number, je.entry_date, je.description, je.status,
+            jl.debit, jl.credit, jl.description as line_desc
+     FROM journal_lines jl
+     JOIN journal_entries je ON jl.entry_id = je.id
+     WHERE je.user_id = ? AND jl.account_code = ? AND je.entry_date >= ? AND je.entry_date <= ? AND je.status != 'stale'
+     ORDER BY je.entry_date, je.entry_number`
+  ).bind(tenantId, code, startDate, endDate).all();
+
+  // Bank transactions coded to this account in this period
+  const bankTxns = await db.prepare(
+    `SELECT id, transaction_date, description, deposit_amount, withdrawal_amount, match_status
+     FROM bank_transactions
+     WHERE user_id = ? AND account_code = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL
+     ORDER BY transaction_date`
+  ).bind(tenantId, code, startDate, endDate).all();
+
+  return c.json({
+    account_code: code,
+    period: { start: startDate, end: endDate },
+    journal_entries: entries.results || [],
+    bank_transactions: bankTxns.results || [],
+  });
+});
+
 // Balance Sheet — Assets, Liabilities, and Equity as of a date
 bookkeeping.get('/balance-sheet', async (c) => {
   const user = c.get('user');
