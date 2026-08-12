@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useDateFilter } from '../contexts/DateFilterContext';
-import { FileSearch, GitCompare, ArrowLeftRight, Link2, GitMerge, FolderOpen, CalendarDays, Activity, ChevronRight } from 'lucide-react';
+import { FileSearch, GitCompare, ArrowLeftRight, Link2, GitMerge, FolderOpen, CalendarDays, Activity, ChevronRight, DollarSign } from 'lucide-react';
 import AdminDashboard from './AdminDashboard';
 import MatchSuggestionsModal from '../components/MatchSuggestionsModal';
 import { tr } from '../lib/i18nHelpers';
@@ -63,9 +63,9 @@ export default function Dashboard() {
       label: tr('Unreconciled', '未對賬', '未对账'),
       value: d.unmatched_transactions || 0,
       sub: (d.unmatched_transactions || 0) > 0
-        ? tr('Click to review suggestions', '點擊查看建議', '点击查看建议')
+        ? tr('Click to review bank statements', '點擊查看銀行月結單', '点击查看银行月结单')
         : tr('All matched!', '全部已匹配！', '全部已匹配！'),
-      onClick: () => setShowMatchModal(true),
+      onClick: () => navigate('/bank-statements'),
     },
   ];
 
@@ -103,6 +103,15 @@ export default function Dashboard() {
       sub: null as any,
       ap: d.ap_balance,
       ar: d.ar_balance,
+      progress: undefined as number | undefined,
+    },
+    {
+      key: 'cash', icon: DollarSign, color: '#10b981', textColor: 'text-green-600',
+      label: tr('Cash on Hand', '手頭現金', '手头现金'),
+      value: d.cash_balance != null
+        ? `HKD ${(d.cash_balance as number).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+        : '—',
+      sub: undefined as string | undefined,
       progress: undefined as number | undefined,
     },
   ];
@@ -149,8 +158,8 @@ export default function Dashboard() {
         })}
       </div>
 
-      {/* Row 2 — 4 cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Row 2 — link coverage + AP/AR + Cash */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         {statCardsRow2.map(s => {
           const Icon = s.icon;
           if (s.key === 'outstanding') {
@@ -160,10 +169,10 @@ export default function Dashboard() {
                   <Icon className="h-4 w-4" style={{ color: s.color }} />
                   {s.label}
                 </div>
-                <div className="text-lg font-bold">
+                <div className="text-base font-bold text-orange-600 dark:text-orange-400">
                   {tr('AP', '應付', '应付')}: {tr('HKD', '港幣', '港币')} {(s.ap || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </div>
-                <div className="text-xs text-muted-foreground mt-1">
+                <div className="text-base font-bold text-blue-600 dark:text-blue-400 mt-1">
                   {tr('AR', '應收', '应收')}: {tr('HKD', '港幣', '港币')} {(s.ar || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </div>
               </div>

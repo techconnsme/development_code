@@ -64,6 +64,20 @@ dashboard.get('/', async (c) => {
      WHERE je.user_id = ? AND jl.account_code LIKE '211%' AND je.status != 'stale' AND ${notOrphaned}`
   ).bind(tenantId).first<{ balance: number }>();
 
+  // AR/AP from unpaid invoices (fallback when no GL entries exist)
+  const arFromInvoices = await db.prepare(
+    `SELECT COALESCE(SUM(total), 0) as balance FROM invoices
+     WHERE user_id = ? AND direction = 'outgoing' AND status NOT IN ('paid','cancelled','void','draft')`
+  ).bind(tenantId).first<{ balance: number }>();
+  const apFromInvoices = await db.prepare(
+    `SELECT COALESCE(SUM(total), 0) as balance FROM invoices
+     WHERE user_id = ? AND direction = 'incoming' AND status NOT IN ('paid','cancelled','void','draft')`
+  ).bind(tenantId).first<{ balance: number }>();
+
+  // Use GL balances when available, otherwise fall back to unpaid invoice totals
+  const finalAR = (arBalance?.balance || 0) !== 0 ? (arBalance?.balance || 0) : (arFromInvoices?.balance || 0);
+  const finalAP = (apBalance?.balance || 0) !== 0 ? (apBalance?.balance || 0) : (apFromInvoices?.balance || 0);
+
   // Revenue MTD from GL
   const revFromGL = await db.prepare(
     `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount FROM journal_lines jl
@@ -156,8 +170,8 @@ dashboard.get('/', async (c) => {
 
   return c.json({
     cash_balance: cashBal,
-    ar_balance: arBalance?.balance || 0,
-    ap_balance: apBalance?.balance || 0,
+    ar_balance: finalAR,
+    ap_balance: finalAP,
     revenue_mtd: revenueMTD,
     expenses_mtd: expensesMTD,
     net_income_mtd: netIncomeMTD,

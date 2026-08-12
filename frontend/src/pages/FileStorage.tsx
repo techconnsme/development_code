@@ -174,8 +174,8 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                     )}
                     {f.category === 'invoice' && (f.vendor_name || f.customer_name) && (
                       ((f.direction || f.invoice_direction) === 'outgoing')
-                        ? <span className="text-[10px] text-muted-foreground truncate max-w-[200px]">{authUser?.company_name || 'You'} → {f.customer_name}</span>
-                        : <span className="text-[10px] text-muted-foreground truncate max-w-[200px]">{f.vendor_name} → {authUser?.company_name || 'You'}</span>
+                        ? <span className="text-[10px] text-muted-foreground block truncate" title={`${authUser?.company_name || 'You'} → ${f.customer_name || ''}`}>{authUser?.company_name || 'You'} → {f.customer_name}</span>
+                        : <span className="text-[10px] text-muted-foreground block truncate" title={`${f.vendor_name || ''} → ${authUser?.company_name || 'You'}`}>{f.vendor_name} → {authUser?.company_name || 'You'}</span>
                     )}
                     {f.ocr_status === 'encrypted' && (
                       <button
