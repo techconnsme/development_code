@@ -126,6 +126,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
   onUnlockEncrypted: (f: FileItem) => void;
 }) {
   const { t } = useTranslation();
+  const { user: authUser } = useAuth();
   const isExpanded = expanded.has(node.path) || depth === 0;
   const hasContent = node.children.length > 0 || node.files.length > 0;
 
@@ -172,12 +173,9 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                       <span className="font-mono">${f.amount.toLocaleString()}</span>
                     )}
                     {f.category === 'invoice' && (f.vendor_name || f.customer_name) && (
-                      <span className="text-[10px] text-muted-foreground truncate max-w-[180px]">
-                        {(f.direction || f.invoice_direction) === 'outgoing'
-                          ? `${tr('to', 'to 至', 'to 至')} ${f.customer_name || ''}`
-                          : `${tr('from', 'from 由', 'from 由')} ${f.vendor_name || ''}`
-                        }
-                      </span>
+                      ((f.direction || f.invoice_direction) === 'outgoing')
+                        ? <span className="text-[10px] text-muted-foreground truncate max-w-[200px]">{authUser?.company_name || 'You'} → {f.customer_name}</span>
+                        : <span className="text-[10px] text-muted-foreground truncate max-w-[200px]">{f.vendor_name} → {authUser?.company_name || 'You'}</span>
                     )}
                     {f.ocr_status === 'encrypted' && (
                       <button
