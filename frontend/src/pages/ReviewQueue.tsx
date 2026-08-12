@@ -2,6 +2,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
+import { useDateFilter } from '../contexts/DateFilterContext';
 import { Landmark, CreditCard, FileText, Calculator, CheckCircle2, ArrowRight, AlertTriangle, Info, Copy, AlertCircle } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 
@@ -59,9 +60,16 @@ function ReasonBadge({ reason }: { reason: string }) {
 export default function ReviewQueue() {
   const { i18n } = useTranslation();
 
+  const { startDate, endDate } = useDateFilter();
+
   const { data, isLoading } = useQuery<QueueData>({
-    queryKey: ['review-queue'],
-    queryFn: () => api('/review-queue') as Promise<QueueData>,
+    queryKey: ['review-queue', startDate, endDate],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (startDate) params.set('start_date', startDate);
+      if (endDate) params.set('end_date', endDate);
+      return api(`/review-queue?${params.toString()}`) as Promise<QueueData>;
+    },
     refetchInterval: 5000,
   });
 

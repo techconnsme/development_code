@@ -9,7 +9,7 @@ import CookieConsent from './CookieConsent';
 import TokenPopup from './TokenPopup';
 import CompanySwitcher from './FirmClientSwitcher';
 import DateFilterSelect from './DateFilterSelect';
-import { DateFilterProvider } from '../contexts/DateFilterContext';
+import { DateFilterProvider, useDateFilter } from '../contexts/DateFilterContext';
 import { tr } from '../lib/i18nHelpers';
 import {
   LayoutDashboard, Users, Truck, Package, FileText, FileSpreadsheet, Mail,
@@ -135,6 +135,23 @@ const NAV_FEATURE_MAP: Record<string, string> = {
   compliance: 'compliance',
 };
 
+/** Invisible component — runs the review-queue count query inside DateFilterProvider */
+function ReviewCountFetch({ onCount }: { onCount: (n: number) => void }) {
+  const { startDate, endDate } = useDateFilter();
+  const { data } = useQuery({
+    queryKey: ['review-queue-count', startDate, endDate],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (startDate) params.set('start_date', startDate);
+      if (endDate) params.set('end_date', endDate);
+      return api(`/review-queue/count?${params.toString()}`);
+    },
+    refetchInterval: 10000,
+  });
+  React.useEffect(() => { onCount((data?.total as number) || 0); }, [data?.total, onCount]);
+  return null;
+}
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { t, i18n } = useTranslation();
   const { user, logout, company, activeClient, isFirmUser } = useAuth();
@@ -201,12 +218,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   });
   const issueCount = (fileIssues?.issues as number) || 0;
 
-  const { data: reviewQueue } = useQuery({
-    queryKey: ['review-queue-count'],
-    queryFn: () => api('/review-queue/count'),
-    refetchInterval: 10000,
-  });
-  const reviewCount = (reviewQueue?.total as number) || 0;
+  const [sidebarReviewCount, setSidebarReviewCount] = React.useState(0);
+  const reviewCount = sidebarReviewCount;
 
   // Parse features from live company data (or fallback to AuthContext)
   const features: Record<string, boolean> = React.useMemo(() => {
@@ -423,6 +436,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <DateFilterProvider>
+    <ReviewCountFetch onCount={setSidebarReviewCount} />
     <div className="min-h-screen bg-background">
       {/* ====== MOBILE HEADER ====== */}
       <div className="lg:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between p-4 bg-background border-b">

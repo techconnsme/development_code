@@ -22,7 +22,16 @@ export default function Dashboard() {
     ? `?start_date=${startDate || ''}&end_date=${endDate || ''}`
     : '';
   const { data: dashData } = useQuery({ queryKey: ['dashboard', startDate, endDate], queryFn: () => api(`/dashboard${dashParams}`), refetchInterval: 30000 });
-  const { data: reviewCount } = useQuery({ queryKey: ['review-queue-count'], queryFn: () => api('/review-queue/count'), refetchInterval: 10000 });
+  const { data: reviewCount } = useQuery({
+    queryKey: ['review-queue-count', startDate, endDate],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (startDate) params.set('start_date', startDate);
+      if (endDate) params.set('end_date', endDate);
+      return api(`/review-queue/count?${params.toString()}`);
+    },
+    refetchInterval: 10000,
+  });
   const { data: linkStats } = useQuery({ queryKey: ['link-stats'], queryFn: () => api('/dashboard/link-stats'), refetchInterval: 30000 });
   const { data: fileData } = useQuery({ queryKey: ['file-storage'], queryFn: () => api('/file-storage?limit=5') });
 

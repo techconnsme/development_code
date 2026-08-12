@@ -11,59 +11,69 @@ rq.get('/', async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
   const limit = Math.min(parseInt(c.req.query('limit') || '100'), 200);
+  const startDate = c.req.query('start_date') || null;
+  const endDate = c.req.query('end_date') || null;
+
+  // Date filter fragments (applied to each table's relevant date column)
+  const bsDateFilter = startDate && endDate ? 'AND period_end >= ? AND period_end <= ?' : '';
+  const csDateFilter = startDate && endDate ? 'AND period_end >= ? AND period_end <= ?' : '';
+  const invDateFilter = startDate && endDate ? 'AND issue_date >= ? AND issue_date <= ?' : '';
+  const jeDateFilter = startDate && endDate ? 'AND entry_date >= ? AND entry_date <= ?' : '';
+
+  const dateParams = startDate && endDate ? [startDate, endDate] : [];
 
   // Bank statement drafts
   const bankDrafts = await db.prepare(
     `SELECT id, bank_name, account_number, period_start, period_end,
      balance_status, created_at
      FROM bank_statements
-     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'
+     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft' ${bsDateFilter}
      ORDER BY created_at DESC LIMIT ?`
-  ).bind(tenantId, limit).all();
+  ).bind(tenantId, ...dateParams, limit).all();
 
   // Card statement drafts
   const cardDrafts = await db.prepare(
     `SELECT id, card_issuer, card_number_last4, statement_year, statement_month,
      closing_balance, created_at
      FROM card_statements
-     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'
+     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft' ${csDateFilter}
      ORDER BY created_at DESC LIMIT ?`
-  ).bind(tenantId, limit).all();
+  ).bind(tenantId, ...dateParams, limit).all();
 
   // Invoices pending review
   const invoicePending = await db.prepare(
     `SELECT id, invoice_number, receipt_number, vendor_name, direction,
      needs_review, issue_date, total, created_at
      FROM invoices
-     WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != ''))
+     WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != '')) ${invDateFilter}
      ORDER BY created_at DESC LIMIT ?`
-  ).bind(tenantId, limit).all();
+  ).bind(tenantId, ...dateParams, limit).all();
 
   // Journal entries (draft or stale)
   const journalPending = await db.prepare(
     `SELECT id, entry_number, entry_date, description, reference_type, reference_id, status, created_at
      FROM journal_entries
-     WHERE user_id = ? AND status IN ('draft', 'stale')
+     WHERE user_id = ? AND status IN ('draft', 'stale') ${jeDateFilter}
      ORDER BY created_at DESC LIMIT ?`
-  ).bind(tenantId, limit).all();
+  ).bind(tenantId, ...dateParams, limit).all();
 
-  // Counts
+  // Counts (also date-filtered)
   const bankCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM bank_statements
-     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'`
-  ).bind(tenantId).first<{ cnt: number }>();
+     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft' ${bsDateFilter}`
+  ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const cardCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM card_statements
-     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'`
-  ).bind(tenantId).first<{ cnt: number }>();
+     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft' ${csDateFilter}`
+  ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const invoiceCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM invoices
-     WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != ''))`
-  ).bind(tenantId).first<{ cnt: number }>();
+     WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != '')) ${invDateFilter}`
+  ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const journalCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM journal_entries
-     WHERE user_id = ? AND status IN ('draft', 'stale')`
-  ).bind(tenantId).first<{ cnt: number }>();
+     WHERE user_id = ? AND status IN ('draft', 'stale') ${jeDateFilter}`
+  ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
 
   const counts = {
     bank_statements: bankCount?.cnt || 0,
@@ -149,23 +159,31 @@ rq.get('/count', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
+  const startDate = c.req.query('start_date') || null;
+  const endDate = c.req.query('end_date') || null;
+
+  const bsDateFilter = startDate && endDate ? 'AND period_end >= ? AND period_end <= ?' : '';
+  const csDateFilter = startDate && endDate ? 'AND period_end >= ? AND period_end <= ?' : '';
+  const invDateFilter = startDate && endDate ? 'AND issue_date >= ? AND issue_date <= ?' : '';
+  const jeDateFilter = startDate && endDate ? 'AND entry_date >= ? AND entry_date <= ?' : '';
+  const dateParams = startDate && endDate ? [startDate, endDate] : [];
 
   const bankCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM bank_statements
-     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'`
-  ).bind(tenantId).first<{ cnt: number }>();
+     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft' ${bsDateFilter}`
+  ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const cardCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM card_statements
-     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'`
-  ).bind(tenantId).first<{ cnt: number }>();
+     WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft' ${csDateFilter}`
+  ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const invoiceCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM invoices
-     WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != ''))`
-  ).bind(tenantId).first<{ cnt: number }>();
+     WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != '')) ${invDateFilter}`
+  ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const journalCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM journal_entries
-     WHERE user_id = ? AND status IN ('draft', 'stale')`
-  ).bind(tenantId).first<{ cnt: number }>();
+     WHERE user_id = ? AND status IN ('draft', 'stale') ${jeDateFilter}`
+  ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
 
   return c.json({
     total: (bankCount?.cnt || 0) + (cardCount?.cnt || 0) + (invoiceCount?.cnt || 0) + (journalCount?.cnt || 0),

@@ -46,32 +46,40 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     staleTime: 0,
   });
 
-  // Auto-expand, fetch details, and scroll to entry when ?entry=<id> is in URL
+  // Fetch a specific entry when ?entry=<id> is in the URL (from review queue).
+  // This bypasses the fiscal-year date filter so the entry is always visible.
   const entryParam = searchParams.get('entry');
+  const { data: highlightedEntry } = useQuery({
+    queryKey: ['entry', entryParam],
+    queryFn: () => api(`/bookkeeping/entries/${entryParam}`),
+    enabled: tab === 'entries' && !!entryParam,
+  });
+
+  // Auto-expand the highlighted entry row if it's in the table
   useEffect(() => {
     if (!entryParam || tab !== 'entries' || !entries?.data) return;
-    const entryId = entryParam;
-    // Expand and load detail lines if not already loaded
-    setExpandedId(entryId);
-    if (!entryDetails[entryId]) {
-      setLoadingDetail(entryId);
-      api(`/bookkeeping/entries/${entryId}`)
-        .then(d => setEntryDetails(prev => ({ ...prev, [entryId]: d.lines || [] })))
-        .catch(() => {})
-        .finally(() => setLoadingDetail(null));
-    }
-    // Scroll + highlight after React commits the expanded row
-    const tryScroll = (retries: number) => {
-      const row = document.getElementById(`entry-row-${entryId}`);
-      if (row) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        row.classList.add('ring-2', 'ring-blue-400', 'scroll-mt-20');
-        setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
-      } else if (retries > 0) {
-        setTimeout(() => tryScroll(retries - 1), 150);
+    const inTable = entries.data.find((e: any) => e.id === entryParam);
+    if (inTable) {
+      setExpandedId(entryParam);
+      if (!entryDetails[entryParam]) {
+        setLoadingDetail(entryParam);
+        api(`/bookkeeping/entries/${entryParam}`)
+          .then(d => setEntryDetails(prev => ({ ...prev, [entryParam]: d.lines || [] })))
+          .catch(() => {})
+          .finally(() => setLoadingDetail(null));
       }
-    };
-    tryScroll(5);
+      const tryScroll = (retries: number) => {
+        const row = document.getElementById(`entry-row-${entryParam}`);
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          row.classList.add('ring-2', 'ring-blue-400');
+          setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
+        } else if (retries > 0) {
+          setTimeout(() => tryScroll(retries - 1), 150);
+        }
+      };
+      tryScroll(5);
+    }
   }, [entryParam, tab, entries?.data]);
   // suppress exhaustive-deps: only re-run when the entry param actually changes
 
