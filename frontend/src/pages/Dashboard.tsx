@@ -5,121 +5,79 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useDateFilter } from '../contexts/DateFilterContext';
-import { FileSearch, GitCompare, ArrowLeftRight, Link2, GitMerge, FolderOpen, CalendarDays, Activity, ChevronRight, DollarSign } from 'lucide-react';
+import { FileSearch, GitCompare, ArrowLeftRight, Link2, GitMerge, FolderOpen, CalendarDays, Activity, ChevronRight, ChevronDown, DollarSign, TrendingUp, TrendingDown, FileText, Receipt } from 'lucide-react';
 import AdminDashboard from './AdminDashboard';
-import MatchSuggestionsModal from '../components/MatchSuggestionsModal';
 import { tr } from '../lib/i18nHelpers';
+
+// Small helper card used in the period rows
+function MiniCard({ icon: Icon, label, value, color, onClick }: {
+  icon: any; label: string; value: string; color: string; onClick?: () => void;
+}) {
+  return (
+    <div
+      onClick={onClick}
+      className={`bg-card border rounded-lg px-3 py-2 min-w-[120px] flex-1 ${onClick ? 'cursor-pointer hover:shadow-sm hover:border-primary/30 transition-shadow' : ''}`}
+      style={{ borderTop: `2px solid ${color}` }}
+    >
+      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-1">
+        <Icon className="h-3 w-3" style={{ color }} />
+        {label}
+      </div>
+      <div className="text-sm font-bold">{value}</div>
+    </div>
+  );
+}
+
+function Fmt(n: number) {
+  return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
 
 export default function Dashboard() {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { startDate, endDate, setSelectedFY, selectedFY } = useDateFilter();
 
   if (user?.role === 'admin') return <AdminDashboard />;
 
-  const { startDate, endDate } = useDateFilter();
   const dashParams = [startDate, endDate].filter(Boolean).length > 0
     ? `?start_date=${startDate || ''}&end_date=${endDate || ''}`
     : '';
   const { data: dashData } = useQuery({ queryKey: ['dashboard', startDate, endDate], queryFn: () => api(`/dashboard${dashParams}`), refetchInterval: 30000 });
-  const { data: reviewCount } = useQuery({
-    queryKey: ['review-queue-count', startDate, endDate],
-    queryFn: () => {
-      const params = new URLSearchParams();
-      if (startDate) params.set('start_date', startDate);
-      if (endDate) params.set('end_date', endDate);
-      return api(`/review-queue/count?${params.toString()}`);
-    },
-    refetchInterval: 10000,
-  });
-  const { data: linkStats } = useQuery({ queryKey: ['link-stats'], queryFn: () => api('/dashboard/link-stats'), refetchInterval: 30000 });
   const { data: fileData } = useQuery({ queryKey: ['file-storage'], queryFn: () => api('/file-storage?limit=5') });
 
   const d = dashData || {};
-  const rq = (reviewCount as any) || {};
-  const ls = (linkStats as any) || {};
   const files = (fileData?.data || []) as any[];
+  const periods = (d.period_comparison || []) as any[];
 
-  const [showMatchModal, setShowMatchModal] = useState(false);
+  // Convert period label like "FY 2025-26" to FY value like "2025-2026"
+  const periodToFY = (label: string) => {
+    const m = label.match(/FY\s+(\d{4})-(\d{2})/);
+    if (m) return `${m[1]}-20${m[2]}`;
+    return label;
+  };
 
-  // Row 1 — 2 cards
-  const statCardsRow1 = [
-    {
-      key: 'documents', icon: FileSearch, color: 'hsl(var(--primary))', textColor: 'text-primary',
-      label: tr('Documents to Review', '待檢視文件', '待检视文件'),
-      value: rq.total || 0,
-      sub: rq.total > 0
-        ? [
-            rq.counts?.bank_statements > 0 ? `${rq.counts.bank_statements} ${tr('bank', '銀行', '银行')}` : '',
-            rq.counts?.invoices > 0 ? `${rq.counts.invoices} ${tr('invoices', '發票', '发票')}` : '',
-            rq.counts?.card_statements > 0 ? `${rq.counts.card_statements} ${tr('cards', '信用卡', '信用卡')}` : '',
-            rq.counts?.journal_entries > 0 ? `${rq.counts.journal_entries} ${tr('JE', '分錄', '分录')}` : '',
-          ].filter(Boolean).join(' · ') || undefined
-        : undefined,
-      onClick: () => navigate('/review-queue'),
-    },
-    {
-      key: 'unreconciled', icon: GitCompare, color: '#ef4444', textColor: 'text-red-600',
-      label: tr('Unreconciled', '未對賬', '未对账'),
-      value: d.unmatched_transactions || 0,
-      sub: (d.unmatched_transactions || 0) > 0
-        ? tr('Click to review bank statements', '點擊查看銀行月結單', '点击查看银行月结单')
-        : tr('All matched!', '全部已匹配！', '全部已匹配！'),
-      onClick: () => navigate('/bank-statements'),
-    },
-  ];
+  const switchFY = (label: string) => {
+    const fy = periodToFY(label);
+    if (fy && fy !== selectedFY) setSelectedFY(fy);
+  };
 
-  // Row 2 — 4 cards (link coverage + AP/AR)
-  const bankPct = ls.bank?.pct ?? 0;
-  const invPct = ls.invoices?.pct ?? 0;
-  const chainPct = ls.full_chain?.pct ?? 0;
+  const [expandedPeriods, setExpandedPeriods] = useState<Set<string>>(() => {
+    // First period (current FY) expanded by default
+    if (periods.length > 0) return new Set([periods[0].label]);
+    return new Set();
+  });
 
-  const statCardsRow2 = [
-    {
-      key: 'bank-inv', icon: Link2, color: '#3b82f6', textColor: 'text-blue-600',
-      label: tr('Bank → Invoice Linked', '銀行→發票已連結', '银行→发票已连结'),
-      value: `${bankPct}%`,
-      sub: ls.bank ? `${ls.bank.linked} / ${ls.bank.total} ${tr('txns', '筆', '笔')}` : undefined,
-      progress: bankPct,
-    },
-    {
-      key: 'inv-receipt', icon: FileSearch, color: '#8b5cf6', textColor: 'text-purple-600',
-      label: tr('Invoice → Receipt Linked', '發票→收據已連結', '发票→收据已连结'),
-      value: `${invPct}%`,
-      sub: ls.invoices ? `${ls.invoices.linked_receipts} / ${ls.invoices.total} ${tr('invoices', '張發票', '张发票')}` : undefined,
-      progress: invPct,
-    },
-    {
-      key: 'full-chain', icon: GitMerge, color: '#10b981', textColor: 'text-green-600',
-      label: tr('Full Chain Linked', '完整鏈已連結', '完整链已连结'),
-      value: `${chainPct}%`,
-      sub: ls.full_chain ? `${ls.full_chain.count} ${tr('txns', '筆', '笔')}` : undefined,
-      progress: chainPct,
-    },
-    {
-      key: 'outstanding', icon: ArrowLeftRight, color: '#10b981', textColor: 'text-green-600',
-      label: tr('Outstanding AP / AR', '未清應付/應收', '未清应付/应收'),
-      value: null as any,
-      sub: null as any,
-      ap: d.ap_balance,
-      ar: d.ar_balance,
-      progress: undefined as number | undefined,
-    },
-    {
-      key: 'cash', icon: DollarSign, color: '#10b981', textColor: 'text-green-600',
-      label: tr('Cash on Hand', '手頭現金', '手头现金'),
-      value: d.cash_balance != null
-        ? `HKD ${(d.cash_balance as number).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
-        : '—',
-      sub: undefined as string | undefined,
-      progress: undefined as number | undefined,
-    },
-  ];
+  const togglePeriod = (label: string) => {
+    setExpandedPeriods(prev => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label); else next.add(label);
+      return next;
+    });
+  };
 
   // Compliance deadlines
   const deadlines = (d.upcoming_compliance || []) as any[];
-
-  // Recent activity from journal entries
   const recentEntries = (d.recent_entries || []) as any[];
 
   return (
@@ -136,70 +94,146 @@ export default function Dashboard() {
         </p>
       </div>
 
-      {/* Row 1 — 2 cards */}
-      <div className="grid grid-cols-2 gap-4">
-        {statCardsRow1.map(s => {
-          const Icon = s.icon;
-          return (
-            <button
-              key={s.key}
-              onClick={s.onClick}
-              className="bg-card border rounded-xl p-4 text-left hover:shadow-md transition-shadow cursor-pointer"
-              style={{ borderTop: `3px solid ${s.color}` }}
-            >
-              <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
-                <Icon className="h-4 w-4" style={{ color: s.color }} />
-                {s.label}
-              </div>
-              <div className="text-2xl font-bold">{s.value ?? '—'}</div>
-              {s.sub && <div className="text-xs text-muted-foreground mt-1">{s.sub}</div>}
-            </button>
-          );
-        })}
+      {/* ═══════════════════════════════════════════════════════════
+          SECTION 1 — CURRENT POSITION (always today, no FY filter)
+          ═══════════════════════════════════════════════════════════ */}
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+          {tr('Current Position', '當前狀況', '当前状况')}
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Cash on Hand */}
+          <button
+            onClick={() => navigate('/GJE')}
+            className="bg-card border rounded-xl p-4 text-left hover:shadow-md transition-shadow cursor-pointer"
+            style={{ borderTop: '3px solid #10b981' }}
+          >
+            <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
+              <DollarSign className="h-4 w-4 text-green-600" />
+              {tr('Cash on Hand', '手頭現金', '手头现金')}
+            </div>
+            <div className="text-2xl font-bold">
+              {d.cash_balance != null
+                ? `HKD ${(d.cash_balance as number).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                : '—'}
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {tr('Click to view GL entries', '點擊查看總帳分錄', '点击查看总账分录')}
+            </div>
+          </button>
+
+          {/* Outstanding AP / AR */}
+          <div className="bg-card border rounded-xl p-4" style={{ borderTop: '3px solid #10b981' }}>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
+              <ArrowLeftRight className="h-4 w-4 text-green-600" />
+              {tr('Outstanding AP / AR', '未清應付/應收', '未清应付/应收')}
+            </div>
+            <div className="text-base font-bold text-orange-600 dark:text-orange-400">
+              {tr('AP', '應付', '应付')}: HKD {(d.ap_balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            </div>
+            <div className="text-base font-bold text-blue-600 dark:text-blue-400 mt-1">
+              {tr('AR', '應收', '应收')}: HKD {(d.ar_balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            </div>
+          </div>
+
+          {/* Unreconciled */}
+          <button
+            onClick={() => navigate('/bank-statements')}
+            className="bg-card border rounded-xl p-4 text-left hover:shadow-md transition-shadow cursor-pointer"
+            style={{ borderTop: '3px solid #ef4444' }}
+          >
+            <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
+              <GitCompare className="h-4 w-4 text-red-600" />
+              {tr('Unreconciled', '未對賬', '未对账')}
+            </div>
+            <div className="text-2xl font-bold">{d.unmatched_transactions || 0}</div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {(d.unmatched_transactions || 0) > 0
+                ? tr('Click to review bank statements', '點擊查看銀行月結單', '点击查看银行月结单')
+                : tr('All matched!', '全部已匹配！', '全部已匹配！')}
+            </div>
+          </button>
+        </div>
       </div>
 
-      {/* Row 2 — link coverage + AP/AR + Cash */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        {statCardsRow2.map(s => {
-          const Icon = s.icon;
-          if (s.key === 'outstanding') {
+      {/* ═══════════════════════════════════════════════════════════
+          SECTION 2 — PERIODS (each with 7 tiles, 2 rows, flex-wrap)
+          ═══════════════════════════════════════════════════════════ */}
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+          {tr('Period Summary', '期間摘要', '期间摘要')}
+        </h3>
+        <div className="space-y-3">
+          {periods.map((p: any, idx: number) => {
+            const isExpanded = expandedPeriods.has(p.label);
+            const isCurrent = idx === 0;
             return (
-              <div key={s.key} className="bg-card border rounded-xl p-4" style={{ borderTop: `3px solid ${s.color}` }}>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
-                  <Icon className="h-4 w-4" style={{ color: s.color }} />
-                  {s.label}
-                </div>
-                <div className="text-base font-bold text-orange-600 dark:text-orange-400">
-                  {tr('AP', '應付', '应付')}: {tr('HKD', '港幣', '港币')} {(s.ap || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </div>
-                <div className="text-base font-bold text-blue-600 dark:text-blue-400 mt-1">
-                  {tr('AR', '應收', '应收')}: {tr('HKD', '港幣', '港币')} {(s.ar || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </div>
+              <div key={p.label} className={`border rounded-xl overflow-hidden ${isCurrent ? 'bg-card' : 'bg-muted/30'}`}>
+                {/* Period header */}
+                <button
+                  onClick={() => { togglePeriod(p.label); if (!isExpanded) switchFY(p.label); }}
+                  className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-muted/50 transition-colors"
+                >
+                  <span className={`font-semibold text-sm ${isCurrent ? '' : 'text-muted-foreground'}`}>
+                    {p.label}
+                    {isCurrent && (
+                      <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+                        ({tr('current', '當前', '当前')})
+                      </span>
+                    )}
+                  </span>
+                  {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                </button>
+
+                {/* Period tiles (collapsible) */}
+                {isExpanded && (
+                  <div className="px-4 pb-4 space-y-2">
+                    {/* Row 1: Docs, Revenue, Expenses, Net P&L */}
+                    <div className="flex flex-wrap gap-2">
+                      <MiniCard
+                        icon={FileSearch} color="#6366f1"
+                        label="Docs to Review" value={String(p.review_count || 0)}
+                        onClick={() => { switchFY(p.label); navigate('/review-queue'); }}
+                      />
+                      <MiniCard
+                        icon={TrendingUp} color="#22c55e"
+                        label="Revenue" value={`HKD ${Fmt(p.revenue || 0)}`}
+                      />
+                      <MiniCard
+                        icon={TrendingDown} color="#ef4444"
+                        label="Expenses" value={`HKD ${Fmt(p.expenses || 0)}`}
+                      />
+                      <MiniCard
+                        icon={Activity} color={p.net_income >= 0 ? '#10b981' : '#ef4444'}
+                        label="Net P&L" value={`HKD ${Fmt(p.net_income || 0)}`}
+                      />
+                    </div>
+                    {/* Row 2: Bank→Inv, Inv→Rec, Full Chain */}
+                    <div className="flex flex-wrap gap-2">
+                      <MiniCard
+                        icon={Link2} color="#3b82f6"
+                        label="Bank → Invoice" value={`${p.bank_pct || 0}%`}
+                      />
+                      <MiniCard
+                        icon={Receipt} color="#8b5cf6"
+                        label="Inv → Receipt" value={`${p.invoice_pct || 0}%`}
+                      />
+                      <MiniCard
+                        icon={GitMerge} color="#10b981"
+                        label="Full Chain" value={`${p.chain_pct || 0}%`}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             );
-          }
-          return (
-            <div key={s.key} className="bg-card border rounded-xl p-4" style={{ borderTop: `3px solid ${s.color}` }}>
-              <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
-                <Icon className="h-4 w-4" style={{ color: s.color }} />
-                {s.label}
-              </div>
-              <div className="text-2xl font-bold">{s.value ?? '—'}</div>
-              {s.progress !== undefined && (
-                <div className="mt-2 h-1.5 bg-muted rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{ width: `${Math.min(s.progress, 100)}%`, backgroundColor: s.color }}
-                  />
-                </div>
-              )}
-              {s.sub && <div className="text-xs text-muted-foreground mt-1">{s.sub}</div>}
-            </div>
-          );
-        })}
+          })}
+        </div>
       </div>
 
-      {/* Dashboard Body */}
+      {/* ═══════════════════════════════════════════════════════════
+          SECTION 3 — LISTS (unchanged)
+          ═══════════════════════════════════════════════════════════ */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Recent Documents */}
         <div className="bg-card border rounded-xl p-4">
@@ -293,11 +327,6 @@ export default function Dashboard() {
           )}
         </div>
       </div>
-
-      {/* Match Suggestions Modal */}
-      {showMatchModal && (
-        <MatchSuggestionsModal onClose={() => setShowMatchModal(false)} />
-      )}
     </div>
   );
 }

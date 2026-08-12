@@ -29,7 +29,7 @@ dashboard.get('/', async (c) => {
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
      WHERE je.user_id = ? AND jl.account_code LIKE '111%' AND je.status != 'stale' AND ${notOrphaned}`
-  ).bind(tenantId).first<{ balance: number }>();
+  ).bind(tenantId).first() as any;
 
   // Cash balance — use latest confirmed closing balance per bank account (correct accounting approach)
   // Lily test N02/P1: dashboard was showing movement-based sum instead of latest closing balance
@@ -48,31 +48,31 @@ dashboard.get('/', async (c) => {
          AND bs.period_end = latest.max_period
        WHERE bs.user_id = ? AND bs.deleted_at IS NULL
      )`
-  ).bind(tenantId, tenantId).first<{ balance: number }>();
+  ).bind(tenantId, tenantId).first() as any;
 
   // Accounts Receivable from GL
   const arBalance = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
      WHERE je.user_id = ? AND jl.account_code LIKE '112%' AND je.status != 'stale' AND ${notOrphaned}`
-  ).bind(tenantId).first<{ balance: number }>();
+  ).bind(tenantId).first() as any;
 
   // Accounts Payable from GL
   const apBalance = await db.prepare(
     `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
      WHERE je.user_id = ? AND jl.account_code LIKE '211%' AND je.status != 'stale' AND ${notOrphaned}`
-  ).bind(tenantId).first<{ balance: number }>();
+  ).bind(tenantId).first() as any;
 
   // AR/AP from unpaid invoices (fallback when no GL entries exist)
   const arFromInvoices = await db.prepare(
     `SELECT COALESCE(SUM(total), 0) as balance FROM invoices
      WHERE user_id = ? AND direction = 'outgoing' AND status NOT IN ('paid','cancelled','void','draft')`
-  ).bind(tenantId).first<{ balance: number }>();
+  ).bind(tenantId).first() as any;
   const apFromInvoices = await db.prepare(
     `SELECT COALESCE(SUM(total), 0) as balance FROM invoices
      WHERE user_id = ? AND direction = 'incoming' AND status NOT IN ('paid','cancelled','void','draft')`
-  ).bind(tenantId).first<{ balance: number }>();
+  ).bind(tenantId).first() as any;
 
   // Use GL balances when available, otherwise fall back to unpaid invoice totals
   const finalAR = (arBalance?.balance || 0) !== 0 ? (arBalance?.balance || 0) : (arFromInvoices?.balance || 0);
@@ -84,7 +84,7 @@ dashboard.get('/', async (c) => {
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND je.status != 'stale' AND ${notOrphaned}`
-  ).bind(tenantId, periodStart, periodEnd).first<{ amount: number }>();
+  ).bind(tenantId, periodStart, periodEnd).first() as any;
 
   // Expenses MTD from GL
   const expFromGL = await db.prepare(
@@ -92,38 +92,38 @@ dashboard.get('/', async (c) => {
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale' AND ${notOrphaned}`
-  ).bind(tenantId, periodStart, periodEnd).first<{ amount: number }>();
+  ).bind(tenantId, periodStart, periodEnd).first() as any;
 
   // Revenue MTD from bank (deposits this month)
   const revFromBank = await db.prepare(
     `SELECT COALESCE(SUM(deposit_amount), 0) as amount
      FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL`
-  ).bind(tenantId, periodStart, periodEnd).first<{ amount: number }>();
+  ).bind(tenantId, periodStart, periodEnd).first() as any;
 
   // Expenses MTD from bank (withdrawals this month)
   const expFromBank = await db.prepare(
     `SELECT COALESCE(SUM(withdrawal_amount), 0) as amount
      FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL`
-  ).bind(tenantId, periodStart, periodEnd).first<{ amount: number }>();
+  ).bind(tenantId, periodStart, periodEnd).first() as any;
 
   // Unmatched bank transactions count
   const unmatchedCount = await db.prepare(
     "SELECT COUNT(*) as cnt FROM bank_transactions WHERE user_id = ? AND match_status = 'unmatched' AND deleted_at IS NULL"
-  ).bind(tenantId).first<{ cnt: number }>();
+  ).bind(tenantId).first() as any;
 
   // Review queue total (same 4 queries as review-queue.ts /count)
   const reviewBank = await db.prepare(
     "SELECT COUNT(*) as cnt FROM bank_statements WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'"
-  ).bind(tenantId).first<{ cnt: number }>();
+  ).bind(tenantId).first() as any;
   const reviewCard = await db.prepare(
     "SELECT COUNT(*) as cnt FROM card_statements WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'"
-  ).bind(tenantId).first<{ cnt: number }>();
+  ).bind(tenantId).first() as any;
   const reviewInv = await db.prepare(
     "SELECT COUNT(*) as cnt FROM invoices WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != ''))"
-  ).bind(tenantId).first<{ cnt: number }>();
+  ).bind(tenantId).first() as any;
   const reviewJE = await db.prepare(
     "SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND status IN ('draft', 'stale')"
-  ).bind(tenantId).first<{ cnt: number }>();
+  ).bind(tenantId).first() as any;
   const reviewQueueTotal = (reviewBank?.cnt || 0) + (reviewCard?.cnt || 0) + (reviewInv?.cnt || 0) + (reviewJE?.cnt || 0);
 
   // Recent journal entries
@@ -149,7 +149,7 @@ dashboard.get('/', async (c) => {
     `SELECT COUNT(*) as count, COALESCE(SUM(cost),0) as total_cost,
      COALESCE(SUM(accumulated_depreciation),0) as total_acc_depn, COALESCE(SUM(net_book_value),0) as total_nbv
      FROM fixed_assets WHERE user_id = ? AND is_active = 1`
-  ).bind(tenantId).first<{ count: number; total_cost: number; total_acc_depn: number; total_nbv: number }>();
+  ).bind(tenantId).first() as any;
 
   // Decide source: use GL figures if they exist (non-zero), otherwise fall back to bank transactions.
   // This handles the common case where bank statements are imported but GL journals haven't been posted yet.
@@ -168,6 +168,115 @@ dashboard.get('/', async (c) => {
   const expensesMTD = useGL ? glExpenses : bankExpenses;
   const netIncomeMTD = revenueMTD - expensesMTD;
 
+  // ── Period comparison: current FY + 2 previous ──
+  const periodComparison: any[] = [];
+  if (periodStart && periodEnd) {
+    const startDate = new Date(periodStart);
+    const endDate = new Date(periodEnd);
+    const periodLength = endDate.getTime() - startDate.getTime(); // ms in one FY
+
+    for (let offset = 0; offset < 3; offset++) {
+      const pStart = new Date(startDate.getTime() - offset * periodLength);
+      const pEnd = new Date(endDate.getTime() - offset * periodLength);
+      const ps = pStart.toISOString().split('T')[0];
+      const pe = pEnd.toISOString().split('T')[0];
+
+      // Label: "FY 2025-26" or "FY 2024-25"
+      const sy = pStart.getFullYear();
+      const ey = pEnd.getFullYear();
+      const label = `FY ${sy}-${String(ey).slice(2)}`;
+
+      // Revenue for this period
+      const pRev = useGL
+        ? ((await db.prepare(
+            `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount FROM journal_lines jl
+             JOIN journal_entries je ON jl.entry_id = je.id
+             JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+             WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND je.status != 'stale' AND ${notOrphaned}`
+          ).bind(tenantId, ps, pe).first() as any)?.amount || 0)
+        : ((await db.prepare(
+            `SELECT COALESCE(SUM(deposit_amount), 0) as amount FROM bank_transactions
+             WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL`
+          ).bind(tenantId, ps, pe).first() as any)?.amount || 0);
+
+      // Expenses for this period
+      const pExp = useGL
+        ? ((await db.prepare(
+            `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
+             JOIN journal_entries je ON jl.entry_id = je.id
+             JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+             WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale' AND ${notOrphaned}`
+          ).bind(tenantId, ps, pe).first() as any)?.amount || 0)
+        : ((await db.prepare(
+            `SELECT COALESCE(SUM(withdrawal_amount), 0) as amount FROM bank_transactions
+             WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL`
+          ).bind(tenantId, ps, pe).first() as any)?.amount || 0);
+
+      // Review count for this period (run 4 separate counts, simpler than UNION)
+      const pRevBank = (await db.prepare(
+        `SELECT COUNT(*) as cnt FROM bank_statements WHERE user_id=? AND deleted_at IS NULL AND status='draft' AND period_end>=? AND period_end<=?`
+      ).bind(tenantId, ps, pe).first()) as any;
+      const pRevCard = (await db.prepare(
+        `SELECT COUNT(*) as cnt FROM card_statements WHERE user_id=? AND deleted_at IS NULL AND status='draft' AND period_end>=? AND period_end<=?`
+      ).bind(tenantId, ps, pe).first()) as any;
+      const pRevInv = (await db.prepare(
+        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND (status='pending_review' OR (needs_review IS NOT NULL AND needs_review!='')) AND issue_date>=? AND issue_date<=?`
+      ).bind(tenantId, ps, pe).first()) as any;
+      const pRevJE = (await db.prepare(
+        `SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id=? AND status IN ('draft','stale') AND entry_date>=? AND entry_date<=?`
+      ).bind(tenantId, ps, pe).first()) as any;
+      const pReview = (pRevBank?.cnt || 0) + (pRevCard?.cnt || 0) + (pRevInv?.cnt || 0) + (pRevJE?.cnt || 0);
+
+      // Unmatched bank txns in this period
+      const pUnmatched = ((await db.prepare(
+        `SELECT COUNT(*) as cnt FROM bank_transactions
+         WHERE user_id = ? AND match_status = 'unmatched' AND deleted_at IS NULL
+         AND transaction_date >= ? AND transaction_date <= ?`
+      ).bind(tenantId, ps, pe).first() as any)?.cnt || 0);
+
+      // Link stats for this period
+      const pBankTotal = (await db.prepare(
+        `SELECT COUNT(*) as cnt FROM bank_transactions WHERE user_id=? AND deleted_at IS NULL AND transaction_date>=? AND transaction_date<=?`
+      ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
+      const pBankLinked = (await db.prepare(
+        `SELECT COUNT(*) as cnt FROM bank_transactions WHERE user_id=? AND deleted_at IS NULL AND invoice_id IS NOT NULL AND transaction_date>=? AND transaction_date<=?`
+      ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
+      const pInvTotal = (await db.prepare(
+        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND receipt_number IS NULL AND issue_date>=? AND issue_date<=?`
+      ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
+      const pInvLinked = (await db.prepare(
+        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND receipt_number IS NULL AND linked_invoice_id IS NOT NULL AND issue_date>=? AND issue_date<=?`
+      ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
+      const pChainCount = (await db.prepare(
+        `SELECT COUNT(*) as cnt FROM bank_transactions bt
+         JOIN invoices inv ON bt.invoice_id = inv.id
+         JOIN invoices rec ON rec.linked_invoice_id = inv.id AND rec.receipt_number IS NOT NULL
+         WHERE bt.user_id=? AND bt.deleted_at IS NULL AND bt.transaction_date>=? AND bt.transaction_date<=?`
+      ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
+
+      const pPct = (n: number, d: number) => d > 0 ? Math.round(n / d * 1000) / 10 : 0;
+
+      periodComparison.push({
+        label,
+        start_date: ps,
+        end_date: pe,
+        revenue: Math.round(pRev * 100) / 100,
+        expenses: Math.round(pExp * 100) / 100,
+        net_income: Math.round((pRev - pExp) * 100) / 100,
+        review_count: pReview,
+        unmatched_count: pUnmatched,
+        bank_total: pBankTotal,
+        bank_linked: pBankLinked,
+        bank_pct: pPct(pBankLinked, pBankTotal),
+        invoice_total: pInvTotal,
+        invoice_linked: pInvLinked,
+        invoice_pct: pPct(pInvLinked, pInvTotal),
+        chain_count: pChainCount,
+        chain_pct: pPct(pChainCount, pBankTotal),
+      });
+    }
+  }
+
   return c.json({
     cash_balance: cashBal,
     ar_balance: finalAR,
@@ -182,6 +291,7 @@ dashboard.get('/', async (c) => {
     upcoming_compliance: upcomingCompliance.results,
     as_of: today,
     source,
+    period_comparison: periodComparison,
   });
 });
 
@@ -196,14 +306,14 @@ dashboard.get('/link-stats', async (c) => {
     `SELECT COUNT(*) as total,
      COALESCE(SUM(CASE WHEN invoice_id IS NOT NULL THEN 1 ELSE 0 END), 0) as linked
      FROM bank_transactions WHERE user_id = ? AND deleted_at IS NULL`
-  ).bind(tenantId).first<{ total: number; linked: number }>();
+  ).bind(tenantId).first() as any;
 
   // Invoices (non-receipt): total + linked to a receipt via linked_invoice_id
   const invStats = await db.prepare(
     `SELECT COUNT(*) as total,
      COALESCE(SUM(CASE WHEN linked_invoice_id IS NOT NULL THEN 1 ELSE 0 END), 0) as linked_receipts
      FROM invoices WHERE user_id = ? AND receipt_number IS NULL AND deleted_at IS NULL`
-  ).bind(tenantId).first<{ total: number; linked_receipts: number }>();
+  ).bind(tenantId).first() as any;
 
   // Full chain: bank transaction → invoice → receipt
   const chainStats = await db.prepare(
@@ -216,7 +326,7 @@ dashboard.get('/link-stats', async (c) => {
        WHERE r.linked_invoice_id = bt.invoice_id
        AND r.receipt_number IS NOT NULL AND r.deleted_at IS NULL
      )`
-  ).bind(tenantId).first<{ full_chain: number }>();
+  ).bind(tenantId).first() as any;
 
   const bankTotal = bankStats?.total || 0;
   const bankLinked = bankStats?.linked || 0;
