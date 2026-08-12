@@ -280,7 +280,7 @@ bank.post('/auto-match', async (c) => {
 
   // Fetch unpaid invoices with direction
   const allInvoices = await db.prepare(
-    `SELECT id, invoice_number, total, currency, issue_date, due_date, direction
+    `SELECT id, invoice_number, total, currency, issue_date, due_date, direction, file_id
      FROM invoices
      WHERE user_id = ? AND status NOT IN ('paid', 'cancelled')`
   ).bind(tenantId).all();
@@ -336,9 +336,13 @@ bank.post('/auto-match', async (c) => {
         `UPDATE bank_transactions SET invoice_id = ?, match_confidence = ?, match_status = 'suggested' WHERE id = ? AND deleted_at IS NULL`
       ).bind(bestMatch.id, bestConfidence, tx.id).run();
 
+      const stmt = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
+      const stmtFile = stmt?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt.r2_key, tenantId).first() as any : null;
       matched.push({ transaction_id: tx.id, invoice_id: bestMatch.id,
         invoice_number: bestMatch.invoice_number, amount: tx.deposit_amount,
-        confidence: bestConfidence, reason, direction: 'deposit→AR' });
+        confidence: bestConfidence, reason, direction: 'deposit→AR',
+        invoice_file_id: bestMatch.file_id || null,
+        stmt_file_id: stmtFile?.id || null });
       usedInvoiceIds.add(bestMatch.id);
     }
   }
@@ -358,9 +362,13 @@ bank.post('/auto-match', async (c) => {
         `UPDATE bank_transactions SET invoice_id = ?, match_confidence = ?, match_status = 'suggested' WHERE id = ? AND deleted_at IS NULL`
       ).bind(bestMatch.id, bestConfidence, tx.id).run();
 
+      const stmt2 = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
+      const stmtFile2 = stmt2?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt2.r2_key, tenantId).first() as any : null;
       matched.push({ transaction_id: tx.id, invoice_id: bestMatch.id,
         invoice_number: bestMatch.invoice_number, amount: tx.withdrawal_amount,
-        confidence: bestConfidence, reason, direction: 'withdrawal→AP' });
+        confidence: bestConfidence, reason, direction: 'withdrawal→AP',
+        invoice_file_id: bestMatch.file_id || null,
+        stmt_file_id: stmtFile2?.id || null });
       usedInvoiceIds.add(bestMatch.id);
     }
   }
