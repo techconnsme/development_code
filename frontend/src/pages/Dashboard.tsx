@@ -43,7 +43,7 @@ export default function Dashboard() {
   const dashParams = [startDate, endDate].filter(Boolean).length > 0
     ? `?start_date=${startDate || ''}&end_date=${endDate || ''}`
     : '';
-  const { data: dashData } = useQuery({ queryKey: ['dashboard', startDate, endDate], queryFn: () => api(`/dashboard${dashParams}`), refetchInterval: 30000 });
+  const { data: dashData, isFetching: dashFetching } = useQuery({ queryKey: ['dashboard', startDate, endDate], queryFn: () => api(`/dashboard${dashParams}`), refetchInterval: 30000, placeholderData: (prev: any) => prev });
   const { data: fileData } = useQuery({ queryKey: ['file-storage'], queryFn: () => api('/file-storage?limit=5') });
 
   const d = dashData || {};
@@ -82,8 +82,13 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold">{tr('Welcome back', '歡迎回來', '欢迎回来')}, {user?.name}</h2>
+      <div className={`transition-opacity duration-200 ${dashFetching && dashData ? 'opacity-70' : ''}`}>
+        <h2 className="text-2xl font-bold flex items-center gap-2">
+          {tr('Welcome back', '歡迎回來', '欢迎回来')}, {user?.name}
+          {dashFetching && dashData && (
+            <span className="inline-block w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          )}
+        </h2>
         <p className="text-muted-foreground mt-1">
           {tr('Review your outstanding tasks, documents, and reconciliation items.', '檢視您的待辦任務、文件及對賬項目。', '检视您的待办任务、文件及对账项目。')}
           {d.source === 'bank' && (
