@@ -137,7 +137,7 @@ async function main() {
       const base64 = readBase64(bs.file);
       const upload = await api('/file-storage/upload', {
         method: 'POST',
-        body: { file_name: path.basename(bs.file), file_type: 'application/pdf', file_data: base64, folder: 'bank_statements' },
+        body: { filename: path.basename(bs.file), file_type: 'application/pdf', file_data: base64, folder: 'bank_statements' },
       });
       const importResult = await api(`/file-storage/${upload.id}/import-document`, { method: 'POST' });
       if (!importResult.statement_id) {
@@ -174,7 +174,7 @@ async function main() {
       const base64 = readBase64(inv.file);
       const upload = await api('/file-storage/upload', {
         method: 'POST',
-        body: { file_name: path.basename(inv.file), file_type: 'application/pdf', file_data: base64, folder: 'invoices' },
+        body: { filename: path.basename(inv.file), file_type: 'application/pdf', file_data: base64, folder: 'invoices' },
       });
       const importResult = await api(`/file-storage/${upload.id}/import-document`, { method: 'POST' });
       const invoiceId = importResult.invoice_id || importResult.id;
@@ -208,7 +208,7 @@ async function main() {
       const base64 = readBase64(inv.file);
       const upload = await api('/file-storage/upload', {
         method: 'POST',
-        body: { file_name: path.basename(inv.file), file_type: 'application/pdf', file_data: base64, folder: 'invoices' },
+        body: { filename: path.basename(inv.file), file_type: 'application/pdf', file_data: base64, folder: 'invoices' },
       });
       const importResult = await api(`/file-storage/${upload.id}/import-document`, { method: 'POST' });
       const invoiceId = importResult.invoice_id || importResult.id;
@@ -240,7 +240,7 @@ async function main() {
       const base64 = readBase64(rct.file);
       const upload = await api('/file-storage/upload', {
         method: 'POST',
-        body: { file_name: path.basename(rct.file), file_type: 'application/pdf', file_data: base64, folder: 'receipts' },
+        body: { filename: path.basename(rct.file), file_type: 'application/pdf', file_data: base64, folder: 'receipts' },
       });
       const importResult = await api(`/file-storage/${upload.id}/import-document`, { method: 'POST' });
       const invoiceId = importResult.invoice_id || importResult.id;
