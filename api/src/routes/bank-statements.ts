@@ -895,7 +895,7 @@ bank.get('/:id', async (c) => {
   const stmt = await c.env.DB.prepare(
     `SELECT id, file_name, bank_name, account_number, branch, currency, account_type,
      statement_year, statement_month, period_start, period_end,
-     opening_balance, closing_balance, page_count, ocr_text, status,
+     opening_balance, closing_balance, page_count, ocr_text, ocr_source, status,
      balance_status, balance_check, created_at
      FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
   ).bind(c.req.param('id'), tenantId).first();

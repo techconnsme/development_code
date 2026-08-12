@@ -513,7 +513,7 @@ card.get('/:id', async (c) => {
     `SELECT id, file_name, card_issuer, card_network, card_number_last4, cardholder_name, currency,
             statement_year, statement_month, period_start, period_end,
             credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date,
-            ocr_text, status, balance_status, balance_check, created_at
+            ocr_text, ocr_source, status, balance_status, balance_check, created_at
      FROM card_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
   ).bind(id, tenantId).first();
   if (!stmt) return c.json({ error: 'Not found' }, 404);

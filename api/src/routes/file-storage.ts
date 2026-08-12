@@ -355,13 +355,13 @@ ${inputOcrText.slice(0, 8000)}` }],
     `INSERT INTO bank_statements (id, user_id, file_name, file_type, r2_key,
      bank_name, account_number, currency,
      statement_year, statement_month, period_start, period_end,
-     opening_balance, closing_balance, ocr_text, status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     opening_balance, closing_balance, ocr_text, ocr_source, status)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(stmtId, userId, String(fileRow.original_name || fileRow.filename || 'statement.pdf'), String(fileRow.file_type || 'application/pdf'),
     String(fileRow.r2_key || ''), String(bankName || ''), String(accountNumber || ''), String(currency || 'HKD'),
     stmtYear || null, stmtMonth || null, periodStart || null, periodEnd || null,
     typeof openingBal === 'number' ? openingBal : null, typeof closingBal === 'number' ? closingBal : null, String(ocrText || ''),
-    'active'  // tentative — will update after balance check
+    ocrSource, 'active'  // tentative — will update after balance check
   ).run();
 
   let txCount = 0;
@@ -1104,6 +1104,7 @@ async function importInvoiceFromFile(
   ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string; category: string; direction: string }>();
   if (!fileRow) return { success: false, error: 'File not found' };
 
+  let ocrSource: 'tomarkdown' | 'glm-ocr' = 'tomarkdown';
   let ocrText = fileRow.ocr_text || '';
   if (!ocrText || ocrText.length < 20) {
     const obj = await fileBucket.get(fileRow.r2_key);
@@ -1128,7 +1129,7 @@ async function importInvoiceFromFile(
             glmUsage = glmData.usage || null;
             const candidate = extractTextFromGlmOcr(glmData);
             console.log('[OCR|GLM-OCR] Invoice result:', candidate.slice(0, 200));
-            if (candidate && candidate.length > 20) ocrText = candidate;
+            if (candidate && candidate.length > 20) { ocrText = candidate; ocrSource = 'glm-ocr'; }
           }
         } catch {}
       }
@@ -1506,6 +1507,7 @@ ${ocrText.slice(0, 8000)}`;
                 companyNotDetected = false;
                 glmUsage = glmData.usage || null;
                 ocrText = glmFormatted; // Use GLM OCR text going forward
+                ocrSource = 'glm-ocr';
               } else {
                 console.log('[DS-INVOICE|glm-ocr] Still uncertain, keeping original');
               }
@@ -1727,9 +1729,9 @@ ${ocrText.slice(0, 8000)}`;
   // Clean imports → 'active' (auto-confirmed). Needs-review imports → 'pending_review'.
   const invStatus = needsReview ? 'pending_review' : 'active';
   await db.prepare(
-    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref, discount_amount, tax_rate, tax_amount)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(invId, userId, invNumber, customerId, supplierId || null, invStatus, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef, llmDiscount || 0, parsed?.tax_rate || 0, (parsed?.tax_amount || parsed?.tax) || 0).run();
+    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref, discount_amount, tax_rate, tax_amount, ocr_source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(invId, userId, invNumber, customerId, supplierId || null, invStatus, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef, llmDiscount || 0, parsed?.tax_rate || 0, (parsed?.tax_amount || parsed?.tax) || 0, ocrSource).run();
   console.log('[INVOICE-CREATED] id:', invId, '| direction:', direction, '| status:', invStatus, '| needsReview:', needsReview, '| vendor:', customerName, '| total:', total, '| currency:', parsed?.currency || 'HKD');
 
   // Auto-link: if this is a receipt, try to find a matching invoice by amount
@@ -1785,6 +1787,7 @@ ${ocrText.slice(0, 8000)}`;
     total_mismatch: totalMismatch,
     discount_amount: llmDiscount || 0,
     discount_description: llmDiscountDesc,
+    ocr_source: ocrSource,
     usage,
     glm_usage: glmUsage,
     deepseek_raw: deepseekRaw,
@@ -2948,6 +2951,8 @@ async function importCardStatementFromFile(
   ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string }>();
   if (!fileRow) return { success: false, error: 'File not found' };
 
+  let ocrSource: 'tomarkdown' | 'glm-ocr' = 'tomarkdown';
+
   // Duplicate check
   const existing = await db.prepare(
     'SELECT id, card_issuer, period_start, period_end, file_name FROM card_statements WHERE user_id = ? AND r2_key = ? AND deleted_at IS NULL'
@@ -3130,6 +3135,7 @@ ${ocrText.slice(0, 12000)}` }],
                   parsed = retryParsed;
                   glmUsage = glmUsageData;
                   ocrText = glmFormatted;
+                  ocrSource = 'glm-ocr';
                 }
               }
             }
@@ -3142,12 +3148,12 @@ ${ocrText.slice(0, 12000)}` }],
   // Insert card statement first (FK constraint: transactions reference this)
   const stmtId = `cs-${crypto.randomUUID().slice(0, 8)}`;
   await db.prepare(
-    `INSERT INTO card_statements (id, user_id, file_name, file_type, r2_key, ocr_text,
+    `INSERT INTO card_statements (id, user_id, file_name, file_type, r2_key, ocr_text, ocr_source,
      card_issuer, card_network, card_number_last4, cardholder_name, currency,
      statement_year, statement_month, period_start, period_end,
      credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(stmtId, userId, fileRow.original_name || fileRow.filename, fileRow.file_type, fileRow.r2_key, ocrText,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(stmtId, userId, fileRow.original_name || fileRow.filename, fileRow.file_type, fileRow.r2_key, ocrText, ocrSource,
     parsed?.card_issuer || null, parsed?.card_network || null, parsed?.card_number_last4 || null,
     parsed?.cardholder_name || null, parsed?.currency || 'HKD',
     parsed?.statement_year || null, parsed?.statement_month || null,
@@ -3199,7 +3205,7 @@ ${ocrText.slice(0, 12000)}` }],
     stmtId, userId).run();
 
   return { success: true, statement_id: stmtId, transactions_count: txCount, parsed_via_ai: !!parsed, usage, glm_usage: glmUsage,
-    needs_review: !csBalanceOk, balance_check: csBalanceMismatch, balance_status: csBalanceOk ? 'ok' : 'mismatch' };
+    ocr_source: ocrSource, needs_review: !csBalanceOk, balance_check: csBalanceMismatch, balance_status: csBalanceOk ? 'ok' : 'mismatch' };
 }
 
 // ── Smart document import: detect bank statement vs invoice, dispatch to right importer ──
@@ -3597,7 +3603,7 @@ files.post('/:id/try-decrypt', async (c) => {
 files.post('/debug-pipeline', authMiddleware, async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
-  const { file_id } = await c.req.json();
+  const { file_id, force_glm } = await c.req.json();
 
   if (!file_id) return c.json({ error: 'file_id required' }, 400);
 
@@ -3691,8 +3697,8 @@ ${text.slice(0, 8000)}`;
   // ═══════════════════════════════════════════════════════════════
   // STEP 3: GLM-OCR — ONLY if toMarkdown balance mismatched
   // ═══════════════════════════════════════════════════════════════
-  if (balanceMismatched && glmApiKey) {
-    diagnostics.stages.step3_glm_trigger = { reason: `toMarkdown balance mismatch — triggering GLM-OCR retry` };
+  if ((balanceMismatched || force_glm) && glmApiKey) {
+    diagnostics.stages.step3_glm_trigger = { reason: force_glm ? 'force_glm flag set — running GLM-OCR for comparison' : 'toMarkdown balance mismatch — triggering GLM-OCR retry' };
     try {
       const obj = await fileBucket.get(fileRow.r2_key);
       if (obj) {

@@ -325,7 +325,18 @@ export default function InvoiceReview() {
             <ChevronLeft className="h-4 w-4" />
           </button>
           <div>
-            <h2 className="font-semibold text-sm">{tr(`Review ${docLabel}`, `審核 ${docLabel}`, `审核 ${docLabel}`)}</h2>
+            <h2 className="font-semibold text-sm flex items-center gap-2">
+              {tr(`Review ${docLabel}`, `審核 ${docLabel}`, `审核 ${docLabel}`)}
+              {(invoiceData as any)?.ocr_source && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                  (invoiceData as any).ocr_source === 'glm-ocr'
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                    : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                }`}>
+                  OCR: {(invoiceData as any).ocr_source === 'glm-ocr' ? 'GLM-OCR' : 'toMarkdown'}
+                </span>
+              )}
+            </h2>
             <p className="text-xs text-muted-foreground">
               {tr('Check the extracted data against the original PDF, edit if needed, then Save.', '對照原始 PDF 核查提取的數據，如需要可編輯，然後儲存。', '對照原始 PDF 核查提取的數據，如需要可編輯，然後储存。')}
             </p>

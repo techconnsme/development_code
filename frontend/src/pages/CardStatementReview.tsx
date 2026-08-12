@@ -199,7 +199,18 @@ export default function CardStatementReview() {
       </div>
       <div className="w-2/5 flex flex-col overflow-hidden">
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          <h2 className="text-lg font-bold flex items-center gap-2"><CreditCard className="h-5 w-5" /> Review Card Statement</h2>
+          <h2 className="text-lg font-bold flex items-center gap-2">
+            <CreditCard className="h-5 w-5" /> Review Card Statement
+            {(stmt as any)?.ocr_source && (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                (stmt as any).ocr_source === 'glm-ocr'
+                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                  : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+              }`}>
+                OCR: {(stmt as any).ocr_source === 'glm-ocr' ? 'GLM-OCR' : 'toMarkdown'}
+              </span>
+            )}
+          </h2>
 
           <div className="grid grid-cols-2 gap-2">
             {(['card_issuer','card_network','card_number_last4','cardholder_name','statement_year','statement_month','currency','period_start','period_end','credit_limit','opening_balance','closing_balance','minimum_payment','payment_due_date'] as const).map(key => {

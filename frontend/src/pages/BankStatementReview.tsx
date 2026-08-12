@@ -83,6 +83,7 @@ interface StatementWithTx {
   opening_balance?: number;
   closing_balance?: number;
   status?: string;
+  ocr_source?: string;
   transactions?: Transaction[];
 }
 
@@ -562,7 +563,18 @@ export default function BankStatementReview() {
         <div className="space-y-4 overflow-y-auto" style={{ maxHeight: '85vh' }}>
           {/* Header info */}
           <div className="rounded-lg border bg-card p-4">
-            <h3 className="font-bold text-sm mb-3">{tr('📋 Extracted Statement Details', '📋 提取的月結單資料', '📋 提取的月结单资料')}</h3>
+            <h3 className="font-bold text-sm mb-3 flex items-center gap-2">
+              {tr('📋 Extracted Statement Details', '📋 提取的月結單資料', '📋 提取的月结单资料')}
+              {merged.ocr_source && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                  merged.ocr_source === 'glm-ocr'
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                    : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                }`}>
+                  OCR: {merged.ocr_source === 'glm-ocr' ? 'GLM-OCR' : 'toMarkdown'}
+                </span>
+              )}
+            </h3>
             <div className="grid grid-cols-2 gap-3">
               <Field label={tr('Bank Name', 'Bank Name 銀行名稱', 'Bank Name 银行名称')} value={merged.bank_name || ''} onChange={v => upd('bank_name', v)} />
               <Field label={tr('Account Number', 'Account Number 帳號', 'Account Number 账号')} value={merged.account_number || ''} onChange={v => upd('account_number', v)} />
