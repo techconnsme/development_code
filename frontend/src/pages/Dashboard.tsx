@@ -149,35 +149,35 @@ export default function Dashboard() {
             <div className="flex flex-wrap gap-2">
               <MiniCard
                 icon={FileSearch} color="#6366f1"
-                label="Docs to Review" value={String(periods[0].review_count || 0)}
+                label={tr('Docs to Review', '待檢視文件', '待检视文件')} value={String(periods[0].review_count || 0)}
                 onClick={() => navigate('/review-queue')}
               />
               <MiniCard
                 icon={TrendingUp} color="#22c55e"
-                label="Revenue" value={`HKD ${Fmt(periods[0].revenue || 0)}`}
+                label={tr('Revenue', '收入', '收入')} value={`HKD ${Fmt(periods[0].revenue || 0)}`}
               />
               <MiniCard
                 icon={TrendingDown} color="#ef4444"
-                label="Expenses" value={`HKD ${Fmt(periods[0].expenses || 0)}`}
+                label={tr('Expenses', '支出', '支出')} value={`HKD ${Fmt(periods[0].expenses || 0)}`}
               />
               <MiniCard
                 icon={Activity} color={periods[0].net_income >= 0 ? '#10b981' : '#ef4444'}
-                label="Net P&L" value={`HKD ${Fmt(periods[0].net_income || 0)}`}
+                label={tr('Net P&L', '淨損益', '净损益')} value={`HKD ${Fmt(periods[0].net_income || 0)}`}
               />
             </div>
             {/* Row 2: Bank→Inv, Inv→Rec, Full Chain */}
             <div className="flex flex-wrap gap-2">
               <MiniCard
                 icon={Link2} color="#3b82f6"
-                label="Bank → Invoice" value={`${periods[0].bank_pct || 0}%`}
+                label={tr('Bank → Invoice', '銀行→發票', '银行→发票')} value={`${periods[0].bank_pct || 0}%`}
               />
               <MiniCard
                 icon={Receipt} color="#8b5cf6"
-                label="Inv → Receipt" value={`${periods[0].invoice_pct || 0}%`}
+                label={tr('Inv → Receipt', '發票→收據', '发票→收据')} value={`${periods[0].invoice_pct || 0}%`}
               />
               <MiniCard
                 icon={GitMerge} color="#10b981"
-                label="Full Chain" value={`${periods[0].chain_pct || 0}%`}
+                label={tr('Full Chain', '完整鏈', '完整链')} value={`${periods[0].chain_pct || 0}%`}
               />
             </div>
           </div>
