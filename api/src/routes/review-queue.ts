@@ -133,7 +133,7 @@ rq.get('/', async (c) => {
       subtitle: row.description?.slice(0, 80) || undefined,
       date: row.entry_date || row.created_at?.slice(0, 10),
       reason,
-      reviewUrl: reason === 'stale' ? '/bank-statements' : '/GJE',
+      reviewUrl: reason === 'stale' ? '/bank-statements' : `/GJE?entry=${row.id}`,
     });
   }
 

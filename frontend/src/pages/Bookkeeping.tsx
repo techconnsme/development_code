@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
 import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react';
@@ -29,6 +30,8 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [entryDetails, setEntryDetails] = useState<Record<string, any[]>>({});
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const [expandedPL, setExpandedPL] = useState<Record<string, boolean>>({});
+  const [searchParams, setSearchParams] = useSearchParams();
+  const entryRowRef = useRef<HTMLTableRowElement | null>(null);
 
   const { startDate, endDate } = useDateFilter();
   const [entryForm, setEntryForm] = useState({
@@ -42,6 +45,22 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     enabled: tab === 'entries',
     staleTime: 0,
   });
+
+  // Auto-expand and scroll to entry when ?entry=<id> is in URL (from review queue)
+  useEffect(() => {
+    const entryId = searchParams.get('entry');
+    if (entryId && tab === 'entries' && entries?.data) {
+      setExpandedId(entryId);
+      setTimeout(() => {
+        const row = document.getElementById(`entry-row-${entryId}`);
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          row.classList.add('ring-2', 'ring-blue-400');
+          setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
+        }
+      }, 300);
+    }
+  }, [searchParams, tab, entries?.data]);
 
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
@@ -328,7 +347,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             <tbody>
               {(entries?.data || []).map((e: any) => (
                 <React.Fragment key={e.id}>
-                <tr className={`border-b hover:bg-muted/30 ${expandedId === e.id ? 'bg-muted/40' : ''} ${e.status === 'draft' ? 'bg-amber-50 dark:bg-amber-950/20' : ''} ${e.status === 'stale' ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>
+                <tr id={`entry-row-${e.id}`} className={`border-b hover:bg-muted/30 ${expandedId === e.id ? 'bg-muted/40' : ''} ${e.status === 'draft' ? 'bg-amber-50 dark:bg-amber-950/20' : ''} ${e.status === 'stale' ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>
                   <td className="p-3">
                     <button onClick={() => toggleEntryDetail(e.id)} className="p-0.5 hover:bg-muted rounded">
                       {expandedId === e.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
