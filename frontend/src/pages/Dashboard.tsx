@@ -171,7 +171,7 @@ export default function Dashboard() {
               <div key={p.label} className={`border rounded-xl overflow-hidden ${isCurrent ? 'bg-card' : 'bg-muted/30'}`}>
                 {/* Period header */}
                 <button
-                  onClick={() => { togglePeriod(p.label); if (!isExpanded) switchFY(p.label); }}
+                  onClick={() => togglePeriod(p.label)}
                   className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-muted/50 transition-colors"
                 >
                   <span className={`font-semibold text-sm ${isCurrent ? '' : 'text-muted-foreground'}`}>
