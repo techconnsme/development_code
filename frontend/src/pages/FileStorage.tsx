@@ -75,6 +75,9 @@ interface FileItem {
   invoice_number?: string;
   invoice_status?: string;
   invoice_needs_review?: string;
+  vendor_name?: string;
+  customer_name?: string;
+  invoice_direction?: string;
   statement_id?: string;
   stmt_bank_name?: string;
   stmt_status?: string;
@@ -167,6 +170,14 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                     )}
                     {f.category === 'invoice' && f.amount != null && (
                       <span className="font-mono">${f.amount.toLocaleString()}</span>
+                    )}
+                    {f.category === 'invoice' && (f.vendor_name || f.customer_name) && (
+                      <span className="text-[10px] text-muted-foreground truncate max-w-[180px]">
+                        {(f.direction || f.invoice_direction) === 'outgoing'
+                          ? `${tr('to', 'to 至', 'to 至')} ${f.customer_name || ''}`
+                          : `${tr('from', 'from 由', 'from 由')} ${f.vendor_name || ''}`
+                        }
+                      </span>
                     )}
                     {f.ocr_status === 'encrypted' && (
                       <button

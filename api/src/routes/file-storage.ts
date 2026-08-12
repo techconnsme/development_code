@@ -1896,10 +1896,13 @@ files.get('/', async (c) => {
     fr.description, fr.ocr_status, fr.category, fr.direction, fr.payment_status, fr.amount,
     fr.created_at, fr.updated_at,
     i.id as invoice_id, i.invoice_number, i.status as invoice_status, i.needs_review as invoice_needs_review,
+    i.vendor_name, i.direction as invoice_direction,
+    c.name as customer_name,
     bs.id as statement_id, bs.bank_name as stmt_bank_name, bs.status as stmt_status,
     cs.id as card_statement_id, cs.card_issuer, cs.status as card_status
     FROM file_records fr
     LEFT JOIN invoices i ON i.file_id = fr.id AND i.user_id = fr.user_id
+    LEFT JOIN customers c ON i.customer_id = c.id
     LEFT JOIN bank_statements bs ON bs.r2_key = fr.r2_key AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
     LEFT JOIN card_statements cs ON cs.r2_key = fr.r2_key AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
     WHERE fr.user_id = ? AND fr.deleted_at IS NULL`;
