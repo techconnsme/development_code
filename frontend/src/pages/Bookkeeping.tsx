@@ -46,21 +46,34 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     staleTime: 0,
   });
 
-  // Auto-expand and scroll to entry when ?entry=<id> is in URL (from review queue)
+  // Auto-expand, fetch details, and scroll to entry when ?entry=<id> is in URL
+  const entryParam = searchParams.get('entry');
   useEffect(() => {
-    const entryId = searchParams.get('entry');
-    if (entryId && tab === 'entries' && entries?.data) {
-      setExpandedId(entryId);
-      setTimeout(() => {
-        const row = document.getElementById(`entry-row-${entryId}`);
-        if (row) {
-          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          row.classList.add('ring-2', 'ring-blue-400');
-          setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
-        }
-      }, 300);
+    if (!entryParam || tab !== 'entries' || !entries?.data) return;
+    const entryId = entryParam;
+    // Expand and load detail lines if not already loaded
+    setExpandedId(entryId);
+    if (!entryDetails[entryId]) {
+      setLoadingDetail(entryId);
+      api(`/bookkeeping/entries/${entryId}`)
+        .then(d => setEntryDetails(prev => ({ ...prev, [entryId]: d.lines || [] })))
+        .catch(() => {})
+        .finally(() => setLoadingDetail(null));
     }
-  }, [searchParams, tab, entries?.data]);
+    // Scroll + highlight after React commits the expanded row
+    const tryScroll = (retries: number) => {
+      const row = document.getElementById(`entry-row-${entryId}`);
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row.classList.add('ring-2', 'ring-blue-400', 'scroll-mt-20');
+        setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
+      } else if (retries > 0) {
+        setTimeout(() => tryScroll(retries - 1), 150);
+      }
+    };
+    tryScroll(5);
+  }, [entryParam, tab, entries?.data]);
+  // suppress exhaustive-deps: only re-run when the entry param actually changes
 
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
