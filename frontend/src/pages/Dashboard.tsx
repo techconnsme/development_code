@@ -145,7 +145,6 @@ export default function Dashboard() {
         </h3>
         {periods[0] ? (
           <div className="space-y-2">
-            {/* Row 1: Docs, Revenue, Expenses, Net P&L */}
             <div className="flex flex-wrap gap-2">
               <MiniCard
                 icon={FileSearch} color="#6366f1"
@@ -165,7 +164,6 @@ export default function Dashboard() {
                 label={tr('Net P&L', '淨損益', '净损益')} value={`HKD ${Fmt(periods[0].net_income || 0)}`}
               />
             </div>
-            {/* Row 2: Bank→Inv, Inv→Rec, Full Chain */}
             <div className="flex flex-wrap gap-2">
               <MiniCard
                 icon={Link2} color="#3b82f6"
@@ -182,7 +180,19 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-          <div className="text-sm text-muted-foreground py-4">{tr('Loading…', '載入中…', '载入中…')}</div>
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              <MiniCard icon={FileSearch} color="#6366f1" label={tr('Docs to Review', '待檢視文件', '待检视文件')} value="…" />
+              <MiniCard icon={TrendingUp} color="#22c55e" label={tr('Revenue', '收入', '收入')} value="…" />
+              <MiniCard icon={TrendingDown} color="#ef4444" label={tr('Expenses', '支出', '支出')} value="…" />
+              <MiniCard icon={Activity} color="#10b981" label={tr('Net P&L', '淨損益', '净损益')} value="…" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <MiniCard icon={Link2} color="#3b82f6" label={tr('Bank → Invoice', '銀行→發票', '银行→发票')} value="…" />
+              <MiniCard icon={Receipt} color="#8b5cf6" label={tr('Inv → Receipt', '發票→收據', '发票→收据')} value="…" />
+              <MiniCard icon={GitMerge} color="#10b981" label={tr('Full Chain', '完整鏈', '完整链')} value="…" />
+            </div>
+          </div>
         )}
       </div>
 
