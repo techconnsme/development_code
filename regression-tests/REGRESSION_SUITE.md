@@ -38,9 +38,9 @@ Source: `test-sample-real/PNR/estatement/`
 
 | File | Bank | Account | Period | Txn Count | Opening | Closing | API | UI |
 |------|------|---------|--------|-----------|---------|---------|-----|----|
-| `eStatement 20250228.pdf` | HSBC | 126-310175-503327 | 2025-02-01 → 2025-02-28 | ≥1 | ≠0 | ≠0 | ⬜ | ⬜ |
-| `eStatement 20250128.pdf` | HSBC | 126-310175-503327 | 2025-01-01 → 2025-01-28 | ≥1 | — | — | ⬜ | ⬜ |
-| `eStatement 20250331.pdf` | HSBC | 126-310175-503327 | 2025-03-01 → 2025-03-31 | ≥1 | — | — | ⬜ | ⬜ |
+| `eStatement 20250228.pdf` | HSBC | 147-162101-838 | 2025-02-01 → 2025-02-28 | ≥1 | ≠0 | ≠0 | ⬜ | ⬜ |
+| `eStatement 20250128.pdf` | HSBC | 147-162101-838 | 2025-01-09 → 2025-01-28 | ≥1 | — | — | ⬜ | ⬜ |
+| `eStatement 20250331.pdf` | HSBC | 147-162101-838 | 2025-02-28 → 2025-03-28 | ≥1 | — | — | ⬜ | ⬜ |
 
 ---
 
@@ -53,6 +53,7 @@ Source: `test-sample-real/PNR/estatement/`
 | `Pastel/01383 - invoice#001547-v3.pdf` | incoming (AP) | Pastel Tech | ≠null | >0 | ⬜ | ⬜ |
 | `Muselab/INV022-1319 @$500...pdf` | incoming (AP) | MuseLabs | ≠null | >0 | ⬜ | ⬜ |
 | `Respect/I0105 Proficiency And Reliance.pdf` | incoming (AP) | Respect | ≠null | >0 | ⬜ | ⬜ |
+| `EHSIA/Invoice #E2025501.pdf` | incoming (AP) | Empower Health | ≠null | >0 | ⬜ | ⬜ |
 
 ---
 
@@ -60,9 +61,8 @@ Source: `test-sample-real/PNR/estatement/`
 
 | File | Direction | Customer | Invoice # | Total | API | UI |
 |------|-----------|----------|-----------|-------|-----|----|
-| `VEII/Invoice 2025001.pdf` | outgoing (AR) | Contains "Proficient" | ≠null | >0 | ⬜ | ⬜ |
-| `VEII/Invoice 2026001.pdf` | outgoing (AR) | Contains "Proficient" | ≠null | >0 | ⬜ | ⬜ |
-| `EHSIA/Invoice #E2025501.pdf` | outgoing (AR) | Contains "Proficient" | ≠null | >0 | ⬜ | ⬜ |
+| `VEII/Invoice 2025001.pdf` | outgoing (AR) | Contains "Value Exchange" | ≠null | >0 | ⬜ | ⬜ |
+| `VEII/Invoice 2026001.pdf` | outgoing (AR) | Contains "Value Exchange" | ≠null | >0 | ⬜ | ⬜ |
 
 ---
 
@@ -71,9 +71,9 @@ Source: `test-sample-real/PNR/estatement/`
 | File | Receipt # | Total | Links To | API | UI |
 |------|-----------|-------|----------|-----|----|
 | `Pastel/001397-receipt#001260.pdf` | ≠null | >0 | invoice #001397 | ⬜ | ⬜ |
-| `Pastel/001414, 001417-receipt#001281.pdf` | ≠null | >0 | invoice #001414 | ⬜ | ⬜ |
+| `Pastel/001414, 001417-receipt#001281.pdf` | ≠null | >0 | invoices #001414, #001417 | ⬜ | ⬜ |
 | `VEII/Receipt 2025001.pdf` | ≠null | >0 | invoice #2025001 | ⬜ | ⬜ |
-| `EHSIA/Receipt #E2025001.pdf` | ≠null | >0 | invoice #E2025501 | ⬜ | ⬜ |
+| `EHSIA/Receipt #E2025001.pdf` | ≠null | >0 | invoice #E2025001 | ⬜ | ⬜ |
 
 ---
 
@@ -115,8 +115,8 @@ Source: `test-sample-real/PNR/estatement/`
 | Category | Total | ✅ API | ❌ API | ✅ UI | ❌ UI |
 |----------|-------|--------|--------|-------|-------|
 | Bank Statements | 3 | — | — | — | — |
-| AP Invoices | 5 | — | — | — | — |
-| AR Invoices | 3 | — | — | — | — |
+| AP Invoices | 6 | — | — | — | — |
+| AR Invoices | 2 | — | — | — | — |
 | Receipts | 4 | — | — | — | — |
 | Receipt→Invoice Links | 10 | — | — | — | — |
 | Bank Continuity | 2 | — | — | — | — |

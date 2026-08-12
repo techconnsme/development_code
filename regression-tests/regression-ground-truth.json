@@ -95,6 +95,16 @@
         "has_invoice_number": true,
         "has_total": true
       }
+    },
+    {
+      "file": "EHSIA/Invoice #E2025501.pdf",
+      "expected": {
+        "doc_type": "invoice",
+        "direction": "incoming",
+        "vendor_name_contains": "Empower Health",
+        "has_invoice_number": true,
+        "has_total": true
+      }
     }
   ],
 
@@ -115,16 +125,6 @@
         "doc_type": "invoice",
         "direction": "outgoing",
         "customer_name_contains": "Value Exchange",
-        "has_invoice_number": true,
-        "has_total": true
-      }
-    },
-    {
-      "file": "EHSIA/Invoice #E2025501.pdf",
-      "expected": {
-        "doc_type": "invoice",
-        "direction": "incoming",
-        "vendor_name_contains": "Empower Health",
         "has_invoice_number": true,
         "has_total": true
       }
@@ -166,9 +166,10 @@
       "file": "EHSIA/Receipt #E2025001.pdf",
       "expected": {
         "doc_type": "receipt",
-        "direction": "outgoing",
+        "direction": "incoming",
         "has_receipt_number": true,
-        "has_total": true
+        "has_total": true,
+        "should_link_to_invoice_containing": "E2025001"
       }
     }
   ],
