@@ -39,7 +39,7 @@ test('TC-TIME-01: fresh upload shows relative time in File Storage', async ({ pa
 
     await page.goto(`${BASE}/file-storage`);
     // Expand the "Bank Statements" folder in the tree (folder button shows a file count)
-    await page.locator('button').filter({ hasText: 'Bank Statements (' }).first().click();
+    await page.locator('main button').filter({ hasText: /Bank Statements\s*\(\d+\)/ }).first().click();
 
     // The fresh upload's row must show a relative age, not a bare date
     const row = page.locator('div').filter({ hasText: uniqueName }).first();
