@@ -38,8 +38,6 @@ const navGroups = [
   { key: 'coa', label: 'Chart of Accounts (COA)', icon: List, to: '/coa' },
   { key: 'generalLedger', label: 'General Ledger', icon: BookOpen, to: '/general-ledger' },
   { key: 'bookkeeping', label: 'Bookkeeping', icon: Calculator, expandable: true, children: [
-    { key: 'reviewQueue', label: 'Pending Review', to: '/review-queue' },
-    { key: 'gje', label: 'General Journal Entries (GJE)', to: '/GJE' },
     { key: 'bankStatements', label: 'Bank Statements', to: '/bank-statements' },
     { key: 'cardStatements', label: 'Card Statements', to: '/card-statements' },
     { key: 'invoices', label: 'Expenses', to: '/invoices' },
@@ -48,6 +46,8 @@ const navGroups = [
     { key: 'payroll', label: 'Payroll', to: '/payroll' },
     { key: 'pettyCash', label: 'Petty Cash', to: '/petty-cash' },
     { key: 'mpf', label: 'MPF', to: '/mpf' },
+    { key: 'gje', label: 'General Journal Entries (GJE)', to: '/GJE' },
+    { key: 'reviewQueue', label: 'Pending Review', to: '/review-queue' },
   ]},
   { key: 'assets', label: 'Assets', icon: Building2, expandable: true, children: [
     { key: 'fixedAssets', label: 'Fixed Assets', to: '/fixed-assets' },

@@ -41,7 +41,7 @@ export default function Invoices() {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [docType, setDocType] = useState<'invoice' | 'receipt'>('invoice');
-  const [expenseCategory, setExpenseCategory] = useState<'all' | 'cash' | 'reimburse' | 'director'>('all');
+  const [invoiceCategory, setInvoiceCategory] = useState<'all' | 'sales' | 'purchase'>('all');
   const [linkFilter, setLinkFilter] = useState<'all' | 'linked' | 'unlinked'>('all');
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
@@ -54,11 +54,11 @@ export default function Invoices() {
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
 
   const { data, isLoading } = useQuery({
-    queryKey: ['invoices', search, status, page, expenseCategory, docType, startDate, endDate],
+    queryKey: ['invoices', search, status, page, invoiceCategory, docType, startDate, endDate],
     queryFn: () => {
       const params = new URLSearchParams({ q: search, status, page: String(page), limit: '20', doc_type: docType });
-      if (docType === 'invoice' && expenseCategory !== 'all') {
-        params.set('expense_category', expenseCategory);
+      if (docType === 'invoice' && invoiceCategory !== 'all') {
+        params.set('direction', invoiceCategory === 'sales' ? 'outgoing' : 'incoming');
       }
       if (startDate) params.set('start_date', startDate);
       if (endDate) params.set('end_date', endDate);
@@ -218,20 +218,19 @@ export default function Invoices() {
         ))}
       </div>
 
-      {/* Expense category tabs — invoice mode only */}
+      {/* Invoice category tabs — invoice mode only */}
       {docType === 'invoice' && (
         <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit flex-wrap">
           {([
             { key: 'all', label: tr('All', '全部', '全部') },
-            { key: 'cash', label: tr('Cash Expenses', '現金支出', '现金支出') },
-            { key: 'reimburse', label: tr('Employee Reimb.', '員工報銷', '员工报销') },
-            { key: 'director', label: tr('Director Expenses', '董事支出', '董事支出') },
+            { key: 'sales', label: tr('Sales Invoices', '銷售發票', '销售发票') },
+            { key: 'purchase', label: tr('Purchase Invoices', '採購發票', '采购发票') },
           ] as const).map(t => (
             <button
               key={t.key}
-              onClick={() => { setExpenseCategory(t.key); setPage(1); }}
+              onClick={() => { setInvoiceCategory(t.key); setPage(1); }}
               className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                expenseCategory === t.key
+                invoiceCategory === t.key
                   ? 'bg-background shadow-sm text-foreground'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
