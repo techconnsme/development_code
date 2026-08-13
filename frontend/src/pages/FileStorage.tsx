@@ -9,6 +9,8 @@ import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, Fil
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
+import i18n from '../i18n';
+import { relativeTimeBucket, parseCreatedAt } from '../lib/time';
 
 // Build query string for review page flags from API response
 function reviewPageFlags(result: any): string {
@@ -118,6 +120,24 @@ function buildTree(files: FileItem[]): TreeNode {
   return root;
 }
 
+const RELATIVE_LOCALE: Record<string, string> = { en: 'en', 'zh-Hant': 'zh-HK', 'zh-Hans': 'zh-CN' };
+
+function FileTimeLabel({ createdAt }: { createdAt: string }) {
+  const parsed = parseCreatedAt(createdAt);
+  if (!parsed) return <span>{createdAt}</span>;
+
+  const bucket = relativeTimeBucket(createdAt);
+  const locale = RELATIVE_LOCALE[i18n.language] || 'en';
+  const text = bucket.kind === 'date'
+    ? bucket.date
+    : bucket.kind === 'relative'
+      ? new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-bucket.value, bucket.unit)
+      : bucket.raw;
+  const full = parsed.toLocaleString('en-HK', { hour12: false });
+
+  return <span title={full}>{text}</span>;
+}
+
 function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirection, onDelete, onUnlockEncrypted }: {
   node: TreeNode; depth: number; expanded: Set<string>; toggle: (p: string) => void;
   onFileAction: (action: string, f: FileItem) => void;
@@ -156,7 +176,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                   <div className="text-sm truncate">{f.filename || f.original_name}</div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <span>{formatSize(f.file_size || 0)}</span>
-                    <span>{f.created_at?.slice(0, 10)}</span>
+                    {f.created_at && <FileTimeLabel createdAt={f.created_at} />}
                     {f.category === 'invoice' && f.direction && (
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                         f.direction === 'outgoing' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'
