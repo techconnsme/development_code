@@ -322,6 +322,19 @@ export default function FileUpload() {
           throw new Error(tr('Switched channel but could not find review link.', '已切換頻道但無法找到審核連結。', '已切换频道但无法找到审核连结。'));
         }
         if (action === 'cancel') {
+          // Roll back: the file and its imported record already exist at this point,
+          // so delete them to make cancel a true cancel (soft-deletes file + statement, hard-deletes invoice draft)
+          try {
+            await api(`/file-storage/${fileId}`, { method: 'DELETE', baseUrl: WORKER_API_BASE });
+          } catch (e: any) {
+            // Delete requires higher tier — cancel still proceeds, but warn that the file remains
+            console.warn('[Upload] cancel rollback delete failed:', e?.message || e);
+            toast.warning(tr(
+              'Upload cancelled, but the file could not be removed. Delete it from File Storage or ask an admin.',
+              '已取消上傳，但無法移除文件。請從文件存儲中刪除或聯繫管理員。',
+              '已取消上传，但无法移除文件。请从文件存储中删除或联系管理员。',
+            ));
+          }
           throw new Error(tr('Upload cancelled.', '已取消上傳。', '已取消上传。'));
         }
         // 'force' — re-import with user's chosen type, overriding OCR detection
