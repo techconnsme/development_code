@@ -6,6 +6,7 @@ import { wsBroadcast } from './ws';
 import { generateReceiptNumber, detectOwnNumber } from '../lib/numbering';
 import { processBankStatement, extractCompanyInfo, extractBankInfo } from '../lib/bank-ocr';
 import { normalizeCompanyName, fuzzyMatchCompany, matchBankName } from '../lib/company-matcher';
+import { reconcileDirections } from '../lib/balance-reconcile';
 
 // Audit logging helper
 async function auditLog(db: any, userId: string, action: string, entityType: string, entityId: string | null, changes?: object) {
@@ -365,7 +366,8 @@ ${inputOcrText.slice(0, 8000)}` }],
   ).run();
 
   let txCount = 0;
-  const transactions = parsed?.transactions || [];
+  // Reconcile directions against the printed running-balance anchors before insert
+  const transactions = reconcileDirections(parsed?.transactions || [], openingBal, closingBal);
   for (const tx of transactions) {
     if (!tx.transaction_date) continue;
     const txId = `bt-${uuidv4().slice(0, 8)}`;
