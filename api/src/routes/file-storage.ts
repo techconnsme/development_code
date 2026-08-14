@@ -618,8 +618,10 @@ function isPdfMetadataOnly(text: string): boolean {
   for (const line of lines) {
     const trimmed = line.trim();
     if (/^(#|##)\s/.test(trimmed) && /\.pdf$/i.test(trimmed)) { metaLines++; continue; }
-    if (/^-\s*(PDFFormatVersion|IsLinearized|IsAcroFormPresent|IsXFAPresent|IsCollectionPresent|PDFVersion|Producer|Creator|Author|Title|Subject|Keywords|Created|Modified|Pages|Encrypted|Page size|File size)/i.test(trimmed)) { metaLines++; continue; }
     if (/^##\s*Metadata/i.test(trimmed)) { metaLines++; continue; }
+    // Generic metadata key-value lines ("- Key=Value" or "- Key: Value") cover the
+    // full toMarkdown metadata format (EncryptFilterName, CreationDate, ModDate, ...)
+    if (/^-\s*[A-Za-z][A-Za-z0-9_]*\s*(=|:)/.test(trimmed)) { metaLines++; continue; }
     if (trimmed.length > 5) contentLines++;
   }
   // If metadata lines dominate and there's very little real content, it's metadata-only
@@ -3301,16 +3303,42 @@ files.post('/:id/import-document', async (c) => {
                 return false;
               })();
               if (isEncrypted) {
-                await c.env.DB.prepare(
-                  "UPDATE file_records SET ocr_text = ?, ocr_status = 'encrypted', updated_at = datetime('now') WHERE id = ?"
-                ).bind(candidate.slice(0, 50000), fileId).run();
-                return c.json({
-                  type: 'encrypted_pdf',
-                  success: false,
-                  error: 'This PDF is encrypted. Please enter the password to unlock it for OCR scanning.',
-                  status: 'password_required',
-                  file_id: fileId,
-                });
+                // HSBC-style empty-password encryption — try silent decryption and re-OCR
+                // before falling back to the password modal
+                const dec = await fetchAndDecryptFile(fileRow.r2_key, mimeType, c.env.FILE_BUCKET);
+                if (dec && !dec.needsPassword) {
+                  try {
+                    const decryptedBytes = Uint8Array.from(atob(dec.base64), ch => ch.charCodeAt(0));
+                    const mdResult2 = await (c.env.AI as any).toMarkdown([{
+                      name: fileRow.original_name || fileRow.filename || 'file.pdf',
+                      blob: new Blob([decryptedBytes], { type: mimeType }),
+                    }]);
+                    const candidate2 = Array.isArray(mdResult2)
+                      ? mdResult2.map((r: any) => r?.data || r?.content || '').join('\n')
+                      : String(mdResult2 || '');
+                    if (candidate2 && candidate2.length > 20 && !isPdfMetadataOnly(candidate2)) {
+                      ocrText = candidate2;
+                      console.log('[OCR|tomarkdown] Import-doc: decrypted PDF, re-OCR succeeded, length:', ocrText.length);
+                      await db.prepare(
+                        "UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
+                      ).bind(ocrText, fileId).run();
+                    }
+                  } catch (e: any) {
+                    console.log('[OCR|tomarkdown] Import-doc: decrypted re-OCR failed:', e?.message || e);
+                  }
+                }
+                if (!ocrText || ocrText.length < 20) {
+                  await c.env.DB.prepare(
+                    "UPDATE file_records SET ocr_text = ?, ocr_status = 'encrypted', updated_at = datetime('now') WHERE id = ?"
+                  ).bind(candidate.slice(0, 50000), fileId).run();
+                  return c.json({
+                    type: 'encrypted_pdf',
+                    success: false,
+                    error: 'This PDF is encrypted. Please enter the password to unlock it for OCR scanning.',
+                    status: 'password_required',
+                    file_id: fileId,
+                  });
+                }
               }
               // Not encrypted — just a bad scan, fall through to GLM-OCR
             } else {
