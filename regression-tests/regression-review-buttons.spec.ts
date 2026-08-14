@@ -20,7 +20,7 @@ test('Review page has Review Later, Save, Discard, Change Type', async ({ page }
   // Upload a single invoice file
   await page.goto(`${BASE}/file-upload`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
-  const tab = page.locator('button').filter({ hasText: /Bank-TXN|銀行交易/i }).first();
+  const tab = page.locator('button').filter({ hasText: /Purchase Invoice|採購發票/i }).first();
   await tab.click();
 
   const filePath = path.join(SAMPLES, 'BILL_IN_INV-FEDEX-2026-0812_FedEx_Express_Hong_Kong.pdf');

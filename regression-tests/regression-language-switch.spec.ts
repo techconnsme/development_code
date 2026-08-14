@@ -17,7 +17,7 @@ test('Language switch does not navigate away from file upload', async ({ page })
   await page.waitForTimeout(2000);
 
   // Select Bank-TXN Invoice tab
-  const tab = page.locator('button').filter({ hasText: /Bank-TXN|銀行交易/i }).first();
+  const tab = page.locator('button').filter({ hasText: /Sales Invoice|銷售發票/i }).first();
   await tab.click();
   await page.waitForTimeout(500);
 

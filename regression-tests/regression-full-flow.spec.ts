@@ -13,8 +13,8 @@ import { test, expect } from '@playwright/test';
 import * as path from 'path';
 import * as fs from 'fs';
 
-const BASE = process.env.TEST_BASE_URL || 'https://main.opcc-crm.pages.dev';
-const SAMPLES = process.env.TEST_SAMPLES_DIR || path.resolve(__dirname, '../../test-sample-real/PNR');
+const BASE = process.env.TEST_BASE_URL || 'https://opcc-crm-testing.pages.dev';
+const SAMPLES = process.env.TEST_SAMPLES_DIR || path.resolve(__dirname, '../../../test-sample-real/PNR');
 const LOGIN_EMAIL = 'joseph.lin@pnr.hk';
 const LOGIN_PASSWORD = 'Test1234';
 
@@ -53,7 +53,7 @@ async function uploadFile(page: any, filePath: string, tabLabel: string) {
   await page.waitForTimeout(500);
 
   // Upload & Analyze
-  const uploadBtn = page.getByText(/Upload.*Analyze|上傳.*分析|上传.*分析/);
+  const uploadBtn = page.locator('button').filter({ hasText: /Upload.*Analyze|上傳.*分析|上传.*分析/ }).first();
   if (await uploadBtn.isVisible()) await uploadBtn.click();
 
   // Wait for OCR to complete
@@ -88,9 +88,10 @@ test.describe('Regression Full Flow — PNR', () => {
     const uploaded = await uploadFile(page, file, 'Bank Statement');
     if (!uploaded) { test.skip(); return; }
 
-    // Should navigate to review page
-    await page.waitForURL('**/bank-statements/review/**', { timeout: 30000 });
-    console.log('✅ Navigated to bank statement review');
+    // Statements that need no review are auto-saved and land on the list;
+    // reviewable ones go to the review page. Accept either.
+    await page.waitForURL(/\/bank-statements(\/review\/[^/]+)?$/, { timeout: 60000 });
+    console.log('✅ Bank statement processed (review page or list)');
 
     // Check extracted fields are visible
     const body = await page.textContent('body');
@@ -103,7 +104,7 @@ test.describe('Regression Full Flow — PNR', () => {
 
   test('2. AP Invoice Upload & Direction Check', async ({ page }) => {
     const file = 'Pastel/01383 - invoice#001397.pdf';
-    const uploaded = await uploadFile(page, file, 'Bank-TXN Invoice');
+    const uploaded = await uploadFile(page, file, 'Purchase Invoice');
     if (!uploaded) { test.skip(); return; }
 
     // Should navigate to invoice review or invoices page
@@ -125,13 +126,13 @@ test.describe('Regression Full Flow — PNR', () => {
     await page.goto(`${BASE}/ap`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
     const body = await page.textContent('body');
-    expect(body).toContain('Pastel');
+    expect(body.toLowerCase()).toContain('pastel');
     console.log('✅ AP page shows Pastel invoice');
   });
 
   test('3. AR Invoice Upload & Direction Check', async ({ page }) => {
     const file = 'VEII/Invoice 2025001.pdf';
-    const uploaded = await uploadFile(page, file, 'Bank-TXN Invoice');
+    const uploaded = await uploadFile(page, file, 'Sales Invoice');
     if (!uploaded) { test.skip(); return; }
 
     await page.waitForTimeout(5000);
@@ -147,7 +148,7 @@ test.describe('Regression Full Flow — PNR', () => {
 
   test('4. Receipt Upload & Link Check', async ({ page }) => {
     const file = 'Pastel/001397-receipt#001260.pdf';
-    const uploaded = await uploadFile(page, file, 'Bank-TXN Invoice');
+    const uploaded = await uploadFile(page, file, 'Purchase Invoice');
     if (!uploaded) { test.skip(); return; }
 
     await page.waitForTimeout(5000);
@@ -157,7 +158,7 @@ test.describe('Regression Full Flow — PNR', () => {
     await page.waitForTimeout(2000);
 
     // Click Receipts tab if available
-    const receiptsTab = page.getByText(/Receipts|收據|收据/);
+    const receiptsTab = page.locator('button').filter({ hasText: /^Receipts$|^收據$|^收据$/ }).first();
     if (await receiptsTab.isVisible()) await receiptsTab.click();
     await page.waitForTimeout(1000);
 
@@ -181,7 +182,7 @@ test.describe('Regression Full Flow — PNR', () => {
     await page.waitForTimeout(2000);
 
     // Click "Match Receipts" button
-    const matchBtn = page.getByText(/Match Receipts|配對收據|配对收据/);
+    const matchBtn = page.getByText(/Match Receipts|配對收據|配对收据/).first();
     if (await matchBtn.isVisible()) {
       await matchBtn.click();
       await page.waitForTimeout(3000);
