@@ -11,7 +11,7 @@ import { writeTokenUsage, clearTokenUsage } from '../components/TokenPopup';
 
 // ── Channel types ─────────────────────────────────────────────────────────
 
-type UploadChannel = 'bank_statement' | 'card_statement' | 'bank_invoice' | 'cash_invoice' | 'petty_cash' | 'others';
+type UploadChannel = 'bank_statement' | 'card_statement' | 'sales_invoice' | 'purchase_invoice' | 'cash_invoice' | 'petty_cash' | 'others';
 
 interface ChannelDef {
   key: UploadChannel;
@@ -20,13 +20,15 @@ interface ChannelDef {
   labelCn: string;
   folder: string;
   category: string;
+  direction?: 'outgoing' | 'incoming';
 }
 
 const CHANNELS: ChannelDef[] = [
   { key: 'bank_statement', label: 'Bank Statement', labelZh: '銀行月結單', labelCn: '银行月结单', folder: 'Bank Statements', category: 'bank_statement' },
   { key: 'card_statement', label: 'Card Statement', labelZh: '信用卡月結單', labelCn: '信用卡月结单', folder: 'Card Statements', category: 'card_statement' },
-  { key: 'bank_invoice', label: 'Bank-TXN Invoice', labelZh: '銀行交易發票', labelCn: '银行交易发票', folder: 'Invoices', category: 'bank_invoice' },
-  { key: 'cash_invoice', label: 'Cash Invoice', labelZh: '現金發票', labelCn: '现金发票', folder: 'Invoices', category: 'cash_invoice' },
+  { key: 'sales_invoice', label: 'Sales Invoice', labelZh: '銷售發票', labelCn: '销售发票', folder: 'Invoices', category: 'invoice', direction: 'outgoing' },
+  { key: 'purchase_invoice', label: 'Purchase Invoice', labelZh: '採購發票', labelCn: '采购发票', folder: 'Invoices', category: 'invoice', direction: 'incoming' },
+  { key: 'cash_invoice', label: 'Cash Payment', labelZh: '現金付款', labelCn: '现金付款', folder: 'Invoices', category: 'cash_invoice' },
   { key: 'petty_cash', label: 'Petty Cash', labelZh: '零用金', labelCn: '零用金', folder: 'Petty Cash', category: 'petty_cash' },
   { key: 'others', label: 'Others', labelZh: '其他', labelCn: '其他', folder: 'Others', category: 'general' },
 ];
@@ -287,15 +289,22 @@ export default function FileUpload() {
 
     const detectedType = result?.type;
 
-    // Check for OCR mismatch with user-selected channel
-    if (detectedType && detectedType !== channel) {
-      // Compatible: invoice channels accept invoice detection without warning
-      const isInvoiceChannel = channel === 'bank_invoice' || channel === 'cash_invoice';
+    // Direction-based mismatch for invoice channels: detected direction must agree with the chosen tab
+    const invoiceDirectionMismatch = (channel === 'sales_invoice' || channel === 'purchase_invoice')
+      && detectedType === 'invoice'
+      && !!result?.direction
+      && result.direction !== channelDef.direction;
+    const mismatchDetectedChannelKey = invoiceDirectionMismatch
+      ? (result.direction === 'incoming' ? 'purchase_invoice' : 'sales_invoice')
+      : detectedType;
+
+    if ((detectedType && detectedType !== channel) || invoiceDirectionMismatch) {
+      const isInvoiceChannel = channel === 'sales_invoice' || channel === 'purchase_invoice' || channel === 'cash_invoice';
       const isInvoiceDetected = detectedType === 'invoice';
-      if (!(isInvoiceChannel && isInvoiceDetected)) {
+      if (!(isInvoiceChannel && isInvoiceDetected && !invoiceDirectionMismatch)) {
         const action = await showMismatchDialog({
           channel: channelDef,
-          detectedType,
+          detectedType: mismatchDetectedChannelKey,
           inferredValues: extractInferredValues(result),
           fileId,
           result,
@@ -340,8 +349,10 @@ export default function FileUpload() {
         // 'force' — re-import with user's chosen type, overriding OCR detection
         if (action === 'force') {
           setProcessingMsg(tr(`Re-importing as ${channelLabel(channelDef)}…`, `重新匯入為${channelLabel(channelDef)}…`, `重新汇入为${channelLabel(channelDef)}…`));
+          const forcedType = channel === 'sales_invoice' || channel === 'purchase_invoice' ? 'invoice' : channel;
+          const directionParam = channelDef.direction ? `&direction=${channelDef.direction}` : '';
           const forceResp = await fetch(
-            `${WORKER_API_BASE}/file-storage/${fileId}/import-document?force=true&type=${encodeURIComponent(channel)}`,
+            `${WORKER_API_BASE}/file-storage/${fileId}/import-document?force=true&type=${encodeURIComponent(forcedType)}${directionParam}`,
             { method: 'POST', headers }
           );
           const forceResult = await forceResp.json().catch(() => ({}));
@@ -372,7 +383,7 @@ export default function FileUpload() {
         return 'review';  // prevent handleUpload from doing a default redirect over us
       }
       return 'ok';
-    } else if ((channel === 'bank_invoice' || channel === 'cash_invoice') && result?.invoice_id) {
+    } else if ((channel === 'sales_invoice' || channel === 'purchase_invoice' || channel === 'cash_invoice') && result?.invoice_id) {
       const flags = reviewPageFlags(result);
       if (needsReview) {
         if (skipNavigation) { pushToQueue('invoice', result.invoice_id, file.name, flags); return 'review'; }
