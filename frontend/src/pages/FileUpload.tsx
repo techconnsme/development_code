@@ -570,7 +570,7 @@ export default function FileUpload() {
   };
 
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-6">
+    <div className="p-6 max-w-6xl mx-auto space-y-6">
       <h2 className="text-2xl font-bold flex items-center gap-2">
         <Upload className="h-6 w-6" /> {tr('File Upload', '上傳文件', '上传文件')}
       </h2>

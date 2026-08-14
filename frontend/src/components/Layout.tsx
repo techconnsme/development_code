@@ -164,7 +164,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   // Desktop states
   const [sidebarDesktopOpen, setSidebarDesktopOpen] = React.useState(true);
-  const [chatDesktopOpen, setChatDesktopOpen] = React.useState(true);
+  const [chatDesktopOpen, setChatDesktopOpen] = React.useState(false);
   const [chatWidth, setChatWidth] = React.useState(420);
   const [showAll, setShowAll] = React.useState(false);
   const [expandedGroups, setExpandedGroups] = React.useState<Record<string, boolean>>({ documents: true });
