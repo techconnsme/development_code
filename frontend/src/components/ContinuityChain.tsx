@@ -31,6 +31,8 @@ export default function ContinuityChain({ endpoint, queryKey, type }: Props) {
     ? `${g.card_issuer || ''} ${g.card_network || ''} ••••${g.card_number || ''}`
     : `${g.bank_name || ''} ${g.account_number || ''}`;
   const itemPeriod = (link: any) => `${link.statement_year}-${String(link.statement_month).padStart(2, '0')}`;
+  const fmtAmount = (v: any) =>
+    v == null ? '—' : Number(v).toLocaleString('en-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const issueIcon = (issues: string[]) => {
     if (issues.includes('gap')) return '🔴';
@@ -107,14 +109,27 @@ export default function ContinuityChain({ endpoint, queryKey, type }: Props) {
                       link.issues.includes('overlap') || link.issues.includes('date_overlap') ? 'border-orange-400 bg-orange-100 dark:bg-orange-900/30' :
                       'border-green-300 bg-green-100 dark:bg-green-900/30'}`}>
                       <div className="text-center font-mono font-medium">{itemPeriod(link)}</div>
+                      <div className="text-center text-[10px] font-mono text-muted-foreground" title={tr('Opening → Closing', '期初 → 期末', '期初 → 期末')}>
+                        {fmtAmount(link.opening_balance)} → {fmtAmount(link.closing_balance)}
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
 
               {g.chain.some((l: any) => l.issues.includes('balance_mismatch')) && (
-                <div className="text-xs text-yellow-700 dark:text-yellow-400 mt-2">
-                  {tr('Some statements have balance mismatches between closing and next opening.', '部分月結單的期末與下期期初餘額不符。', '部分月结单的期末与下期期初余额不符。')}
+                <div className="text-xs text-yellow-700 dark:text-yellow-400 mt-2 space-y-1">
+                  {tr('Balance mismatches between closing and next opening:', '期末與下期期初餘額不符：', '期末与下期期初余额不符：')}
+                  {g.chain.filter((l: any) => l.issues.includes('balance_mismatch')).map((l: any) => {
+                    const idx = g.chain.findIndex((c: any) => c.id === l.id);
+                    const prev = idx > 0 ? g.chain[idx - 1] : null;
+                    return (
+                      <div key={l.id} className="font-mono">
+                        {prev ? `${itemPeriod(prev)} ${tr('closing', '期末', '期末')} ${fmtAmount(prev.closing_balance)} → ${itemPeriod(l)} ${tr('opening', '期初', '期初')} ${fmtAmount(l.actual_opening)}` : ''}
+                        {' '}· {tr('expected', '應為', '应为')} {fmtAmount(l.expected_opening)}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
