@@ -1,6 +1,6 @@
 # Deployment Context — TeCS (OPCC CRM)
 
-> Saved: 2026-07-27 | Updated: 2026-07-28
+> Saved: 2026-07-27 | Updated: 2026-08-13
 
 ## URLs — Testing vs Production
 
@@ -9,8 +9,8 @@
 | Component | URL | Status |
 |-----------|-----|--------|
 | **Testing Frontend** | `https://opcc-crm-testing.pages.dev` | ✅ |
-| **Testing Preview** | `https://5b91e3b6.opcc-crm-testing.pages.dev` | ✅ Latest (2026-07-28) |
-| **API Worker** (shared) | `https://opcc-crm-api.ruhan-farhan.workers.dev` | ✅ v9a79d71 |
+| **Testing Preview** | `https://a8435430.opcc-crm-testing.pages.dev` | ✅ Latest (2026-08-13) |
+| **API Worker** (shared) | `https://opcc-crm-api.ruhan-farhan.workers.dev` | ✅ v aa93d928 |
 
 > ⚠️ **Testing and Production share the same API Worker and D1 database.** Be careful with data changes.
 
@@ -158,6 +158,25 @@ npx wrangler secret put JWT_SECRET
 | Admin | `memonruhan731@gmail.com` / `Hamdan123` |
 | Supervisor (Demo) | `muhammadruhan.farhan25@nixorcollege.edu.pk` / `password` |
 | Joseph Lin (PnR) | `joseph.lin@pnr.hk` / `TCS9M6Q721!` |
+
+## Recent Changes (2026-08-13)
+
+### Cancel Upload Rollback
+- Canceling the OCR type-mismatch dialog now calls `DELETE /file-storage/{id}` — soft-deletes the file row + linked bank statement/transactions, hard-deletes invoice drafts. Lower-tier 403s fall back to a warning toast.
+
+### Relative Upload Time in File Storage
+- File rows show a localized relative age ("2 minutes ago" / "2 分鐘前" / "2分钟前") via `Intl.RelativeTimeFormat` (locale map: en / zh-HK / zh-CN), full timestamp in the hover tooltip; ≥7 days shows the local date.
+- Helper: `frontend/src/lib/time.ts` — `relativeTimeBucket(createdAt, now?)`, `parseCreatedAt(createdAt)` (parses DB UTC "YYYY-MM-DD HH:MM:SS").
+
+### Invoice Channel Split (File Upload)
+- `Bank-TXN Invoice` split into **Sales Invoice** (`sales_invoice`, forces `outgoing`) and **Purchase Invoice** (`purchase_invoice`, forces `incoming`); **Cash Invoice** renamed to **Cash Payment** (label only, key `cash_invoice` unchanged).
+- Direction-based mismatch: OCR direction contradicting the chosen tab opens the mismatch dialog with the detected name ("Purchase Invoice"/"Sales Invoice") — Switch / Force / Cancel (Cancel rolls back).
+- API: `POST /file-storage/:id/import-document` accepts optional `direction=outgoing|incoming`; a user-declared direction no longer raises `needs_direction_review` or the persisted `needs_review` 'direction' flag.
+
+### Regression Suite
+- Run the regression folder with: `npx playwright test --config playwright.regression.config.ts regression-tests/` (the main config's `testDir: './tests'` excludes it).
+- Suite green: 10 tests passing incl. `regression-invoice-direction.spec.ts` (TC-DIR-01 mismatch+cancel rollback, TC-DIR-02 force direction + no review flag).
+- Known one-liner follow-up: `regression-tests/run-regression-api.ts` SAMPLES path is one level too shallow (`tests/run-regression-api.ts` has the correct `../../../test-sample-real/PNR`).
 
 ## Recent Changes (2026-07-28)
 
