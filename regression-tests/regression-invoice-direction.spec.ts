@@ -83,6 +83,8 @@ test.describe('Invoice direction channels', () => {
       const data = await page.evaluate(async () => await (await fetch('/api/file-storage')).json());
       const row = (data?.data || []).find((f: any) => f.filename === path.basename(tmpPath));
       expect(row?.direction).toBe('outgoing');
+      // User-declared direction must not resurface as a review prompt
+      expect(row?.invoice_needs_review || '').not.toContain('direction');
     } finally {
       try { fs.unlinkSync(tmpPath); } catch {}
     }

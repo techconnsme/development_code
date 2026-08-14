@@ -1720,7 +1720,7 @@ ${ocrText.slice(0, 8000)}`;
   // Direction uncertainty and company-name-not-found are informational
   // flags but don't block auto-save when the numbers are consistent.
   const reviewFlags: string[] = [];
-  if (needsDirectionReview) reviewFlags.push('direction');
+  if (needsDirectionReview && !directionOverride) reviewFlags.push('direction');
   if (companyNotDetected) reviewFlags.push('company_not_detected');
   if (isDuplicate) reviewFlags.push('duplicate');
   if (totalMismatch) reviewFlags.push('total');
