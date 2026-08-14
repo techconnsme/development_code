@@ -83,23 +83,33 @@ test.describe('Regression Full Flow — PNR', () => {
     await login(page);
   });
 
-  test('1. Bank Statement Upload & Review', async ({ page }) => {
+  test('1. Bank Statement Upload (auto-save or review)', async ({ page }) => {
     const file = 'estatement/eStatement 20250228.pdf';
     const uploaded = await uploadFile(page, file, 'Bank Statement');
     if (!uploaded) { test.skip(); return; }
 
     // Statements that need no review are auto-saved and land on the list;
-    // reviewable ones go to the review page. Accept either.
+    // reviewable ones go to the review page. Branch on which route we got.
     await page.waitForURL(/\/bank-statements(\/review\/[^/]+)?$/, { timeout: 60000 });
-    console.log('✅ Bank statement processed (review page or list)');
+    const url = page.url();
 
-    // Check extracted fields are visible
-    const body = await page.textContent('body');
-    expect(body).not.toContain('Could not read this file');
-
-    // Verify bank name field exists (editable input)
-    const bankNameInput = page.locator('input').filter({ has: page.locator('[value]') }).first();
-    console.log('Bank statement review page loaded');
+    if (/\/bank-statements\/review\//.test(url)) {
+      // Review page — the statement was read successfully: extracted fields shown
+      const body = await page.textContent('body');
+      expect(body).not.toContain('Could not read this file');
+      await expect(page.locator('input').first()).toBeVisible({ timeout: 10000 });
+      console.log('✅ Bank statement review page loaded (extracted fields visible)');
+    } else {
+      // Auto-saved to the list — the statement row must be present. The page
+      // defaults to the most recent completed fiscal year (25-26), which
+      // excludes the Feb-2025 statement; switch to FY 2024-2025 first.
+      await page.evaluate(() => localStorage.setItem('globalFiscalYear', '2024-2025'));
+      await page.reload({ waitUntil: 'networkidle' });
+      const body = await page.textContent('body');
+      expect(body).not.toContain('Could not read this file');
+      await expect(page.getByText(/HSBC|eStatement/).first()).toBeVisible({ timeout: 15000 });
+      console.log('✅ Bank statement auto-saved (row visible in list)');
+    }
   });
 
   test('2. AP Invoice Upload & Direction Check', async ({ page }) => {
