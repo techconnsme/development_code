@@ -1098,6 +1098,7 @@ function extractTextFromGlmOcr(glmData: any): string {
 // Shared import: file_record → invoice + invoice_items
 async function importInvoiceFromFile(
   fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, deepseekKey: string, glmApiKey?: string,
+  directionOverride?: string | null,
 ): Promise<{ success: boolean; invoice_id?: string; error?: string; items_count?: number; ocr_failed?: boolean; parsed?: any }> {
   const fileRow = await db.prepare(
     'SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_status, category, direction FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
@@ -1679,7 +1680,7 @@ ${ocrText.slice(0, 8000)}`;
   const dueDate = isReceipt ? issueDate : (parsed?.due_date || new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]);
   // Always use isIncoming from AI+company comparison — never trust fileRow.direction for invoices
   // fileRow.direction is set by classifyFile which can't know company context
-  const direction = isReceipt ? 'incoming' : (isIncoming ? 'incoming' : 'outgoing');
+  const direction = directionOverride || (isReceipt ? 'incoming' : (isIncoming ? 'incoming' : 'outgoing'));
 
   // Duplicate check: if same invoice/receipt number exists, append suffix instead of blocking
   let isDuplicate = false;
@@ -1782,7 +1783,7 @@ ${ocrText.slice(0, 8000)}`;
     folder,
     is_receipt: isReceipt,
     receipt_number: receiptNum,
-    needs_direction_review: needsDirectionReview,
+    needs_direction_review: directionOverride ? false : needsDirectionReview,
     company_not_detected: companyNotDetected,
     total_mismatch: totalMismatch,
     discount_amount: llmDiscount || 0,
@@ -3218,6 +3219,8 @@ files.post('/:id/import-document', async (c) => {
   const fileId = c.req.param('id');
   const db = c.env.DB;
   const force = c.req.query('force') === 'true';
+  const directionQuery = c.req.query('direction');
+  const directionOverride = (directionQuery === 'outgoing' || directionQuery === 'incoming') ? directionQuery : null;
 
   // Get the file's OCR text (or run OCR first if missing)
   // Retry up to 3 times with 500ms delay — D1 has eventual consistency
@@ -3363,7 +3366,7 @@ files.post('/:id/import-document', async (c) => {
       }
       if (forcedType === 'invoice') {
         const result = await importInvoiceFromFile(
-          fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+          fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY, directionOverride
         );
         return c.json({ type: 'invoice', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice } }, result.success ? 201 : 422 as any);
       }
@@ -3371,7 +3374,7 @@ files.post('/:id/import-document', async (c) => {
     } else if (filenameInvoice > filenameBank) {
       // Let importInvoiceFromFile handle the empty invoice draft
       const result = await importInvoiceFromFile(
-        fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+        fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY, directionOverride
       );
       return c.json({ type: 'invoice', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice } }, result.success ? 201 : 422 as any);
     }
@@ -3523,7 +3526,7 @@ files.post('/:id/import-document', async (c) => {
       needs_review: !!(forcedType || result.needs_review) }, 201);
   } else {
     const result = await importInvoiceFromFile(
-      fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+      fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY, directionOverride
     );
     if (!result.success) {
       const status = result.error === 'File not found' ? 404 : result.error?.includes('already exists') || result.error?.includes('already been imported') ? 409 : 422;
