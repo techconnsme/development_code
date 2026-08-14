@@ -1,0 +1,20 @@
+name = "opcc-crm-r2-backup"
+main = "src/index.ts"
+compatibility_date = "2025-01-13"
+account_id = "8c00cc4647a9cf5d8deb5d6a354001e0"
+
+[[r2_buckets]]
+binding = "SOURCE"
+bucket_name = "opcc-crm-files"
+
+[[r2_buckets]]
+binding = "BACKUP"
+bucket_name = "opcc-crm-files-backup"
+
+[[queues.consumers]]
+queue = "opcc-crm-r2-backup"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[vars]
+DEBUG_KEY = "tecs-backup-2026"
