@@ -36,6 +36,7 @@ export default function InvoiceReview() {
   const searchParams = new URLSearchParams(location.search);
   const needsDirectionReview = searchParams.get('review_direction') === '1';
   const companyNotDetected = searchParams.get('company_not_detected') === '1';
+  const newCompany = searchParams.get('new_company') === '1';
   const isDuplicate = searchParams.get('is_duplicate') === '1';
   const dupStatus = searchParams.get('dup_status') || '';
   const autoLinkedId = searchParams.get('auto_linked') || '';
@@ -393,6 +394,31 @@ export default function InvoiceReview() {
                   'This invoice appears to be between two third parties. Please verify who sent and received it before saving.',
                   '此發票似乎涉及兩個第三方。請在儲存前確認發送方和接收方。',
                   '此发票似乎涉及两个第三方。请在储存前确认发送方和接收方。'
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── New company banner ── */}
+      {newCompany && (
+        <div className="mx-4 mt-2 p-3 rounded-lg border-2 border-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🆕</span>
+            <div>
+              <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
+                {tr(
+                  'New company detected — not previously in your records.',
+                  '偵測到新公司 — 你現有的記錄中沒有此公司。',
+                  '侦测到新公司 — 你现有的记录中没有此公司。'
+                )}
+              </p>
+              <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-0.5">
+                {tr(
+                  'The system has added this company to your records. Please verify the name and details below before saving.',
+                  '系統已將此公司加入你的記錄。請在儲存前核對以下名稱和資料。',
+                  '系统已将此公司加入你的记录。请在储存前核对以下名称和资料。'
                 )}
               </p>
             </div>

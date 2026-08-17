@@ -287,7 +287,8 @@ bank.post('/auto-match', async (c) => {
     `SELECT bt.id, bt.transaction_date, bt.description, bt.deposit_amount, bt.reference,
             COALESCE(bs.currency, 'HKD') as currency
      FROM bank_transactions bt LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
-     WHERE bt.user_id = ? AND bt.deleted_at IS NULL AND bt.deposit_amount > 0 AND bt.match_status = 'unmatched'
+     WHERE bt.user_id = ? AND bt.deleted_at IS NULL AND bs.deleted_at IS NULL
+     AND bt.deposit_amount > 0 AND bt.match_status = 'unmatched'
      ORDER BY bt.transaction_date`
   ).bind(tenantId).all() : { results: [] as any[] };
 
@@ -295,7 +296,8 @@ bank.post('/auto-match', async (c) => {
     `SELECT bt.id, bt.transaction_date, bt.description, bt.withdrawal_amount, bt.reference,
             COALESCE(bs.currency, 'HKD') as currency
      FROM bank_transactions bt LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
-     WHERE bt.user_id = ? AND bt.deleted_at IS NULL AND bt.withdrawal_amount > 0 AND bt.match_status = 'unmatched'
+     WHERE bt.user_id = ? AND bt.deleted_at IS NULL AND bs.deleted_at IS NULL
+     AND bt.withdrawal_amount > 0 AND bt.match_status = 'unmatched'
      AND bt.card_statement_id IS NULL
      ORDER BY bt.transaction_date`
   ).bind(tenantId).all() : { results: [] as any[] };

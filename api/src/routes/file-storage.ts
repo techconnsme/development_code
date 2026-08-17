@@ -1104,7 +1104,7 @@ function extractTextFromGlmOcr(glmData: any): string {
 async function importInvoiceFromFile(
   fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, deepseekKey: string, glmApiKey?: string,
   directionOverride?: string | null,
-): Promise<{ success: boolean; invoice_id?: string; error?: string; items_count?: number; ocr_failed?: boolean; parsed?: any; folder?: string; is_receipt?: boolean; receipt_number?: string | null; needs_direction_review?: boolean; company_not_detected?: boolean; total_mismatch?: any; discount_amount?: number; discount_description?: string; ocr_source?: string; usage?: any; glm_usage?: any; deepseek_raw?: string | null; is_duplicate?: boolean; duplicate_status?: string | null; duplicate_existing_id?: string | null; auto_linked_invoice_id?: string | null; direction?: string; duplicate_info?: any; needs_review?: boolean }> {
+): Promise<{ success: boolean; invoice_id?: string; error?: string; items_count?: number; ocr_failed?: boolean; parsed?: any; folder?: string; is_receipt?: boolean; receipt_number?: string | null; needs_direction_review?: boolean; company_not_detected?: boolean; total_mismatch?: any; discount_amount?: number; discount_description?: string; ocr_source?: string; usage?: any; glm_usage?: any; deepseek_raw?: string | null; is_duplicate?: boolean; duplicate_status?: string | null; duplicate_existing_id?: string | null; auto_linked_invoice_id?: string | null; new_counterparty?: boolean; direction?: string; duplicate_info?: any; needs_review?: boolean }> {
   const fileRow = await db.prepare(
     'SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_status, category, direction FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
   ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string; category: string; direction: string }>();
@@ -1363,9 +1363,21 @@ ${ocrText.slice(0, 8000)}`;
     const ownCompany = await db.prepare(
       'SELECT name, legal_name, short_name FROM company_settings WHERE user_id = ?'
     ).bind(userId).first<{ name: string | null; legal_name: string | null; short_name: string | null }>();
-    const ownCandidates = [ownCompany?.name, ownCompany?.legal_name, ownCompany?.short_name]
+    let ownCandidates = [ownCompany?.name, ownCompany?.legal_name, ownCompany?.short_name]
       .filter((s): s is string => !!s && s.trim().length > 0);
-    const ownNorm = normalizeCompanyName(ownCompany?.name);
+    // Fallback: no company_settings row (e.g. legacy accounts) → use the user's
+    // own company name so direction detection still has something to compare
+    // against. 2026-08-18: Joseph Lin had no company_settings row, so every
+    // own-issued invoice (letterhead = own company) was heuristically guessed
+    // as incoming. The fuzzy matcher tolerates spelling variants (e.g.
+    // "Proficiency…" vs "Proficient…" scores ~97), so the spelling is not the
+    // blocker — the MISSING own-name was.
+    if (ownCandidates.length === 0) {
+      const u = await db.prepare('SELECT company_name FROM users WHERE id = ?')
+        .bind(userId).first<{ company_name: string | null }>();
+      if (u?.company_name && u.company_name.trim().length > 0) ownCandidates.push(u.company_name);
+    }
+    const ownNorm = normalizeCompanyName(ownCandidates[0] || '');
     const vendorNorm = normalizeCompanyName(parsed?.vendor_name);
     const customerNorm = normalizeCompanyName(parsed?.customer_name);
     const hasVendor = !!(parsed?.vendor_name && parsed.vendor_name.trim().length > 2);
@@ -1402,6 +1414,9 @@ ${ocrText.slice(0, 8000)}`;
       // Company settings not set, only one party extracted, or OCR incomplete.
       // Fall back to heuristics — but also flag for review since we're uncertain.
       needsDirectionReview = true;
+      // Own company unknown → no party can be matched to the client company
+      // (previously only the "both third parties" branch set this flag).
+      if (!ownKnown) companyNotDetected = true;
       const ocrUpper = ocrText.toUpperCase();
       const acNameMatch = ocrUpper.match(/A\/C\s*NAME\s*[:：]?\s*([A-Z\s&']+?)(?:\n|$)/);
       const acName = normalizeCompanyName(acNameMatch?.[1] || '');
@@ -1565,11 +1580,16 @@ ${ocrText.slice(0, 8000)}`;
 
   let customerId: string | null = null;
   let supplierId: string | null = null;
+  // True when the counterparty was NOT in our customers/suppliers DB and a new
+  // record had to be created — surfaced to the user as a review flag so they
+  // can confirm the new company (2026-08-18).
+  let newCounterparty = false;
 
   if (isIncoming && isValidName(customerName)) {
     // Supplier invoice — find or create in suppliers table (fuzzy dedup)
     const supResult = await findOrCreateCounterparty('suppliers', customerName, customerEmail);
     supplierId = supResult.id;
+    newCounterparty = supResult.created;
     // For incoming invoices, we (PNR) are the customer being billed.
     // Find or create a self-customer record representing our own company.
     const ownCompanyName = (await db.prepare('SELECT name FROM company_settings WHERE user_id = ?').bind(userId).first<{ name: string | null }>())?.name || 'My Company (please set your company name in Settings)';
@@ -1585,6 +1605,7 @@ ${ocrText.slice(0, 8000)}`;
     // Outgoing invoice — find or create in customers table (fuzzy dedup)
     const custResult = await findOrCreateCounterparty('customers', customerName, customerEmail);
     customerId = custResult.id;
+    newCounterparty = custResult.created;
   }
 
   // If no customer found/created (name was invalid/unknown), use a placeholder
@@ -1758,6 +1779,7 @@ ${ocrText.slice(0, 8000)}`;
   if (companyNotDetected) reviewFlags.push('company_not_detected');
   if (isDuplicate) reviewFlags.push('duplicate');
   if (totalMismatch) reviewFlags.push('total');
+  if (newCounterparty) reviewFlags.push('new_company');
   const needsReview = reviewFlags.length > 0 ? reviewFlags.join(',') : '';
 
   const invId = `i-${uuidv4().slice(0, 8)}`;
@@ -1830,6 +1852,7 @@ ${ocrText.slice(0, 8000)}`;
     duplicate_status: duplicateStatus,
     duplicate_existing_id: duplicateExistingId,
     auto_linked_invoice_id: linkedInvoiceId,
+    new_counterparty: newCounterparty,
     direction,
     parsed: {
       invoice_number: invNumber,

@@ -19,6 +19,7 @@ function reviewPageFlags(result: any): string {
   if (result?.needs_direction_review) params.set('review_direction', '1');
   if (result?.company_not_detected) params.set('company_not_detected', '1');
   if (result?.is_duplicate) params.set('is_duplicate', '1');
+  if (result?.new_counterparty) params.set('new_company', '1');
   if (result?.duplicate_status) params.set('dup_status', result.duplicate_status);
   if (result?.auto_linked_invoice_id) params.set('auto_linked', result.auto_linked_invoice_id);
   if (result?.direction) params.set('direction', result.direction);

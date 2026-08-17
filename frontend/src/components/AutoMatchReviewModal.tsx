@@ -49,7 +49,7 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-card border rounded-xl p-6 w-full max-w-2xl mx-4 space-y-4 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-card border rounded-xl p-6 w-full max-w-[95vw] mx-4 space-y-4 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-semibold flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-blue-600" />
@@ -83,7 +83,6 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
             <div className="space-y-2 overflow-y-auto flex-1">
               {pending.map(m => {
                 const open = previewMatch?.transaction_id === m.transaction_id;
-                const hasFiles = !!(m.invoice_file_id || m.stmt_file_id);
                 return (
                   <div
                     key={m.transaction_id}
@@ -106,12 +105,10 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
                         <p className="text-xs text-muted-foreground mt-0.5 truncate">{m.reason}</p>
                       </div>
                       <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
-                        {hasFiles && (
-                          <button onClick={() => setPreviewMatch(open ? null : m)}
-                            className="px-2 py-1 text-xs text-primary hover:bg-blue-50 rounded">
-                            {tr('Preview', '預覽', '预览')}
-                          </button>
-                        )}
+                        <button onClick={() => setPreviewMatch(open ? null : m)}
+                          className="px-2 py-1 text-xs text-primary hover:bg-blue-50 rounded">
+                          {tr('Preview', '預覽', '预览')}
+                        </button>
                         <button onClick={() => handleConfirm(m.transaction_id, m.invoice_id)}
                           disabled={processing === m.transaction_id}
                           className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-50">
@@ -126,31 +123,39 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
                     </div>
 
                     {/* Animated accordion preview — slides down under the row.
-                        Always mounted (grid-rows clip) so iframes keep their PDFs loaded. */}
-                    {hasFiles && (
-                      <div className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-                        <div className="overflow-hidden min-h-0">
-                          <div className="border-t px-3 pt-3 pb-1">
-                            <div className="flex gap-3 h-56">
-                              {m.stmt_file_id && (
-                                <div className="flex-1 flex flex-col">
-                                  <span className="text-[10px] text-muted-foreground mb-1">{tr('Bank Statement', '銀行月結單', '银行月结单')}</span>
-                                  <iframe src={`${WORKER_API_BASE}/file-storage/${m.stmt_file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
-                                    className="w-full flex-1 border rounded" title="Bank Statement" />
+                        Always mounted (grid-rows clip) so iframes keep their PDFs loaded.
+                        Bank statement PDF and invoice PDF side by side; a labeled
+                        placeholder fills in when one side has no file. */}
+                    <div className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                      <div className="overflow-hidden min-h-0">
+                        <div className="border-t px-3 pt-3 pb-1">
+                          <div className="flex gap-3 h-80">
+                            <div className="flex-1 flex flex-col">
+                              <span className="text-[10px] text-muted-foreground mb-1">{tr('Bank Statement', '銀行月結單', '银行月结单')}</span>
+                              {m.stmt_file_id ? (
+                                <iframe src={`${WORKER_API_BASE}/file-storage/${m.stmt_file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
+                                  className="w-full flex-1 border rounded" title="Bank Statement" />
+                              ) : (
+                                <div className="w-full flex-1 border rounded bg-muted/30 flex items-center justify-center text-xs text-muted-foreground">
+                                  {tr('No statement file', '沒有月結單文件', '没有月结单文件')}
                                 </div>
                               )}
-                              {m.invoice_file_id && (
-                                <div className="flex-1 flex flex-col">
-                                  <span className="text-[10px] text-muted-foreground mb-1">{tr('Invoice', '發票', '发票')}</span>
-                                  <iframe src={`${WORKER_API_BASE}/file-storage/${m.invoice_file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
-                                    className="w-full flex-1 border rounded" title="Invoice" />
+                            </div>
+                            <div className="flex-1 flex flex-col">
+                              <span className="text-[10px] text-muted-foreground mb-1">{tr('Invoice', '發票', '发票')}</span>
+                              {m.invoice_file_id ? (
+                                <iframe src={`${WORKER_API_BASE}/file-storage/${m.invoice_file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
+                                  className="w-full flex-1 border rounded" title="Invoice" />
+                              ) : (
+                                <div className="w-full flex-1 border rounded bg-muted/30 flex items-center justify-center text-xs text-muted-foreground">
+                                  {tr('No invoice file', '沒有發票文件', '没有发票文件')}
                                 </div>
                               )}
                             </div>
                           </div>
                         </div>
                       </div>
-                    )}
+                    </div>
                   </div>
                 );
               })}
