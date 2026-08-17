@@ -255,7 +255,7 @@ export default function InvoiceReview() {
   }
 
   function handleDiscard() {
-    if (!window.confirm('Discard this invoice? The file will remain in File Storage but the extracted data will be deleted.')) return;
+    if (!window.confirm('Discard this invoice? The extracted data and the file will be moved to the Recycle Bin (restorable for 30 days).')) return;
     discardMut.mutate();
   }
 

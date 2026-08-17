@@ -1007,7 +1007,14 @@ bank.get('/:id', async (c) => {
       ORDER BY bt.sort_order`
   ).bind(c.req.param('id')).all();
 
-  return c.json({ ...stmt, transactions: txs.results });
+  // True reconciliation flag: a bank_reconciliations row exists for this statement.
+  // (balance_status='ok' only means the balance math checked out at import — the
+  // frontend must NOT treat it as reconciled/locked. 2026-08-17)
+  const recon = await c.env.DB.prepare(
+    'SELECT COUNT(*) as n FROM bank_reconciliations WHERE bank_statement_id = ? AND user_id = ?'
+  ).bind(c.req.param('id'), tenantId).first<{ n: number }>();
+
+  return c.json({ ...stmt, transactions: txs.results, is_reconciled: (recon?.n || 0) > 0 });
 });
 
 // ── Import (parsed data + transactions) ──

@@ -1640,11 +1640,40 @@ ${ocrText.slice(0, 8000)}`;
 
   // Compute total: prefer parsed total, but if the LLM detected a discount, use subtotal - discount
   const computedTotal = llmDiscount > 0 ? subtotal - llmDiscount : subtotal;
-  const total = parsed?.total || computedTotal;
+  let total = parsed?.total || computedTotal;
 
-  // ── Total validation: check if AI line items sum matches AI total, accounting for discounts ──
+  // ── Printed grand-total extraction (EN + ZH labels, HK bilingual invoices) ──
+  // Trust the printed "Total Amount Due" / "總額" over the AI-parsed total when
+  // both exist and disagree. Fixes unit-price-as-total misreads (e.g. EHSIA
+  // invoice #E2025501: AI stored the $480 unit price instead of the printed
+  // $4,800 grand total — the self-consistency check below couldn't catch it
+  // because the AI's own item sum agreed with its own wrong total).
+  const printedTotalMatch = ocrText.match(
+    /(?:TOTAL\s*AMOUNT\s*DUE|GRAND\s*TOTAL|TOTAL\s*DUE|AMOUNT\s*DUE|TOTAL|應付總額|應付金額|應繳金額|應繳總額|到期應付|付款總額|總金額|總計|總額|合計|合共|共計|總數|總價|總款項|应付总额|应付金额|应缴金额|应缴总额|到期应付|付款总额|总金额|总计|总额|合计|合共|共计|总数|总价|总款项)[\s:：]*[$HKD]*\s*(?:港幣|港元)?\s*([\d,]+\.?\d*)/i
+  );
+  const printedTotal = printedTotalMatch ? parseFloat(printedTotalMatch[1].replace(/,/g, '')) : null;
+
+  // ── Total validation ──
+  // Cross-check three signals — printed grand total (regex), AI total, item sum —
+  // and pick the most credible. toMarkdown OCR is non-deterministic run-to-run:
+  // sometimes it garbles the printed total (e.g. "$480" instead of "$4,800"),
+  // sometimes the AI total is wrong. A grand total can never be SMALLER than the
+  // largest detected amount, so when the printed value sits below the AI/item
+  // signals we distrust the printed value and use the larger one. Any
+  // intervention flags the invoice for review.
   let totalMismatch: { expected: number; actual: number; diff: number } | null = null;
-  if (parsed?.total && items.length > 0) {
+  const aiMax = Math.max(parsed?.total || 0, subtotal);
+  if (printedTotal != null && printedTotal > 0) {
+    if (printedTotal < aiMax && aiMax > 0) {
+      totalMismatch = { expected: aiMax, actual: printedTotal, diff: printedTotal - aiMax };
+      total = aiMax;
+      console.log(`[TOTAL-CHECK] printed=${printedTotal} < detected=${aiMax} → using detected, needs_review=total`);
+    } else if (Math.abs(printedTotal - total) > 0.02) {
+      totalMismatch = { expected: printedTotal, actual: total, diff: total - printedTotal };
+      total = printedTotal;
+      console.log(`[TOTAL-CHECK] printed=${printedTotal} ai=${totalMismatch.actual} → using printed, needs_review=total`);
+    }
+  } else if (parsed?.total && items.length > 0) {
     const expectedAfterDiscount = subtotal - llmDiscount;
     if (Math.abs(expectedAfterDiscount - parsed.total) > 0.01) {
       totalMismatch = { expected: expectedAfterDiscount, actual: parsed.total, diff: parsed.total - expectedAfterDiscount };

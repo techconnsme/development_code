@@ -52,7 +52,10 @@ export default function BankStatements() {
   const [acctModalTx, setAcctModalTx] = useState<Transaction | null>(null);
   const [aiLoading, setAiLoading] = useState<string | null>(null);
   const [reconData, setReconData] = useState<any>(null);
-  const [hideReconciledCoa, setHideReconciledCoa] = useState(true);
+  // Default OFF: balance_status='ok' only means the balance math checked out at
+  // import — it does NOT mean the statement is reconciled. Hiding COA controls by
+  // default blocked account assignment on every auto-verified statement (2026-08-17).
+  const [hideReconciledCoa, setHideReconciledCoa] = useState(false);
   const [autoMatchResults, setAutoMatchResults] = useState<any[] | null>(null);
   const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
 
@@ -487,7 +490,7 @@ export default function BankStatements() {
                                       (() => {
                                         const acc = accounts.find((a: any) => a.account_code === tx.account_code);
                                         const name = acc?.account_name || '(unknown account)';
-                                        const isReconciled = detail?.balance_status === 'ok';
+                                        const isReconciled = !!detail?.is_reconciled;
                                         return (
                                           <span
                                             className={`text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded inline-block max-w-[260px] truncate ${
@@ -501,7 +504,7 @@ export default function BankStatements() {
                                           </span>
                                         );
                                       })()
-                                    ) : hideReconciledCoa && detail?.balance_status === 'ok' ? (
+                                    ) : hideReconciledCoa && detail?.is_reconciled ? (
                                       <span className="text-xs text-muted-foreground italic">—</span>
                                     ) : (
                                       <select

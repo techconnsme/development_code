@@ -350,23 +350,31 @@ invoices.delete('/:id', async (c) => {
   const id = c.req.param('id');
 
   const existing = await db.prepare(
-    'SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(id, tenantId).first<{ id: string }>();
+    'SELECT id, file_id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(id, tenantId).first<{ id: string; file_id: string | null }>();
   if (!existing) return c.json({ error: 'Invoice not found' }, 404);
 
   // SOFT DELETE — aligned with the bank statement flow (2026-08-17).
-  // The file stays in File Storage (as the review-page dialog promises), the
-  // invoice row is restorable from the Recycle Bin for 30 days, and any
-  // receipt↔invoice links are preserved for restore.
+  // Both the invoice AND its linked file are soft-deleted (bank-statement style):
+  // they disappear from the lists and appear in the Recycle Bin, restorable for
+  // 30 days. Receipt↔invoice links are preserved for restore.
   const now = new Date().toISOString();
   await db.prepare(
     'UPDATE invoices SET deleted_at = ?, deleted_by = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
   ).bind(now, user.id, id, tenantId).run();
 
-  await db.prepare('INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'soft_delete', 'invoice', id, JSON.stringify({ restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() })).run();
+  let fileDeleted = false;
+  if (existing.file_id) {
+    const fRes = await db.prepare(
+      'UPDATE file_records SET deleted_at = ?, deleted_by = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(now, user.id, existing.file_id, tenantId).run();
+    fileDeleted = (fRes.meta?.changes || 0) > 0;
+  }
 
-  return c.json({ success: true, restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() });
+  await db.prepare('INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'soft_delete', 'invoice', id, JSON.stringify({ file_deleted: fileDeleted, restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() })).run();
+
+  return c.json({ success: true, file_deleted: fileDeleted, restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() });
 });
 
 // ── Auto-match receipts to invoices (returns suggestions, does NOT link) ──
