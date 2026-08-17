@@ -17,9 +17,9 @@ CRITICAL — STRICT TOOL EXECUTION FORMAT:
 CRITICAL — ANNOUNCE-AND-EXECUTE MODE:
 - When the user asks a question that requires data (counting, listing, searching, querying), you MUST call the appropriate function AND present results in ONE response.
 - Format: briefly state what you're doing, then call the function immediately. Do NOT wait for confirmation.
-- Example: "查詢中..." + call get_counts → present the results.
-- Example: "列出月結單..." + call list_bank_statements → present the list.
-- NEVER say "我準備呼叫" or ask the user to confirm. Just execute.
+- Example: briefly announce what you're doing (in the user's language), then call get_counts → present the results.
+- Example: announce the listing (in the user's language) + call list_bank_statements → present the list.
+- NEVER say "I am about to call" or ask the user to confirm. Just execute.
 
 Rules:
 - NEVER write tool call syntax (DSML, XML, <invoke> tags, or function pseudo-code) into your visible reply text — always execute tools through the structured function-calling interface.
@@ -29,7 +29,7 @@ Rules:
 - If a user asks "how many", call get_counts
 - If a user asks "list" or "search", call the appropriate function
 - If a user asks to create something, call the appropriate create function
-- Reply in the SAME language as the user (繁體中文, 简体中文, or English)
+- DYNAMIC LANGUAGE: Detect the language of each user message and reply in the SAME language (English, 繁體中文, or 简体中文). If the user switches language, switch with them.
 - Be concise and direct
 - When presenting numbers, format them clearly
 - When presenting lists, show the REAL data from your function calls — do not summarize into fake examples
@@ -37,14 +37,14 @@ Rules:
 CRITICAL DELETE RULES:
 - NEVER call delete_invoice, delete_quotation, delete_purchase_order, or delete_service_order immediately
 - When the user asks to delete something, FIRST list all items that will be deleted (show ID, number, status, amount)
-- Then ask the user to confirm by replying "確認" or "yes" before proceeding
+- Then ask the user to confirm (e.g. by replying "確認/确认" or "yes") before proceeding
 - Only after explicit user confirmation should you call the delete function(s)
 - If the user does not confirm, do NOT delete anything
 
 CRITICAL BOOKKEEPING RULES:
 - NEVER call create_bookkeeping_transaction, update_journal_entry, or delete_journal_entry immediately
 - When the user asks to create, modify, or delete a journal entry, FIRST show the full details of what will be done (date, description, all debit/credit lines with account codes and amounts)
-- Then ask the user to confirm by replying "確認" or "yes" before proceeding
+- Then ask the user to confirm (e.g. by replying "確認/确认" or "yes") before proceeding
 - Only after explicit user confirmation should you call the function
 - If the user does not confirm, do NOT make any changes
 - When modifying an existing entry, use update_journal_entry to change it directly rather than creating offsetting entries
@@ -69,6 +69,69 @@ BANK STATEMENT RULES:
 FIRM TOOLS: Use list_firms for firm info, list_staff for staff, add_staff_member to add employees. NEVER use query_database for these.
 CODE TOOLS: Use read_code/write_code/list_project_files/git_log/deploy_frontend to edit code. Always read_code first, then write COMPLETE file content.
 For counts/numbers: if user asks "多少/幾個/數量/how many/count", call get_counts.`;
+
+type UiLang = 'en' | 'zh-Hant' | 'zh-Hans';
+
+// Characters unique to each script, used to tell Simplified from Traditional Chinese
+const SIMPLIFIED_ONLY = '们这说让现见样东马实发后点么对时问开关经会过国为与认语记账单询还请帮户买卖报录车长头写网页员货费总结数据读计应该没银顾产价购采余额详细输选择确删编辑显载传导电电话邮称码状态类贷税凭证审务业专转调阅览图标办无万亿号档约议谈论评测试验检复';
+const TRADITIONAL_ONLY = '們這說讓現見樣東馬實發後點麼對時問開關經會過國為與認語記賬單詢還請幫戶買賣報錄車長頭寫網頁員貨費總結數據讀計應該沒銀顧產價購採餘額詳細輸選擇確刪編輯顯載傳導電電話郵稱碼狀態類貸稅憑證審務業專轉調閱覽圖標辦無萬億號檔約議談論評測試驗檢復複簽籤';
+
+function countChars(text: string, set: string): number {
+  let n = 0;
+  for (const ch of text) if (set.includes(ch)) n++;
+  return n;
+}
+
+// Detect the user's language from message text, with the UI language as a hint
+// (used when the message contains no CJK, e.g. "ok" or "thanks")
+function detectLang(text: string, hint?: string): UiLang {
+  const hasCjk = /[一-鿿]/.test(text || '');
+  if (!hasCjk) {
+    if (hint === 'en' || hint === 'zh-Hans' || hint === 'zh-Hant') return hint;
+    return 'en';
+  }
+  const simp = countChars(text, SIMPLIFIED_ONLY);
+  const trad = countChars(text, TRADITIONAL_ONLY);
+  if (simp > trad) return 'zh-Hans';
+  if (trad > simp) return 'zh-Hant';
+  // Ambiguous (only characters shared by both scripts): fall back to hint, then app default (zh-HK)
+  if (hint === 'zh-Hans') return 'zh-Hans';
+  return 'zh-Hant';
+}
+
+// Localized UI strings for chatbot fallbacks / status text
+const UI_STRINGS: Record<UiLang, {
+  bankStatementHeader: string; askAgain: string; cannotProcess: string;
+  processing: string; error: string; done: string; langName: string;
+}> = {
+  en: {
+    bankStatementHeader: '## Bank Statement Transactions\n\n',
+    askAgain: 'Sorry, please re-enter your question.',
+    cannotProcess: 'Sorry, I could not process that.',
+    processing: 'Processing...',
+    error: 'Sorry, an error occurred while processing your request.',
+    done: 'Done.',
+    langName: 'English',
+  },
+  'zh-Hant': {
+    bankStatementHeader: '## 月結單交易記錄\n\n',
+    askAgain: '抱歉，請重新輸入您的問題。',
+    cannotProcess: '抱歉，我無法處理這個請求。',
+    processing: '處理中...',
+    error: '抱歉，處理您的請求時發生錯誤。',
+    done: '完成。',
+    langName: '繁體中文 (Traditional Chinese)',
+  },
+  'zh-Hans': {
+    bankStatementHeader: '## 月结单交易记录\n\n',
+    askAgain: '抱歉，请重新输入您的问题。',
+    cannotProcess: '抱歉，我无法处理这个请求。',
+    processing: '处理中...',
+    error: '抱歉，处理您的请求时发生错误。',
+    done: '完成。',
+    langName: '简体中文 (Simplified Chinese)',
+  },
+};
 
 const TOOLS: any[] = [
   // ── Dashboard / Summary ──
@@ -1538,7 +1601,7 @@ chat.post('/', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const body = await c.req.json();
-  const { message, history, file, session_id, stream: doStream } = body;
+  const { message, history, file, session_id, stream: doStream, lang: preferredLang } = body;
 
   if (!message && !file) return c.json({ reply: 'Message required' });
 
@@ -1590,6 +1653,10 @@ chat.post('/', async (c) => {
 
   if (!userMessage) return c.json({ reply: 'Message required' });
 
+  // Detect the user's language (message text, with the UI language as hint)
+  const lang = detectLang(userMessage, preferredLang);
+  const t = UI_STRINGS[lang];
+
   // Save user message
   const userMsgId = `cm-${uuidv4().slice(0, 8)}`;
   await db.prepare('INSERT INTO chat_messages (id, session_id, role, content) VALUES (?, ?, ?, ?)').bind(userMsgId, sid, 'user', userMessage).run();
@@ -1603,7 +1670,7 @@ chat.post('/', async (c) => {
 
   try {
     const today = new Date().toISOString().split('T')[0];
-    const systemPrompt = SYSTEM_PROMPT + `\n\nCurrent date: ${today}`;
+    const systemPrompt = SYSTEM_PROMPT + `\n\nCurrent date: ${today}\n\nLANGUAGE: The user's latest message is written in ${t.langName}. ALWAYS reply in that language (English, 繁體中文, or 简体中文). If the user switches language, switch with them.`;
     const messages: any[] = [{ role: 'system', content: systemPrompt }];
     if (Array.isArray(history)) {
       for (const msg of history.slice(-8)) {
@@ -1643,7 +1710,7 @@ chat.post('/', async (c) => {
         reply = parsed.display;
       } else {
         const response2 = await callLLM(messages);
-        reply = response2.choices?.[0]?.message?.content || 'Sorry, I could not process that.';
+        reply = response2.choices?.[0]?.message?.content || t.cannotProcess;
       }
 
       // Log tool operations to database
@@ -1653,7 +1720,7 @@ chat.post('/', async (c) => {
           .bind(logId, sid, 'tool_log', toolLog.join('\n')).run();
       } catch {}
     } else {
-      reply = choice?.message?.content || 'Sorry, I could not process that.';
+      reply = choice?.message?.content || t.cannotProcess;
 
       // Handle DSML or XML-like tool calls in text (fallback for models without structured tool calling)
       // Broad match: any tag containing "DSML" or "tool_call" or "invoke"
@@ -1784,7 +1851,7 @@ chat.post('/', async (c) => {
           try {
             const parsed = JSON.parse(rawDisplayResult.replace('get_bank_statement_raw: ', ''));
             if (parsed.display) {
-              reply = (cleanReply || '## 月結單交易記錄\n\n') + parsed.display;
+              reply = (cleanReply || t.bankStatementHeader) + parsed.display;
               bypassLlm = true;
               fullLog.push('Bypass LLM: raw display returned directly');
             }
@@ -1796,14 +1863,14 @@ chat.post('/', async (c) => {
           if (allErrors.length > 0 || (allResults.length === 0 && allErrors.length === 0)) {
           const availableFns = TOOLS.map((t: any) => t.function?.name).filter(Boolean).join(', ');
           const retryPrompt = allErrors.length > 0
-            ? `The previous tool calls had errors:\n${allErrors.join('\n')}\n\nAvailable functions: ${availableFns}\n\nPlease retry using ONLY the exact function names above with correct parameters. Execute the functions strictly through the structured tool-calling interface. Never print DSML tags or tool invocation code into your response text.`
-            : `No tool calls were made in the previous response. The user's question was: "${userMessage}"\n\nAvailable functions: ${availableFns}\n\nExecute the appropriate function(s) strictly through the structured tool-calling interface. Never print DSML tags or tool invocation code into your response text.`;
+            ? `The previous tool calls had errors:\n${allErrors.join('\n')}\n\nAvailable functions: ${availableFns}\n\nPlease retry using ONLY the exact function names above with correct parameters. Execute the functions strictly through the structured tool-calling interface. Never print DSML tags or tool invocation code into your response text. Reply in ${t.langName}.`
+            : `No tool calls were made in the previous response. The user's question was: "${userMessage}"\n\nAvailable functions: ${availableFns}\n\nExecute the appropriate function(s) strictly through the structured tool-calling interface. Never print DSML tags or tool invocation code into your response text. Reply in ${t.langName}.`;
 
           fullLog.push(`Phase 2 (retry prompt):`, `  Errors: ${allErrors.length}, Results: ${allResults.length}`, `  Re-prompting DeepSeek...`);
 
           try {
             const retryMessages = [...messages];
-            retryMessages.push({ role: 'assistant', content: cleanReply || 'Processing...' });
+            retryMessages.push({ role: 'assistant', content: cleanReply || t.processing });
             retryMessages.push({ role: 'user', content: retryPrompt });
             const retryResp = await callLLM(retryMessages);
             const retryText = retryResp.choices?.[0]?.message?.content || '';
@@ -1819,41 +1886,41 @@ chat.post('/', async (c) => {
               // Phase 3: If retry also had DSML, get final text answer
               if (allResults.length > 0 || phase2.results.length > 0) {
                 const combinedResults = [...allResults, ...phase2.results];
-                messages.push({ role: 'assistant', content: stripXml(retryText) || 'Processing...' });
-                messages.push({ role: 'user', content: `[Tool results]\n${combinedResults.join('\n')}\n\nPresent this data EXACTLY as shown above. Copy the table verbatim into your response. Do NOT summarize, modify, or invent any data.` });
+                messages.push({ role: 'assistant', content: stripXml(retryText) || t.processing });
+                messages.push({ role: 'user', content: `[Tool results]\n${combinedResults.join('\n')}\n\nPresent this data EXACTLY as shown above. Copy the table verbatim into your response. Do NOT summarize, modify, or invent any data. Reply in ${t.langName}.` });
                 const finalResp = await callLLM(messages);
-                reply = finalResp.choices?.[0]?.message?.content || 'Done.';
+                reply = finalResp.choices?.[0]?.message?.content || t.done;
                 fullLog.push(`Phase 3: Final answer generated (${reply.length} chars)`);
               } else {
                 // Retry tools also failed — ask for plain text answer
                 messages.push({ role: 'assistant', content: 'Tool calls failed.' });
-                messages.push({ role: 'user', content: 'All tool call attempts failed. Please answer the question directly in plain text.' });
+                messages.push({ role: 'user', content: `All tool call attempts failed. Please answer the question directly in plain text. Reply in ${t.langName}.` });
                 const textResp = await callLLM(messages);
-                reply = textResp.choices?.[0]?.message?.content || cleanReply || 'Sorry, I could not process that.';
+                reply = textResp.choices?.[0]?.message?.content || cleanReply || t.cannotProcess;
                 fullLog.push(`Phase 3: Fallback to plain text answer`);
               }
             } else {
               // Retry gave plain text directly
-              reply = retryText || cleanReply || 'Done.';
+              reply = retryText || cleanReply || t.done;
               fullLog.push(`Phase 2: DeepSeek responded in plain text (${reply.length} chars)`);
             }
           } catch (retryErr: any) {
             fullLog.push(`Phase 2 error: ${retryErr.message}`);
-            reply = cleanReply || 'Sorry, an error occurred while processing your request.';
+            reply = cleanReply || t.error;
           }
         } else {
           // Phase 1 succeeded — get final answer from DeepSeek
-          messages.push({ role: 'assistant', content: cleanReply || 'Processing...' });
-          messages.push({ role: 'user', content: `[Tool results]\n${allResults.join('\n')}\n\nPresent this data EXACTLY as shown. Copy the formatted table verbatim. Do NOT summarize, modify, or invent anything.` });
+          messages.push({ role: 'assistant', content: cleanReply || t.processing });
+          messages.push({ role: 'user', content: `[Tool results]\n${allResults.join('\n')}\n\nPresent this data EXACTLY as shown. Copy the formatted table verbatim. Do NOT summarize, modify, or invent anything. Reply in ${t.langName}.` });
           const resp2 = await callLLM(messages);
-          reply = resp2.choices?.[0]?.message?.content || cleanReply || 'Done.';
+          reply = resp2.choices?.[0]?.message?.content || cleanReply || t.done;
           fullLog.push(`Phase 1 success: Final answer generated (${reply.length} chars)`);
         }
 
         } // end if (!bypassLlm)
 
         // Final safety: strip any remaining XML
-        reply = stripXml(reply) || 'Done.';
+        reply = stripXml(reply) || t.done;
         fullLog.push(`=== End Log ===`);
 
         // Save repair log to database
@@ -1877,7 +1944,7 @@ chat.post('/', async (c) => {
 
     // Final safety: if XML still present, strip and return clean
     if (/<[a-z_]+[\s>]/i.test(reply) && /<\/[a-z_]+>/i.test(reply)) {
-      reply = reply.replace(/<[^>]*>/g, '').trim() || '抱歉，請重新輸入您的問題。';
+      reply = reply.replace(/<[^>]*>/g, '').trim() || t.askAgain;
     }
 
     // Return reply — stream if needed
@@ -1894,7 +1961,7 @@ chat.post('/', async (c) => {
     return c.json({ reply, session_id: sid });
   } catch (e: any) {
     console.error('Chat error:', e?.message, e?.stack);
-    return c.json({ reply: `AI error: ${e.message || 'unknown'}`, error_detail: e?.message || 'unknown' }, 500);
+    return c.json({ reply: `${t.error} (${e.message || 'unknown'})`, error_detail: e?.message || 'unknown' }, 500);
   }
 });
 

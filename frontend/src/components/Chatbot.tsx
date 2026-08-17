@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { tr } from '../lib/i18nHelpers';
 import { api, streamChat } from '../lib/api';
 import { MessageCircle, X, Send, Paperclip, Plus, Trash2, History } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -89,7 +90,7 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > MAX_FILE_SIZE) {
-      setMessages(prev => [...prev, { role: 'assistant', content: '檔案太大，請上傳小於 5MB 的檔案。' }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: tr('File too large. Please upload a file smaller than 5MB.', '檔案太大，請上傳小於 5MB 的檔案。', '档案太大，请上传小于 5MB 的文件。') }]);
       return;
     }
     const reader = new FileReader();
@@ -105,8 +106,8 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
     const text = input.trim();
     if ((!text && !attachedFile) || busy) return;
 
-    let content = text || `請分析附件檔案: ${attachedFile?.name}`;
-    const userMsg: Message = { role: 'user', content: attachedFile ? `[附件: ${attachedFile.name}]\n${content}` : content };
+    let content = text || tr('Please analyze the attached file:', '請分析附件檔案:', '请分析附件文件:') + ` ${attachedFile?.name}`;
+    const userMsg: Message = { role: 'user', content: attachedFile ? `[${tr('Attachment', '附件', '附件')}: ${attachedFile.name}]\n${content}` : content };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     const file = attachedFile;
@@ -116,7 +117,7 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
     // Add empty assistant message for streaming
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
-    const body: any = { message: content, history: messages, session_id: sessionId || undefined };
+    const body: any = { message: content, history: messages, session_id: sessionId || undefined, lang: i18n.language };
     if (file) body.file = { name: file.name, data: file.data, type: file.type };
 
     streamChat(
@@ -165,15 +166,15 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
       <div className="flex items-center justify-between px-4 py-3 border-b bg-primary text-primary-foreground flex-shrink-0">
         <div className="flex items-center gap-2">
           <MessageCircle className="h-4 w-4" />
-          <span className="font-medium text-sm">AI 助理 (DeepSeek)</span>
+          <span className="font-medium text-sm">{tr('AI Assistant (DeepSeek)', 'AI 助理 (DeepSeek)', 'AI 助理 (DeepSeek)')}</span>
         </div>
         <div className="flex items-center gap-1">
           <button onClick={() => { loadSessions(); setShowHistory(!showHistory); }}
-            className="p-1 rounded hover:bg-primary-foreground/20" title="歷史記錄">
+            className="p-1 rounded hover:bg-primary-foreground/20" title={tr('History', '歷史記錄', '历史记录')}>
             <History className="h-4 w-4" />
           </button>
           <button onClick={newChat}
-            className="p-1 rounded hover:bg-primary-foreground/20" title="新對話">
+            className="p-1 rounded hover:bg-primary-foreground/20" title={tr('New chat', '新對話', '新对话')}>
             <Plus className="h-4 w-4" />
           </button>
           {onClose && (
@@ -188,13 +189,13 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
       {showHistory ? (
         <div className="flex-1 overflow-y-auto p-3 space-y-1">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-muted-foreground">歷史對話</span>
+            <span className="text-xs font-medium text-muted-foreground">{tr('Chat History', '歷史對話', '历史对话')}</span>
             <button onClick={newChat} className="text-xs text-primary hover:underline flex items-center gap-1">
-              <Plus className="h-3 w-3" /> 新對話
+              <Plus className="h-3 w-3" /> {tr('New chat', '新對話', '新对话')}
             </button>
           </div>
           {sessions.length === 0 && (
-            <p className="text-xs text-muted-foreground text-center mt-4">尚無歷史記錄</p>
+            <p className="text-xs text-muted-foreground text-center mt-4">{tr('No chat history yet', '尚無歷史記錄', '尚无历史记录')}</p>
           )}
           {sessions.map(s => (
             <div key={s.id} onClick={() => loadSession(s.id)}
@@ -202,7 +203,7 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
                 sessionId === s.id ? 'bg-muted font-medium' : ''
               }`}>
               <div className="flex-1 min-w-0">
-                <div className="truncate">{s.title || '未命名對話'}</div>
+                <div className="truncate">{s.title || tr('Untitled chat', '未命名對話', '未命名对话')}</div>
                 <div className="text-xs text-muted-foreground">
                   {new Date(s.updated_at || s.created_at).toLocaleDateString()}
                 </div>
@@ -221,8 +222,8 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
             {messages.length === 0 && (
               <div className="text-center text-sm text-muted-foreground mt-8">
                 <MessageCircle className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                <p>你好！我是 AI 助理</p>
-                <p className="text-xs mt-1">Powered by DeepSeek · 可以上傳 Excel/CSV 檔案分析</p>
+                <p>{tr('Hello! I am your AI assistant', '你好！我是 AI 助理', '你好！我是 AI 助理')}</p>
+                <p className="text-xs mt-1">{tr('Powered by DeepSeek · Upload Excel/CSV files for analysis', 'Powered by DeepSeek · 可以上傳 Excel/CSV 檔案分析', 'Powered by DeepSeek · 可以上传 Excel/CSV 文件分析')}</p>
               </div>
             )}
             {messages.map((m, i) => (
@@ -240,7 +241,7 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
                 </div>
                 <button onClick={() => deleteMessage(i)}
                   className="absolute -top-1 right-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-card border shadow-sm hover:bg-destructive hover:text-destructive-foreground"
-                  title="刪除訊息">
+                  title={tr('Delete message', '刪除訊息', '删除消息')}>
                   <Trash2 className="h-3 w-3" />
                 </button>
               </div>
@@ -248,7 +249,7 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
             {busy && (
               <div className="flex justify-start">
                 <div className="bg-muted px-3 py-2 rounded-lg rounded-bl-sm text-sm text-muted-foreground">
-                  <span className="animate-pulse">系統正在查詢中，請稍候...</span>
+                  <span className="animate-pulse">{tr('Processing your request, please wait...', '系統正在查詢中，請稍候...', '系统正在查询中，请稍候...')}</span>
                 </div>
               </div>
             )}
@@ -260,18 +261,18 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
             <div className="px-3 pt-2 flex items-center gap-2 text-xs text-muted-foreground">
               <Paperclip className="h-3 w-3" />
               <span className="truncate flex-1">{attachedFile.name}</span>
-              <button onClick={() => setAttachedFile(null)} className="text-destructive hover:underline">移除</button>
+              <button onClick={() => setAttachedFile(null)} className="text-destructive hover:underline">{tr('Remove', '移除', '移除')}</button>
             </div>
           )}
           <div className="border-t p-3 flex gap-2 flex-shrink-0">
             <input type="file" ref={fileInputRef} onChange={handleFile}
               accept=".pdf,.xlsx,.xls,.csv,.txt,.png,.jpg" className="hidden" />
             <button onClick={() => fileInputRef.current?.click()} disabled={busy}
-              className="p-2 border rounded-md hover:bg-muted disabled:opacity-40" title="上傳檔案 (PDF, Excel, CSV)">
+              className="p-2 border rounded-md hover:bg-muted disabled:opacity-40" title={tr('Upload file (PDF, Excel, CSV)', '上傳檔案 (PDF, Excel, CSV)', '上传文件 (PDF, Excel, CSV)')}>
               <Paperclip className="h-4 w-4" />
             </button>
             <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown}
-              placeholder="問任何問題... (Cmd+Enter 發送)" disabled={busy} rows={1}
+              placeholder={tr('Ask anything... (Cmd+Enter to send)', '問任何問題... (Cmd+Enter 發送)', '问任何问题... (Cmd+Enter 发送)')} disabled={busy} rows={1}
               className="flex-1 px-3 py-2 border rounded-md bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none" />
             <button onClick={send} disabled={busy || (!input.trim() && !attachedFile)}
               className="p-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-40">
