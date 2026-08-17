@@ -1872,12 +1872,42 @@ chat.post('/', async (c) => {
             const retryMessages = [...messages];
             retryMessages.push({ role: 'assistant', content: cleanReply || t.processing });
             retryMessages.push({ role: 'user', content: retryPrompt });
-            const retryResp = await callLLM(retryMessages);
-            const retryText = retryResp.choices?.[0]?.message?.content || '';
+            const retryResp = await callLLM(retryMessages, TOOLS, true);
+            const retryMsg = retryResp.choices?.[0]?.message;
+            const retryToolCalls = retryMsg?.tool_calls;
+            const retryText = retryMsg?.content || '';
 
-            // Check if retry produced new DSML tool calls
-            const retryHasTags = /<[^>]*invoke\s+name=/i.test(retryText);
-            if (retryHasTags) {
+            // Preferred: execute structured tool calls from the retry (strict tool interface)
+            if (retryToolCalls && retryToolCalls.length > 0) {
+              retryMessages.push(retryMsg);
+              const phase2Results: string[] = [];
+              for (const tc of retryToolCalls) {
+                const fnName = tc.function?.name;
+                let fnArgs: any = {};
+                try { fnArgs = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+                const result = fnName ? await executeTool(fnName, db, tenantId, fnArgs, c.env, user.id) : '{}';
+                phase2Results.push(`${fnName}: ${result}`);
+                retryMessages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+                fullLog.push(`Phase 2 (structured tool call): ${fnName} executed`);
+              }
+              allResults.push(...phase2Results);
+
+              // If a raw display function was called, return its output directly (bypass LLM hallucination)
+              const retryRawDisplay = retryMessages.find((m: any) => {
+                if (m.role !== 'tool') return false;
+                try { const p = JSON.parse(m.content); return !!p.display; } catch { return false; }
+              });
+              if (retryRawDisplay) {
+                reply = JSON.parse(retryRawDisplay.content).display;
+                fullLog.push('Phase 2: raw display returned directly (bypass LLM)');
+              } else {
+                const finalResp = await callLLM(retryMessages);
+                reply = finalResp.choices?.[0]?.message?.content || t.done;
+                fullLog.push(`Phase 2: structured tool calls succeeded; final answer generated (${reply.length} chars)`);
+              }
+            }
+            // Legacy fallback: model still emitted DSML/XML text despite the tool interface
+            else if (/<[^>]*invoke\s+name=/i.test(retryText)) {
               const phase2 = await executeDsmlInvokes(retryText);
               fullLog.push(`Phase 2 (execution):`, ...phase2.log);
               allResults.push(...phase2.results);
