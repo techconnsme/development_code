@@ -9,6 +9,11 @@ chat.use('*', authMiddleware);
 
 const SYSTEM_PROMPT = `You are the OPCC CRM AI assistant. You use the DeepSeek LLM.
 
+CRITICAL — STRICT TOOL EXECUTION FORMAT:
+- Never print DSML tags or tool invocation code into the final response text. Always execute tools strictly via the defined tool interface.
+- Route EVERY tool execution through the structured function-calling interface (the functions provided to you). Never embed raw XML, DSML blocks, <invoke> tags, or function pseudo-code in your visible message content.
+- Your visible reply must contain ONLY the final answer for the user — never internal tool-call payloads or invocation syntax.
+
 CRITICAL — ANNOUNCE-AND-EXECUTE MODE:
 - When the user asks a question that requires data (counting, listing, searching, querying), you MUST call the appropriate function AND present results in ONE response.
 - Format: briefly state what you're doing, then call the function immediately. Do NOT wait for confirmation.
@@ -17,6 +22,7 @@ CRITICAL — ANNOUNCE-AND-EXECUTE MODE:
 - NEVER say "我準備呼叫" or ask the user to confirm. Just execute.
 
 Rules:
+- NEVER write tool call syntax (DSML, XML, <invoke> tags, or function pseudo-code) into your visible reply text — always execute tools through the structured function-calling interface.
 - NEVER fabricate or make up data. Only present data that was ACTUALLY returned by your function calls.
 - When a function returns data, present it EXACTLY as returned. Do not invent fake names, amounts, or transactions.
 - If you cannot access the data, say so honestly. Do not create plausible-looking fake data.
@@ -1790,8 +1796,8 @@ chat.post('/', async (c) => {
           if (allErrors.length > 0 || (allResults.length === 0 && allErrors.length === 0)) {
           const availableFns = TOOLS.map((t: any) => t.function?.name).filter(Boolean).join(', ');
           const retryPrompt = allErrors.length > 0
-            ? `The previous tool calls had errors:\n${allErrors.join('\n')}\n\nAvailable functions: ${availableFns}\n\nPlease retry using ONLY the exact function names above with correct parameters. Output your calls in the same XML/invoke format.`
-            : `No tool calls could be parsed from the previous response. The user's question was: "${userMessage}"\n\nAvailable functions: ${availableFns}\n\nPlease call the appropriate function(s) using the exact names above in <invoke name="..."> format.`;
+            ? `The previous tool calls had errors:\n${allErrors.join('\n')}\n\nAvailable functions: ${availableFns}\n\nPlease retry using ONLY the exact function names above with correct parameters. Execute the functions strictly through the structured tool-calling interface. Never print DSML tags or tool invocation code into your response text.`
+            : `No tool calls were made in the previous response. The user's question was: "${userMessage}"\n\nAvailable functions: ${availableFns}\n\nExecute the appropriate function(s) strictly through the structured tool-calling interface. Never print DSML tags or tool invocation code into your response text.`;
 
           fullLog.push(`Phase 2 (retry prompt):`, `  Errors: ${allErrors.length}, Results: ${allResults.length}`, `  Re-prompting DeepSeek...`);
 
