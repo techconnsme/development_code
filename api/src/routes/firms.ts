@@ -268,9 +268,9 @@ firms.post('/my/clients', async (c) => {
   ).bind(clientUserId, email, passwordHash, name, company_name, isFirmContext ? null : parentUserId).run();
 
   await c.env.DB.prepare(
-    `INSERT INTO company_settings (user_id, name, legal_name, industry, fiscal_year_start, fiscal_year_end)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).bind(clientUserId, company_name, company_name, industry || 'general', fy_start || null, fy_end || null).run();
+    `INSERT INTO company_settings (id, user_id, name, legal_name, industry, fiscal_year_start, fiscal_year_end)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).bind(`cs-${clientUserId}`, clientUserId, company_name, company_name, industry || 'general', fy_start || null, fy_end || null).run();
 
   // Auto-create a personal firm for the new client user
   try {
@@ -329,9 +329,9 @@ firms.post('/:id/clients', async (c) => {
   ).bind(clientUserId, email, passwordHash, name, company_name).run();
 
   await c.env.DB.prepare(
-    `INSERT INTO company_settings (user_id, name, legal_name, industry, fiscal_year_start, fiscal_year_end)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).bind(clientUserId, company_name, company_name, industry || 'general', fy_start || null, fy_end || null).run();
+    `INSERT INTO company_settings (id, user_id, name, legal_name, industry, fiscal_year_start, fiscal_year_end)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).bind(`cs-${clientUserId}`, clientUserId, company_name, company_name, industry || 'general', fy_start || null, fy_end || null).run();
 
   const firmClientId = `fc-${uuidv4().slice(0, 8)}`;
 

@@ -109,6 +109,18 @@ auth.post('/login', authRateLimiter, zValidator('json', loginSchema), async (c) 
     company_name: row.company_name || undefined,
   };
 
+  // Ensure the account has a company_settings row — direction detection and
+  // company identity read it. Self-heals legacy accounts on their next login
+  // (2026-08-18: 26/42 accounts were missing it, which silently broke own-issued
+  // invoice direction detection).
+  if (row.company_name) {
+    try {
+      await db.prepare(
+        'INSERT OR IGNORE INTO company_settings (id, user_id, name) VALUES (?, ?, ?)'
+      ).bind(`cs-${row.id}`, row.id, row.company_name).run();
+    } catch (e: any) { console.log('[SETTINGS-ENSURE] failed:', e?.message); }
+  }
+
   // Check firm membership
   const firmMember = await db.prepare(
     `SELECT fm.firm_id, fm.role as firm_role, f.name as firm_name
@@ -269,6 +281,15 @@ auth.post('/staff', authMiddleware, zValidator('json', createStaffSchema), async
      VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)`
   ).bind(id, email, passwordHash, name, parent?.company_name || null, role, tenantId,
     role === 'viewer' ? 'viewer' : 'normal').run();
+
+  // Ensure company_settings exists for the new account too (2026-08-18)
+  if (parent?.company_name) {
+    try {
+      await db.prepare(
+        'INSERT OR IGNORE INTO company_settings (id, user_id, name) VALUES (?, ?, ?)'
+      ).bind(`cs-${id}`, id, parent.company_name).run();
+    } catch (e: any) { console.log('[SETTINGS-ENSURE] failed:', e?.message); }
+  }
 
   // Audit: log user creation
   try {
