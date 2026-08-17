@@ -1963,19 +1963,20 @@ chat.post('/', async (c) => {
       }
     }
 
-    // Strip any XML before saving
-    if (/<[a-z_]+[\s>]/i.test(reply) && /<\/[a-z_]+>/i.test(reply)) {
-      reply = '[XML_STRIPPED] ' + reply.replace(/<[^>]*>/g, '').trim();
+    // 1. Match ANY tag structure, including Unicode symbols like ｜ or special tokens
+    const RAW_TAG_REGEX = /<[^>\n]+>/g;
+    // Paired tags: remove the block INCLUDING its content (e.g. <invoke>{"x":1}</invoke>)
+    const RAW_TAG_PAIR_REGEX = /<[^>\n]+>[\s\S]*?<\/[^>\n]+>/g;
+
+    // 2. Strip all tags (and paired tag content) before saving — fall back if text becomes empty
+    if (RAW_TAG_REGEX.test(reply)) {
+      reply = reply.replace(RAW_TAG_PAIR_REGEX, '').replace(RAW_TAG_REGEX, '').trim() || t.askAgain;
     }
+
     // Save assistant reply
     const asstMsgId = `cm-${uuidv4().slice(0, 8)}`;
     await db.prepare('INSERT INTO chat_messages (id, session_id, role, content) VALUES (?, ?, ?, ?)').bind(asstMsgId, sid, 'assistant', reply).run();
     await db.prepare("UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?").bind(sid).run();
-
-    // Final safety: if XML still present, strip and return clean
-    if (/<[a-z_]+[\s>]/i.test(reply) && /<\/[a-z_]+>/i.test(reply)) {
-      reply = reply.replace(/<[^>]*>/g, '').trim() || t.askAgain;
-    }
 
     // Return reply — stream if needed
     if (doStream) {
