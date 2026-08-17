@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api, WORKER_API_BASE } from '../lib/api';
+import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
 import { Plus, Search, FileText, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Link2, Link, Link2Off } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 import { useDateFilter } from '../contexts/DateFilterContext';
@@ -609,7 +609,7 @@ export default function Invoices() {
             <div className="flex-1 border rounded-lg overflow-auto bg-gray-100 flex items-center justify-center">
               {invoiceDetail.file_id ? (
                 <iframe
-                  src={`${WORKER_API_BASE}/file-storage/${invoiceDetail.file_id}/download?inline=1&token=${localStorage.getItem('token') || ''}`}
+                  src={`${WORKER_API_BASE}/file-storage/${invoiceDetail.file_id}/download?inline=1&token=${localStorage.getItem('token') || ''}${iframeClientParam()}`}
                   className="w-full h-full border-0"
                   title="Uploaded Document"
                 />

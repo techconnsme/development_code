@@ -2453,7 +2453,17 @@ files.get('/:id', async (c) => {
 // Download from R2
 files.get('/:id/download', async (c) => {
   const user = c.get('user');
-  const tenantId = c.get('client_user_id') || user.id;
+  let tenantId = c.get('client_user_id') || user.id;
+  // Iframes can't send the X-Active-Client header, so PDF previews pass
+  // ?client=<firm_client_id>. Resolve it server-side against the caller's firm
+  // (same rule as the middleware) — fixes "Not found" in firm-client contexts.
+  const clientParam = c.req.query('client');
+  if (clientParam && !c.get('client_user_id') && user.firm_id) {
+    const fc = await c.env.DB.prepare(
+      'SELECT client_user_id FROM firm_clients WHERE firm_id = ? AND id = ? AND status = ?'
+    ).bind(user.firm_id, clientParam, 'active').first<{ client_user_id: string }>();
+    if (fc) tenantId = fc.client_user_id;
+  }
   const row = await c.env.DB.prepare(
     'SELECT r2_key, file_type, original_name, filename FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
   ).bind(c.req.param('id'), tenantId).first();

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X, Sparkles, CheckCircle2 } from 'lucide-react';
-import { WORKER_API_BASE } from '../lib/api';
+import { WORKER_API_BASE, iframeClientParam } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
 
 // Unified match-review modal (2026-08-17) — the ONE review surface for the
@@ -135,14 +135,14 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
                               {m.stmt_file_id && (
                                 <div className="flex-1 flex flex-col">
                                   <span className="text-[10px] text-muted-foreground mb-1">{tr('Bank Statement', '銀行月結單', '银行月结单')}</span>
-                                  <iframe src={`${WORKER_API_BASE}/file-storage/${m.stmt_file_id}/download?inline=1&token=${token}`}
+                                  <iframe src={`${WORKER_API_BASE}/file-storage/${m.stmt_file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
                                     className="w-full flex-1 border rounded" title="Bank Statement" />
                                 </div>
                               )}
                               {m.invoice_file_id && (
                                 <div className="flex-1 flex flex-col">
                                   <span className="text-[10px] text-muted-foreground mb-1">{tr('Invoice', '發票', '发票')}</span>
-                                  <iframe src={`${WORKER_API_BASE}/file-storage/${m.invoice_file_id}/download?inline=1&token=${token}`}
+                                  <iframe src={`${WORKER_API_BASE}/file-storage/${m.invoice_file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
                                     className="w-full flex-1 border rounded" title="Invoice" />
                                 </div>
                               )}

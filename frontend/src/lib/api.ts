@@ -3,6 +3,16 @@ const API_BASE = '/api';
 // Direct Worker URL for large payloads (bypasses Pages Function body size limits)
 export const WORKER_API_BASE = 'https://opcc-crm-api.ruhan-farhan.workers.dev/api';
 
+// Iframe PDF previews can't send the X-Active-Client header, so download URLs
+// carry ?client=<firm_client_id> instead; the backend re-resolves it against
+// the caller's firm. Returns '' when no active client is selected.
+export function iframeClientParam(): string {
+  try {
+    const c = JSON.parse(localStorage.getItem('activeClient') || '{}');
+    return c?.id ? `&client=${encodeURIComponent(c.id)}` : '';
+  } catch { return ''; }
+}
+
 interface ApiOptions {
   method?: string;
   body?: unknown;

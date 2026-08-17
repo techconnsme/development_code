@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api, WORKER_API_BASE } from '../lib/api';
+import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
 import { useToast } from '../components/Toast';
 import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil, CreditCard, AlertTriangle, Ban, Sparkles, CheckCircle2 } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
@@ -1075,7 +1075,7 @@ function LinkedDocModal({ txId, onClose, onLinkInvoice, onLinkCard }: {
           {/* Right: PDF preview */}
           <div className="w-1/2 border-l pl-4 flex flex-col min-h-0">
             {previewId ? (
-              <iframe src={`${WORKER_API_BASE}/file-storage/${previewId}/download?inline=1&token=${localStorage.getItem('token') || ''}`}
+              <iframe src={`${WORKER_API_BASE}/file-storage/${previewId}/download?inline=1&token=${localStorage.getItem('token') || ''}${iframeClientParam()}`}
                 className="w-full flex-1 border rounded" title="Document Preview" />
             ) : (
               <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
