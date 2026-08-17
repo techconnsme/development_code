@@ -45,7 +45,7 @@ rq.get('/', async (c) => {
     `SELECT id, invoice_number, receipt_number, vendor_name, direction,
      needs_review, issue_date, total, created_at
      FROM invoices
-     WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != '')) ${invDateFilter}
+     WHERE user_id = ? AND deleted_at IS NULL AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != '')) ${invDateFilter}
      ORDER BY created_at DESC LIMIT ?`
   ).bind(tenantId, ...dateParams, limit).all();
 
@@ -68,7 +68,7 @@ rq.get('/', async (c) => {
   ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const invoiceCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM invoices
-     WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != '')) ${invDateFilter}`
+     WHERE user_id = ? AND deleted_at IS NULL AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != '')) ${invDateFilter}`
   ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const journalCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM journal_entries
@@ -178,7 +178,7 @@ rq.get('/count', async (c) => {
   ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const invoiceCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM invoices
-     WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != '')) ${invDateFilter}`
+     WHERE user_id = ? AND deleted_at IS NULL AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != '')) ${invDateFilter}`
   ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const journalCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM journal_entries

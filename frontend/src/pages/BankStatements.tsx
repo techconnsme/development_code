@@ -9,6 +9,7 @@ import ContinuityChain from '../components/ContinuityChain';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import { useAuth } from '../contexts/AuthContext';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
+import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import { tr } from '../lib/i18nHelpers';
 
 interface Transaction {
@@ -124,13 +125,12 @@ export default function BankStatements() {
         method: 'PATCH',
         body: { invoice_id: invoiceId, action: 'confirm' },
       }),
-    onSuccess: async (_data: any, variables: { txId: string; invoiceId: string }) => {
+    onSuccess: (_data: any) => {
       queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
-      // Auto-post payment to GL: Dr Cash, Cr AR
-      try {
-        await api(`/bookkeeping/post-payment/${variables.txId}`, { method: 'POST' });
-        queryClient.invalidateQueries({ queryKey: ['entries'] });
-      } catch { /* may already be posted */ }
+      queryClient.invalidateQueries({ queryKey: ['entries'] }); // GL payment posted server-side by the confirm endpoint
+    },
+    onError: (err: any) => {
+      toast.error(err?.error || err?.message || tr('Confirm failed', '確認失敗', '确认失败'));
     },
   });
 
@@ -716,16 +716,16 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
         />
       )}
 
-      {/* Auto-Match Review Modal */}
+      {/* Auto-Match Review Modal (shared unified component) */}
       {autoMatchResults && (
         <AutoMatchReviewModal
           matches={autoMatchResults}
-          onConfirm={(txId, invoiceId) => {
-            confirmMatchMut.mutate({ txId, invoiceId });
-          }}
-          onReject={(txId) => {
-            unlinkMut.mutate(txId);
-          }}
+          onConfirm={(txId, invoiceId) =>
+            confirmMatchMut.mutateAsync({ txId, invoiceId })
+          }
+          onReject={(txId) =>
+            unlinkMut.mutateAsync(txId)
+          }
           onClose={() => {
             setAutoMatchResults(null);
             queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
@@ -1091,145 +1091,6 @@ function LinkedDocModal({ txId, onClose, onLinkInvoice, onLinkCard }: {
 }
 
 // ── Auto-Match Review Modal ──
-function AutoMatchReviewModal({ matches, onConfirm, onReject, onClose }: {
-  matches: any[];
-  onConfirm: (txId: string, invoiceId: string) => void;
-  onReject: (txId: string) => void;
-  onClose: () => void;
-}) {
-  const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
-  const [rejected, setRejected] = useState<Set<string>>(new Set());
-  const [processing, setProcessing] = useState<string | null>(null);
-  const [previewMatch, setPreviewMatch] = useState<any | null>(null);
-  const token = localStorage.getItem('token') || '';
-
-  const pending = matches.filter(m => !confirmed.has(m.transaction_id) && !rejected.has(m.transaction_id));
-
-  const handleConfirm = async (txId: string, invoiceId: string) => {
-    setProcessing(txId);
-    onConfirm(txId, invoiceId);
-    setConfirmed(prev => new Set(prev).add(txId));
-    setProcessing(null);
-  };
-
-  const handleReject = (txId: string) => {
-    onReject(txId);
-    setRejected(prev => new Set(prev).add(txId));
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-card border rounded-xl p-6 w-full max-w-2xl mx-4 space-y-4 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h3 className="font-semibold flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-blue-600" />
-            Auto-Match Suggestions ({confirmed.size + rejected.size}/{matches.length})
-          </h3>
-          <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="h-4 w-4" /></button>
-        </div>
-
-        {pending.length === 0 ? (
-          <div className="text-center py-8 space-y-2">
-            <CheckCircle2 className="h-8 w-8 text-green-500 mx-auto" />
-            <p className="text-sm font-medium">{tr('All suggestions reviewed!', '所有建議已審核！', '所有建议已审核！')}</p>
-            <button onClick={onClose} className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm">
-              {tr('Close', '關閉', '关闭')}
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">
-                {tr('Review each suggestion below. Confirm to link, or reject to skip.', '請逐一審核以下建議。確認以連結，或拒絕以跳過。', '请逐一审核以下建议。确认以连结，或拒绝以跳过。')}
-              </span>
-              <button
-                onClick={() => {
-                  pending.forEach(m => {
-                    onConfirm(m.transaction_id, m.invoice_id);
-                    setConfirmed(prev => new Set(prev).add(m.transaction_id));
-                  });
-                }}
-                className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700"
-              >
-                {tr('Accept All', '全部接受', '全部接受')} ({pending.length})
-              </button>
-            </div>
-            <div className="space-y-2 overflow-y-auto flex-1">
-              {pending.map(m => (
-                <div
-                  key={m.transaction_id}
-                  onClick={() => setPreviewMatch(previewMatch?.transaction_id === m.transaction_id ? null : m)}
-                  className={`border rounded-lg p-3 flex items-center gap-4 cursor-pointer transition-colors ${processing === m.transaction_id ? 'opacity-50' : ''} ${previewMatch?.transaction_id === m.transaction_id ? 'ring-2 ring-blue-400 bg-blue-50/30' : 'hover:bg-muted/50'}`}
-                >
-                  <div className="flex-1 min-w-0" onClick={e => e.stopPropagation()}>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                        m.confidence === 'high' ? 'bg-green-100 text-green-700' :
-                        m.confidence === 'medium' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
-                      }`}>{m.confidence?.toUpperCase() || 'LOW'}</span>
-                      <span className="text-sm font-medium truncate">{m.invoice_number}</span>
-                      <span className="font-mono text-xs text-muted-foreground">HKD {m.amount?.toLocaleString()}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5 truncate">{m.reason}</p>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
-                    {(m.invoice_file_id || m.stmt_file_id) && (
-                      <button onClick={() => setPreviewMatch(previewMatch?.transaction_id === m.transaction_id ? null : m)}
-                        className="px-2 py-1 text-xs text-primary hover:bg-blue-50 rounded">
-                        {tr('Preview', '預覽', '预览')}
-                      </button>
-                    )}
-                    <button onClick={() => handleConfirm(m.transaction_id, m.invoice_id)}
-                      disabled={processing === m.transaction_id}
-                      className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-50">
-                      ✓ {tr('Confirm', '確認', '确认')}
-                    </button>
-                    <button onClick={() => handleReject(m.transaction_id)}
-                      disabled={processing === m.transaction_id}
-                      className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-xs hover:bg-red-50 disabled:opacity-50">
-                      ✗ {tr('Reject', '拒絕', '拒绝')}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Side-by-side PDF preview for selected match */}
-            {previewMatch && (
-              <div className="border-t pt-3 mt-3">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-semibold text-muted-foreground">
-                    {tr('Document Preview', '文件預覽', '文件预览')} — {previewMatch.invoice_number}
-                  </h4>
-                  <button onClick={() => setPreviewMatch(null)} className="text-xs text-muted-foreground hover:text-foreground">
-                    {tr('Hide', '隱藏', '隐藏')}
-                  </button>
-                </div>
-                <div className="flex gap-3 h-64">
-                  {previewMatch.stmt_file_id && (
-                    <div className="flex-1 flex flex-col">
-                      <span className="text-[10px] text-muted-foreground mb-1">{tr('Bank Statement', '銀行月結單', '银行月结单')}</span>
-                      <iframe src={`${WORKER_API_BASE}/file-storage/${previewMatch.stmt_file_id}/download?inline=1&token=${token}`}
-                        className="w-full flex-1 border rounded" title="Bank Statement" />
-                    </div>
-                  )}
-                  {previewMatch.invoice_file_id && (
-                    <div className="flex-1 flex flex-col">
-                      <span className="text-[10px] text-muted-foreground mb-1">{tr('Invoice', '發票', '发票')}</span>
-                      <iframe src={`${WORKER_API_BASE}/file-storage/${previewMatch.invoice_file_id}/download?inline=1&token=${token}`}
-                        className="w-full flex-1 border rounded" title="Invoice" />
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ── Card Match Review Modal ──
 function CardMatchReviewModal({ matches, onConfirm, onReject, onClose }: {
   matches: any[];

@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { verify as jwtVerify } from 'jsonwebtoken';
 import { Bindings, Variables } from '../types';
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
+import { postPaymentToGl } from '../lib/post-payment';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -194,26 +195,38 @@ bank.post('/:id/confirm', async (c) => {
     "UPDATE bank_statements SET status = 'active', balance_status = ?, balance_check = ?, updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
   ).bind(balanceStatus, balanceCheck, id).run();
 
-  // Auto-detect matching invoices in background
+  // Auto-detect matching invoices in background (suggested badges only — user confirms later)
   c.executionCtx.waitUntil((async () => {
     try {
+      const stmtCurrency = (await c.env.DB.prepare(
+        'SELECT currency FROM bank_statements WHERE id = ? AND user_id = ?'
+      ).bind(id, tenantId).first<{ currency: string | null }>())?.currency || 'HKD';
+
       const txns = await c.env.DB.prepare(
         `SELECT id, deposit_amount, withdrawal_amount, description, reference, transaction_date
          FROM bank_transactions WHERE user_id = ? AND bank_statement_id = ? AND deleted_at IS NULL AND match_status = 'unmatched'`
       ).bind(tenantId, id).all();
 
       const invoices = await c.env.DB.prepare(
-        `SELECT id, invoice_number, total, issue_date, due_date, direction
-         FROM invoices WHERE user_id = ? AND status IN ('draft','sent','overdue','active') AND total > 0`
+        `SELECT id, invoice_number, total, issue_date, due_date, direction, currency
+         FROM invoices WHERE user_id = ? AND status NOT IN ('paid','cancelled') AND total > 0 AND deleted_at IS NULL`
       ).bind(tenantId).all();
 
+      const usedInvoiceIds = new Set<string>();
       for (const tx of (txns.results as any[])) {
         const amt = tx.deposit_amount || tx.withdrawal_amount || 0;
+        const isDeposit = tx.deposit_amount > 0;
         for (const inv of (invoices.results as any[])) {
+          if (usedInvoiceIds.has(inv.id)) continue;
+          if ((inv.currency || 'HKD') !== stmtCurrency) continue;
+          const invIsIncoming = inv.direction === 'incoming';
+          if (isDeposit && invIsIncoming) continue;    // deposits → AR only
+          if (!isDeposit && !invIsIncoming) continue;  // withdrawals → AP only
           if (Math.abs(amt - inv.total) < 0.02) {
             await c.env.DB.prepare(
               "UPDATE bank_transactions SET match_status = 'suggested', invoice_id = ?, match_confidence = 'auto' WHERE id = ? AND user_id = ?"
             ).bind(inv.id, tx.id, tenantId).run();
+            usedInvoiceIds.add(inv.id);
             break;
           }
         }
@@ -257,32 +270,41 @@ bank.patch('/:id', async (c) => {
 });
 
 // ── Auto-match bank transactions to invoices (deposits→AR, withdrawals→AP) ──
+// SUGGEST-ONLY (unified 2026-08-17): returns candidate pairs, writes NOTHING.
+// The user reviews each pair and confirms via PATCH /transactions/:id/match,
+// which performs all writes (link + pay + GL + file payment_status).
+// ?direction=incoming → AP only (withdrawals↔incoming), outgoing → AR only (deposits↔outgoing).
 bank.post('/auto-match', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
+  const direction = c.req.query('direction') || '';
+  const wantAR = direction !== 'incoming';
+  const wantAP = direction !== 'outgoing';
 
-  // Fetch unmatched deposits and withdrawals
-  const deposits = await db.prepare(
-    `SELECT id, transaction_date, description, deposit_amount, reference
-     FROM bank_transactions
-     WHERE user_id = ? AND deleted_at IS NULL AND deposit_amount > 0 AND match_status = 'unmatched'
-     ORDER BY transaction_date`
-  ).bind(tenantId).all();
+  // Fetch unmatched deposits and withdrawals (statement currency included for matching)
+  const deposits = wantAR ? await db.prepare(
+    `SELECT bt.id, bt.transaction_date, bt.description, bt.deposit_amount, bt.reference,
+            COALESCE(bs.currency, 'HKD') as currency
+     FROM bank_transactions bt LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+     WHERE bt.user_id = ? AND bt.deleted_at IS NULL AND bt.deposit_amount > 0 AND bt.match_status = 'unmatched'
+     ORDER BY bt.transaction_date`
+  ).bind(tenantId).all() : { results: [] as any[] };
 
-  const withdrawals = await db.prepare(
-    `SELECT id, transaction_date, description, withdrawal_amount, reference
-     FROM bank_transactions
-     WHERE user_id = ? AND deleted_at IS NULL AND withdrawal_amount > 0 AND match_status = 'unmatched'
-     AND card_statement_id IS NULL
-     ORDER BY transaction_date`
-  ).bind(tenantId).all();
+  const withdrawals = wantAP ? await db.prepare(
+    `SELECT bt.id, bt.transaction_date, bt.description, bt.withdrawal_amount, bt.reference,
+            COALESCE(bs.currency, 'HKD') as currency
+     FROM bank_transactions bt LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+     WHERE bt.user_id = ? AND bt.deleted_at IS NULL AND bt.withdrawal_amount > 0 AND bt.match_status = 'unmatched'
+     AND bt.card_statement_id IS NULL
+     ORDER BY bt.transaction_date`
+  ).bind(tenantId).all() : { results: [] as any[] };
 
   // Fetch unpaid invoices with direction
   const allInvoices = await db.prepare(
     `SELECT id, invoice_number, total, currency, issue_date, due_date, direction, file_id
      FROM invoices
-     WHERE user_id = ? AND status NOT IN ('paid', 'cancelled')`
+     WHERE user_id = ? AND status NOT IN ('paid', 'cancelled') AND deleted_at IS NULL`
   ).bind(tenantId).all();
 
   // Split by direction
@@ -292,13 +314,15 @@ bank.post('/auto-match', async (c) => {
   const matched: any[] = [];
   const usedInvoiceIds = new Set<string>();
 
-  // Helper: match transactions to invoices
+  // Helper: match transactions to invoices (currency must agree — HKD default for legacy rows)
   function findBestMatch(tx: any, invoices: any[], amountKey: string): { bestMatch: any; bestConfidence: string } | null {
     let bestMatch: any = null;
     let bestConfidence = '';
     const txAmount = tx[amountKey];
+    const txCurrency = tx.currency || 'HKD';
 
     for (const inv of invoices.filter(i => !usedInvoiceIds.has(i.id))) {
+      if ((inv.currency || 'HKD') !== txCurrency) continue;
       const amountMatch = Math.abs(txAmount - inv.total) < 0.01;
       if (!amountMatch) continue;
 
@@ -332,10 +356,6 @@ bank.post('/auto-match', async (c) => {
         ? `Deposit $${tx.deposit_amount} matches invoice amount + date range`
         : `Deposit $${tx.deposit_amount} matches invoice amount`;
 
-      await db.prepare(
-        `UPDATE bank_transactions SET invoice_id = ?, match_confidence = ?, match_status = 'suggested' WHERE id = ? AND deleted_at IS NULL`
-      ).bind(bestMatch.id, bestConfidence, tx.id).run();
-
       const stmt = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
       const stmtFile = stmt?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt.r2_key, tenantId).first() as any : null;
       matched.push({ transaction_id: tx.id, invoice_id: bestMatch.id,
@@ -357,10 +377,6 @@ bank.post('/auto-match', async (c) => {
         : bestConfidence === 'medium'
         ? `Withdrawal $${tx.withdrawal_amount} matches invoice amount + date range`
         : `Withdrawal $${tx.withdrawal_amount} matches invoice amount`;
-
-      await db.prepare(
-        `UPDATE bank_transactions SET invoice_id = ?, match_confidence = ?, match_status = 'suggested' WHERE id = ? AND deleted_at IS NULL`
-      ).bind(bestMatch.id, bestConfidence, tx.id).run();
 
       const stmt2 = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
       const stmtFile2 = stmt2?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt2.r2_key, tenantId).first() as any : null;
@@ -690,7 +706,12 @@ bank.delete('/transactions/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// ── Confirm or unlink a match ──
+// ── Confirm or unlink a match (unified engine, 2026-08-17) ──
+// confirm validates direction/amount/currency/already-paid/idempotency, then in one
+// place: links the tx, marks the invoice paid, syncs file_records.payment_status,
+// and posts the GL payment entry (server-side — all UIs get the same end state).
+// unlink/reject reverts: resets the tx, un-pays the invoice, deletes the payment JE,
+// and resets the file's payment_status.
 bank.patch('/transactions/:id/match', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
@@ -701,39 +722,99 @@ bank.patch('/transactions/:id/match', async (c) => {
   let { invoice_id } = body;
 
   const tx = await db.prepare(
-    'SELECT id, transaction_date, invoice_id as current_invoice_id FROM bank_transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(txId, tenantId).first<{ id: string; transaction_date: string; current_invoice_id: string | null }>();
+    `SELECT bt.id, bt.transaction_date, bt.deposit_amount, bt.withdrawal_amount,
+            bt.invoice_id as current_invoice_id, bt.match_status,
+            COALESCE(bs.currency, 'HKD') as currency
+     FROM bank_transactions bt LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+     WHERE bt.id = ? AND bt.user_id = ? AND bt.deleted_at IS NULL`
+  ).bind(txId, tenantId).first<{ id: string; transaction_date: string; deposit_amount: number; withdrawal_amount: number; current_invoice_id: string | null; match_status: string; currency: string }>();
   if (!tx) return c.json({ error: 'Transaction not found' }, 404);
 
-  // For 'confirm': if no invoice_id passed, use the one already set on the tx (from auto-match suggestion)
+  // For 'confirm': if no invoice_id passed, use the one already set on the tx (from suggestion badges)
   if (action === 'confirm' && !invoice_id) invoice_id = tx.current_invoice_id || undefined;
   // For 'link': alias for confirm with an explicit invoice_id (manual linking)
   const effectiveAction = action === 'link' ? 'confirm' : action;
 
   if (effectiveAction === 'confirm' && invoice_id) {
     const inv = await db.prepare(
-      'SELECT id FROM invoices WHERE id = ? AND user_id = ?'
-    ).bind(invoice_id, tenantId).first();
+      'SELECT id, status, total, direction, currency, file_id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(invoice_id, tenantId).first<{ id: string; status: string; total: number; direction: string; currency: string | null; file_id: string | null }>();
     if (!inv) return c.json({ error: 'Invoice not found' }, 404);
 
-    await db.prepare(
-      `UPDATE bank_transactions SET invoice_id = ?, match_confidence = 'manual', match_status = 'confirmed' WHERE id = ? AND deleted_at IS NULL`
-    ).bind(invoice_id, txId).run();
+    // Idempotency: transaction already confirmed
+    if (tx.match_status === 'confirmed') {
+      if (tx.current_invoice_id === invoice_id) return c.json({ error: 'Transaction already matched to this invoice' }, 409);
+      return c.json({ error: 'Transaction already matched to another invoice — unlink first' }, 409);
+    }
+    if (inv.status === 'paid') return c.json({ error: 'Invoice already paid' }, 409);
+
+    // Direction: deposits pay AR (outgoing), withdrawals pay AP (incoming)
+    const isDeposit = tx.deposit_amount > 0;
+    const invIsIncoming = inv.direction === 'incoming';
+    if (isDeposit && invIsIncoming) return c.json({ error: 'A deposit cannot pay an incoming (AP) invoice' }, 400);
+    if (!isDeposit && !invIsIncoming) return c.json({ error: 'A withdrawal cannot pay an outgoing (AR) invoice' }, 400);
+
+    // Amount within tolerance
+    const txAmount = isDeposit ? tx.deposit_amount : tx.withdrawal_amount;
+    if (Math.abs(txAmount - inv.total) >= 0.02) return c.json({ error: `Amount mismatch: transaction ${txAmount} vs invoice ${inv.total}` }, 409);
+
+    // Currency
+    if ((inv.currency || 'HKD') !== tx.currency) return c.json({ error: `Currency mismatch: ${tx.currency} vs ${inv.currency || 'HKD'}` }, 409);
 
     await db.prepare(
-      `UPDATE invoices SET status = 'paid', paid_date = ?, updated_at = datetime('now') WHERE id = ?`
-    ).bind(tx.transaction_date, invoice_id).run();
+      `UPDATE bank_transactions SET invoice_id = ?, match_confidence = 'manual', match_status = 'confirmed' WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+    ).bind(invoice_id, txId, tenantId).run();
 
-    await auditLog(db, user.id, 'confirm_match', 'bank_transaction', txId, { invoice_id, action: 'confirm' });
-    return c.json({ success: true, invoice_status: 'paid', paid_date: tx.transaction_date });
+    await db.prepare(
+      `UPDATE invoices SET status = 'paid', paid_date = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?`
+    ).bind(tx.transaction_date, invoice_id, tenantId).run();
+
+    // Sync the file manager's payment status
+    if (inv.file_id) {
+      await db.prepare(
+        "UPDATE file_records SET payment_status = 'matched', updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
+      ).bind(inv.file_id, tenantId).run();
+    }
+
+    // Post the payment to the GL (idempotent)
+    const gl = await postPaymentToGl(db, tenantId, txId);
+
+    await auditLog(db, user.id, 'confirm_match', 'bank_transaction', txId, { invoice_id, action: 'confirm', gl_entry: gl.entry_id || gl.error });
+    return c.json({ success: true, invoice_status: 'paid', paid_date: tx.transaction_date, gl_entry_id: gl.entry_id || null, gl_error: gl.error || null });
   }
 
-  // reject/unlink: same behavior
+  // reject/unlink: revert everything this match wrote
   if (effectiveAction === 'reject' || effectiveAction === 'unlink') {
+    const linkedInvoiceId = tx.current_invoice_id;
+
+    // Reset the transaction
     await db.prepare(
-      `UPDATE bank_transactions SET invoice_id = NULL, match_confidence = NULL, match_status = 'unmatched' WHERE id = ? AND deleted_at IS NULL`
-    ).bind(txId).run();
-    await auditLog(db, user.id, 'unlink_match', 'bank_transaction', txId, { action: effectiveAction });
+      `UPDATE bank_transactions SET invoice_id = NULL, match_confidence = NULL, match_status = 'unmatched' WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+    ).bind(txId, tenantId).run();
+
+    if (linkedInvoiceId) {
+      // Un-pay the invoice (it was paid by this confirm)
+      await db.prepare(
+        `UPDATE invoices SET status = 'sent', paid_date = NULL, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND status = 'paid'`
+      ).bind(linkedInvoiceId, tenantId).run();
+
+      // Reset the file's payment status
+      const invFile = await db.prepare(
+        'SELECT file_id FROM invoices WHERE id = ? AND user_id = ?'
+      ).bind(linkedInvoiceId, tenantId).first<{ file_id: string | null }>();
+      if (invFile?.file_id) {
+        await db.prepare(
+          "UPDATE file_records SET payment_status = 'unmatched', updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
+        ).bind(invFile.file_id, tenantId).run();
+      }
+    }
+
+    // Delete the posted payment JE (journal_lines cascade via FK)
+    const jeDel = await db.prepare(
+      "DELETE FROM journal_entries WHERE reference_type = 'payment' AND reference_id = ? AND user_id = ?"
+    ).bind(txId, tenantId).run();
+
+    await auditLog(db, user.id, 'unlink_match', 'bank_transaction', txId, { action: effectiveAction, gl_entries_deleted: jeDel.meta?.changes || 0 });
     return c.json({ success: true });
   }
 
@@ -1400,9 +1481,16 @@ bank.get('/recycle/list', async (c) => {
      FROM file_records WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at > ?
      ORDER BY deleted_at DESC`
   ).bind(tenantId, cutoff).all();
+  // Invoices (soft-deleted, aligned with the bank statement flow)
+  const invoices = await db.prepare(
+    `SELECT id, invoice_number, receipt_number, vendor_name, direction, total, deleted_at, deleted_by
+     FROM invoices WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at > ?
+     ORDER BY deleted_at DESC`
+  ).bind(tenantId, cutoff).all();
   return c.json({
     bank_statements: stmts.results,
     files: files.results,
+    invoices: invoices.results,
     retention_days: 30,
   });
 });
@@ -1453,7 +1541,16 @@ bank.post('/recycle/:type/:id/restore', async (c) => {
     return c.json({ success: true });
   }
 
-  return c.json({ error: 'Unknown type. Use bank_statement or file.' }, 400);
+  if (type === 'invoice') {
+    const r = await db.prepare(
+      'UPDATE invoices SET deleted_at = NULL, deleted_by = NULL WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL'
+    ).bind(id, tenantId).run();
+    if (!(r.meta?.changes)) return c.json({ error: 'Not found in recycle bin' }, 404);
+    await auditLog(db, user.id, 'restore', 'invoice', id);
+    return c.json({ success: true });
+  }
+
+  return c.json({ error: 'Unknown type. Use bank_statement, file, or invoice.' }, 400);
 });
 
 bank.delete('/recycle/:type/:id', async (c) => {
@@ -1494,7 +1591,20 @@ bank.delete('/recycle/:type/:id', async (c) => {
     return c.json({ success: true });
   }
 
-  return c.json({ error: 'Unknown type. Use bank_statement or file.' }, 400);
+  if (type === 'invoice') {
+    const inv = await db.prepare(
+      'SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL'
+    ).bind(id, tenantId).first<{ id: string }>();
+    if (!inv) return c.json({ error: 'Not found in recycle bin' }, 404);
+    // Break receipt↔invoice links pointing at this row before the hard delete
+    await db.prepare('UPDATE invoices SET linked_invoice_id = NULL WHERE linked_invoice_id = ? AND user_id = ?').bind(id, tenantId).run();
+    // Hard delete (invoice_items cascade via FK). The linked file stays in File Storage.
+    await db.prepare('DELETE FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL').bind(id, tenantId).run();
+    await auditLog(db, user.id, 'purge', 'invoice', id);
+    return c.json({ success: true });
+  }
+
+  return c.json({ error: 'Unknown type. Use bank_statement, file, or invoice.' }, 400);
 });
 
 // Auto-purge items older than 30 days. Callable manually; can also be wired to a cron.
@@ -1527,12 +1637,21 @@ bank.post('/recycle/purge-old', async (c) => {
   const f = await db.prepare(
     `DELETE FROM file_records WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at < ?`
   ).bind(tenantId, cutoff).run();
+  // Soft-deleted invoices past retention: break receipt↔invoice links, then hard-delete
+  await db.prepare(
+    `UPDATE invoices SET linked_invoice_id = NULL WHERE user_id = ? AND linked_invoice_id IN
+     (SELECT id FROM invoices WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at < ?)`
+  ).bind(tenantId, tenantId).run();
+  const inv = await db.prepare(
+    `DELETE FROM invoices WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at < ?`
+  ).bind(tenantId, cutoff).run();
   return c.json({
     success: true,
     purged: {
       statements: s.meta?.changes || 0,
       transactions: t.meta?.changes || 0,
       files: f.meta?.changes || 0,
+      invoices: inv.meta?.changes || 0,
       journal_entries: je.meta?.changes || 0,
     },
     older_than: cutoff,

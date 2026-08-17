@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
-import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Link2, FileText } from 'lucide-react';
+import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Link2, FileText, Zap } from 'lucide-react';
+import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import { tr } from '../lib/i18nHelpers';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
@@ -43,6 +44,7 @@ export default function AP() {
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
   const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
+  const [bankMatchResults, setBankMatchResults] = useState<any[] | null>(null);
   const { startDate, endDate } = useDateFilter();
   const [form, setForm] = useState({ invoice_number: '', supplier_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, discount_type: 'flat' as string, discount_value: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   const [productSearch, setProductSearch] = useState<Record<number, string>>({});
@@ -83,6 +85,18 @@ export default function AP() {
   const createMut = useMutation({
     mutationFn: (body: any) => api('/invoices', { method: 'POST', body }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['invoices-ap'] }); setShowForm(false); },
+  });
+
+  // Unified bank-transaction ↔ invoice match confirm (server posts GL + syncs file payment_status)
+  const matchConfirmMut = useMutation({
+    mutationFn: ({ txId, invoiceId }: { txId: string; invoiceId: string }) =>
+      api(`/bank-statements/transactions/${txId}/match`, { method: 'PATCH', body: { invoice_id: invoiceId, action: 'confirm' } }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['invoices-ap'] });
+      queryClient.invalidateQueries({ queryKey: ['entries'] });
+      queryClient.invalidateQueries({ queryKey: ['bank-statements'] });
+    },
+    onError: (err: any) => toast.error(err?.error || err?.message || tr('Confirm failed', '確認失敗', '确认失败')),
   });
 
   const deleteMut = useMutation({
@@ -153,6 +167,19 @@ export default function AP() {
           }}
             className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
             <Link2 className="h-4 w-4" /> {tr('Match Receipts', '配對收據', '配对收据')}
+          </button>
+          <button onClick={async () => {
+            try {
+              const result = await api('/bank-statements/auto-match?direction=incoming', { method: 'POST' });
+              if (result.matched?.length > 0) {
+                setBankMatchResults(result.matched);
+              } else {
+                toast.info(tr('No bank matches found', '沒有找到銀行配對', '没有找到银行配对'));
+              }
+            } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+          }}
+            className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
+            <Zap className="h-4 w-4" /> {tr('Match Bank Payments', '配對銀行付款', '配对银行付款')}
           </button>
           <button onClick={() => setShowForm(true)}
             className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
@@ -453,6 +480,19 @@ export default function AP() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Bank Match Review Modal (unified engine) */}
+      {bankMatchResults && (
+        <AutoMatchReviewModal
+          matches={bankMatchResults}
+          onConfirm={(txId, invoiceId) => matchConfirmMut.mutateAsync({ txId, invoiceId })}
+          onReject={() => Promise.resolve() /* suggest-only: nothing persisted to unlink */}
+          onClose={() => {
+            setBankMatchResults(null);
+            queryClient.invalidateQueries({ queryKey: ['invoices-ap'] });
+          }}
+        />
       )}
 
       {/* Receipt Match Review Modal */}

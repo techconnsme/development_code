@@ -67,11 +67,11 @@ dashboard.get('/', async (c) => {
   // AR/AP from unpaid invoices (fallback when no GL entries exist)
   const arFromInvoices = await db.prepare(
     `SELECT COALESCE(SUM(total), 0) as balance FROM invoices
-     WHERE user_id = ? AND direction = 'outgoing' AND status NOT IN ('paid','cancelled','void','draft')`
+     WHERE user_id = ? AND direction = 'outgoing' AND status NOT IN ('paid','cancelled','void','draft') AND deleted_at IS NULL`
   ).bind(tenantId).first() as any;
   const apFromInvoices = await db.prepare(
     `SELECT COALESCE(SUM(total), 0) as balance FROM invoices
-     WHERE user_id = ? AND direction = 'incoming' AND status NOT IN ('paid','cancelled','void','draft')`
+     WHERE user_id = ? AND direction = 'incoming' AND status NOT IN ('paid','cancelled','void','draft') AND deleted_at IS NULL`
   ).bind(tenantId).first() as any;
 
   // Use GL balances when available, otherwise fall back to unpaid invoice totals
@@ -119,7 +119,7 @@ dashboard.get('/', async (c) => {
     "SELECT COUNT(*) as cnt FROM card_statements WHERE user_id = ? AND deleted_at IS NULL AND status = 'draft'"
   ).bind(tenantId).first() as any;
   const reviewInv = await db.prepare(
-    "SELECT COUNT(*) as cnt FROM invoices WHERE user_id = ? AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != ''))"
+    "SELECT COUNT(*) as cnt FROM invoices WHERE user_id = ? AND deleted_at IS NULL AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != ''))"
   ).bind(tenantId).first() as any;
   const reviewJE = await db.prepare(
     "SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND status IN ('draft', 'stale')"
@@ -220,7 +220,7 @@ dashboard.get('/', async (c) => {
         `SELECT COUNT(*) as cnt FROM card_statements WHERE user_id=? AND deleted_at IS NULL AND status='draft' AND period_end>=? AND period_end<=?`
       ).bind(tenantId, ps, pe).first()) as any;
       const pRevInv = (await db.prepare(
-        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND (status='pending_review' OR (needs_review IS NOT NULL AND needs_review!='')) AND issue_date>=? AND issue_date<=?`
+        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND (status='pending_review' OR (needs_review IS NOT NULL AND needs_review!='')) AND issue_date>=? AND issue_date<=?`
       ).bind(tenantId, ps, pe).first()) as any;
       const pRevJE = (await db.prepare(
         `SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id=? AND status IN ('draft','stale') AND entry_date>=? AND entry_date<=?`
@@ -242,15 +242,15 @@ dashboard.get('/', async (c) => {
         `SELECT COUNT(*) as cnt FROM bank_transactions WHERE user_id=? AND deleted_at IS NULL AND invoice_id IS NOT NULL AND transaction_date>=? AND transaction_date<=?`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
       const pInvTotal = (await db.prepare(
-        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND receipt_number IS NULL AND issue_date>=? AND issue_date<=?`
+        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND receipt_number IS NULL AND issue_date>=? AND issue_date<=?`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
       const pInvLinked = (await db.prepare(
-        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND receipt_number IS NULL AND linked_invoice_id IS NOT NULL AND issue_date>=? AND issue_date<=?`
+        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND receipt_number IS NULL AND linked_invoice_id IS NOT NULL AND issue_date>=? AND issue_date<=?`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
       const pChainCount = (await db.prepare(
         `SELECT COUNT(*) as cnt FROM bank_transactions bt
-         JOIN invoices inv ON bt.invoice_id = inv.id
-         JOIN invoices rec ON rec.linked_invoice_id = inv.id AND rec.receipt_number IS NOT NULL
+         JOIN invoices inv ON bt.invoice_id = inv.id AND inv.deleted_at IS NULL
+         JOIN invoices rec ON rec.linked_invoice_id = inv.id AND rec.receipt_number IS NOT NULL AND rec.deleted_at IS NULL
          WHERE bt.user_id=? AND bt.deleted_at IS NULL AND bt.transaction_date>=? AND bt.transaction_date<=?`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
 

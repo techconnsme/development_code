@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Bindings, Variables } from '../types';
 import { authMiddleware, auditorMiddleware, bookkeeperMiddleware } from '../middleware/auth';
 import { getCoaTemplate, BASE_HK_COA, buildAccountNameMap, INDUSTRIES, type CoaMode } from '../lib/coa-templates';
+import { postPaymentToGl } from '../lib/post-payment';
 
 const bookkeeping = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 bookkeeping.use('*', authMiddleware);
@@ -1544,54 +1545,15 @@ bookkeeping.post('/post-payment/:transactionId', bookkeeperMiddleware, async (c)
   const txId = c.req.param('transactionId');
   if (!txId) return c.json({ error: 'transactionId required' }, 400);
 
-  const tx = await db.prepare(
-    `SELECT bt.*, i.invoice_number, i.total as invoice_total, i.direction,
-     bs.account_code as bank_account_code
-     FROM bank_transactions bt
-     LEFT JOIN invoices i ON bt.invoice_id = i.id
-     LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
-     WHERE bt.id = ? AND bt.user_id = ? AND bt.match_status = 'confirmed' AND bt.deleted_at IS NULL`
-  ).bind(txId, tenantId).first<{ id: string; transaction_date: string; deposit_amount: number; withdrawal_amount: number; invoice_id: string; invoice_number: string; invoice_total: number; direction: string; bank_account_code: string | null }>();
-  if (!tx || !tx.invoice_id) return c.json({ error: 'Transaction not found or not matched to an invoice' }, 404);
+  // Shared helper (also used by the unified match-confirm flow).
+  // Fixed 2026-08-17: the old inline INSERT referenced a non-existent
+  // journal_lines.project column and silently 500'd on every call.
+  const gl = await postPaymentToGl(db, tenantId, txId);
+  if (gl.error) return c.json({ error: gl.error }, 404);
+  if (gl.already_posted) return c.json({ error: 'Payment already posted to GL', entry_id: gl.entry_id }, 409);
 
-  // Check not already posted
-  const existing = await db.prepare(
-    "SELECT id FROM journal_entries WHERE reference_type = 'payment' AND reference_id = ? AND user_id = ?"
-  ).bind(txId, tenantId).first();
-  if (existing) return c.json({ error: 'Payment already posted to GL', entry_id: (existing as any).id }, 409);
-
-  const isDeposit = tx.deposit_amount > 0;
-  const amount = isDeposit ? tx.deposit_amount : tx.withdrawal_amount;
-  const bankAccount = tx.bank_account_code || '11101';
-  const jeId = `je-${uuidv4().slice(0, 8)}`;
-  const jeNum = `JE-PMT-${tx.invoice_number || txId.slice(0, 8)}`;
-
-  if (isDeposit) {
-    // AR: customer paid us → Dr Bank / Cr AR
-    await db.prepare(
-      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
-    ).bind(jeId, tenantId, jeNum, tx.transaction_date, `Payment received for invoice ${tx.invoice_number || ''}`, 'payment', txId).run();
-    await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, bankAccount, 'Bank', tx.invoice_number || '', amount, 0, null, 0).run();
-    await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', tx.invoice_number || '', 0, amount, null, 1).run();
-  } else {
-    // AP: we paid supplier → Dr AP / Cr Bank
-    await db.prepare(
-      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
-    ).bind(jeId, tenantId, jeNum, tx.transaction_date, `Payment for AP invoice ${tx.invoice_number || ''}`, 'payment', txId).run();
-    await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '21101', 'Trade Creditors 應付賬款', tx.invoice_number || '', amount, 0, null, 0).run();
-    await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, bankAccount, 'Bank', tx.invoice_number || '', 0, amount, null, 1).run();
-  }
-
-  await auditLog(db, user.id, 'post_payment', 'payment', txId, { invoice_number: tx.invoice_number, amount });
-  return c.json({ entry_id: jeId, entry_number: jeNum, transaction_id: txId, direction: isDeposit ? 'AR' : 'AP' }, 201);
+  await auditLog(db, user.id, 'post_payment', 'payment', txId, {});
+  return c.json({ entry_id: gl.entry_id, entry_number: gl.entry_number, transaction_id: txId }, 201);
 });
 
 // POST /post-transaction/:id — post a single bank transaction to GL as a simple journal entry

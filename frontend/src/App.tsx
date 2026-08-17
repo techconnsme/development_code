@@ -165,6 +165,7 @@ function AppRoutes() {
       <Route path="/messages" element={<ProtectedRoute><FeatureGuard><Messages /></FeatureGuard></ProtectedRoute>} />
       <Route path="/documents" element={<ProtectedRoute><FeatureGuard><Documents /></FeatureGuard></ProtectedRoute>} />
       <Route path="/file-storage" element={<ProtectedRoute><FeatureGuard><FileStorage /></FeatureGuard></ProtectedRoute>} />
+      <Route path="/file-storage/recycle" element={<ProtectedRoute><FeatureGuard><RecycleBin /></FeatureGuard></ProtectedRoute>} />
       <Route path="/modules" element={<ProtectedRoute><Modules /></ProtectedRoute>} />
       <Route path="/payment" element={<ProtectedRoute><PaymentPage /></ProtectedRoute>} />
       <Route path="/communication" element={<ProtectedRoute><CommunicationPage /></ProtectedRoute>} />

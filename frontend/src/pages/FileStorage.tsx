@@ -8,6 +8,7 @@ import { useToast } from '../components/Toast';
 import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye } from 'lucide-react';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import { useAuth } from '../contexts/AuthContext';
+import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import { tr } from '../lib/i18nHelpers';
 import i18n from '../i18n';
 import { relativeTimeBucket, parseCreatedAt } from '../lib/time';
@@ -516,7 +517,8 @@ export default function FileStorage() {
   const [matchResults, setMatchResults] = useState<any[] | null>(null);
 
   const autoMatchMut = useMutation({
-    mutationFn: () => api('/file-storage/auto-match-invoices', { method: 'POST' }),
+    // Unified engine: the bank-transactions ↔ invoices matcher (2026-08-17)
+    mutationFn: () => api('/bank-statements/auto-match', { method: 'POST' }),
     onSuccess: (data: any) => {
       if (data.matched?.length > 0) {
         setMatchResults(data.matched);
@@ -526,13 +528,17 @@ export default function FileStorage() {
     },
   });
 
-  const confirmFileMatchMut = useMutation({
-    mutationFn: (body: { transaction_id: string; file_id: string; invoice_id?: string }) =>
-      api('/file-storage/confirm-match', { method: 'POST', body }),
+  const matchConfirmMut = useMutation({
+    mutationFn: ({ txId, invoiceId }: { txId: string; invoiceId: string }) =>
+      api(`/bank-statements/transactions/${txId}/match`, { method: 'PATCH', body: { invoice_id: invoiceId, action: 'confirm' } }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['file-storage'] });
       queryClient.invalidateQueries({ queryKey: ['bank-statements'] });
+      queryClient.invalidateQueries({ queryKey: ['entries'] });
       queryClient.invalidateQueries({ queryKey: ['file-storage-folders'] });
+    },
+    onError: (err: any) => {
+      toast.error(err?.error || err?.message || tr('Confirm failed', '確認失敗', '确认失败'));
     },
   });
 
@@ -1033,13 +1039,18 @@ export default function FileStorage() {
           className="flex items-center gap-1 px-3 py-2 bg-primary text-primary-foreground rounded-md text-xs hover:opacity-90 disabled:opacity-40">
           <Zap className="h-3 w-3" /> {tr('Match Invoices', '配對發票', '配对发票')}
         </button>
+        <button onClick={() => navigate('/file-storage/recycle')}
+          className="flex items-center gap-1 px-3 py-2 border rounded-md text-xs hover:bg-muted">
+          <Trash2 className="h-3 w-3" /> {tr('Recycle Bin', '回收站', '回收站')}
+        </button>
       </div>
 
-      {/* File Match Review Modal */}
+      {/* Match Review Modal (shared unified component) */}
       {matchResults && (
-        <FileMatchReviewModal
+        <AutoMatchReviewModal
           matches={matchResults}
-          onConfirm={(txId, fileId, invoiceId) => confirmFileMatchMut.mutate({ transaction_id: txId, file_id: fileId, invoice_id: invoiceId || undefined })}
+          onConfirm={(txId, invoiceId) => matchConfirmMut.mutateAsync({ txId, invoiceId })}
+          onReject={() => Promise.resolve() /* suggest-only: nothing persisted to unlink */}
           onClose={() => { setMatchResults(null); queryClient.invalidateQueries({ queryKey: ['file-storage'] }); }}
         />
       )}
@@ -1088,90 +1099,4 @@ export default function FileStorage() {
   );
 }
 
-// ── File Match Review Modal ──
-function FileMatchReviewModal({ matches, onConfirm, onClose }: {
-  matches: any[];
-  onConfirm: (txId: string, fileId: string, invoiceId?: string) => void;
-  onClose: () => void;
-}) {
-  const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
-  const [rejected, setRejected] = useState<Set<string>>(new Set());
-
-  const pending = matches.filter(m => !confirmed.has(m.transaction_id) && !rejected.has(m.transaction_id));
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-card border rounded-xl p-6 w-full max-w-2xl mx-4 space-y-4 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h3 className="font-semibold flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-blue-600" />
-            File Match Suggestions ({confirmed.size + rejected.size}/{matches.length})
-          </h3>
-          <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="h-4 w-4" /></button>
-        </div>
-
-        {pending.length === 0 ? (
-          <div className="text-center py-8 space-y-2">
-            <CheckCircle2 className="h-8 w-8 text-green-500 mx-auto" />
-            <p className="text-sm font-medium">{tr('All suggestions reviewed!', '所有建議已審核！', '所有建议已审核！')}</p>
-            <button onClick={onClose} className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm">
-              {tr('Close', '關閉', '关闭')}
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">
-                {tr('Review each match. Confirm to link the bank transaction to its invoice.', '審核每個配對。確認後將銀行交易連結至發票。', '审核每个配对。确认后将银行交易连结至发票。')}
-              </span>
-              <button
-                onClick={() => {
-                  pending.forEach(m => {
-                    onConfirm(m.transaction_id, m.file_id, m.invoice_id);
-                    setConfirmed(prev => new Set(prev).add(m.transaction_id));
-                  });
-                }}
-                className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700"
-              >
-                {tr('Accept All', '全部接受', '全部接受')} ({pending.length})
-              </button>
-            </div>
-            <div className="space-y-2 overflow-y-auto flex-1">
-              {pending.map(m => (
-                <div key={`${m.file_id}-${m.transaction_id}`} className="border rounded-lg p-3 flex items-center gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
-                        {m.is_deposit ? 'DEPOSIT' : 'WITHDRAWAL'}
-                      </span>
-                      <span className="text-sm font-medium truncate">{m.filename}</span>
-                      {m.invoice_number && (
-                        <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-mono">{m.invoice_number}</span>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      HKD {m.amount?.toLocaleString()} → {m.transaction_date} · {m.transaction_desc || 'Bank transaction'}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => {
-                      onConfirm(m.transaction_id, m.file_id, m.invoice_id);
-                      setConfirmed(prev => new Set(prev).add(m.transaction_id));
-                    }}
-                      className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700">
-                      ✓ Confirm
-                    </button>
-                    <button onClick={() => setRejected(prev => new Set(prev).add(m.transaction_id))}
-                      className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-xs hover:bg-red-50">
-                      ✗ Reject
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+// ── File Match Review Modal ──

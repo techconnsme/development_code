@@ -27,7 +27,7 @@ invoices.get('/', async (c) => {
 
   // Default: exclude pending_review unless explicitly requested
   const showPendingReview = status === 'pending_review';
-  let query = `SELECT i.*, c.name as customer_name, c.company_name as customer_company, s.name as supplier_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ?`;
+  let query = `SELECT i.*, c.name as customer_name, c.company_name as customer_company, s.name as supplier_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ? AND i.deleted_at IS NULL`;
   if (!showPendingReview) query += " AND i.status != 'pending_review'";
   const params: any[] = [tenantId];
   if (status) { const statuses = status.split(',').filter(Boolean); query += ` AND i.status IN (${statuses.map(() => '?').join(',')})`; params.push(...statuses); }
@@ -45,7 +45,7 @@ invoices.get('/', async (c) => {
 
   const rows = await db.prepare(query).bind(...params).all();
   // Build count query with same filters (minus LIMIT/OFFSET)
-  let countQuery = `SELECT COUNT(*) as count FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ?` +
+  let countQuery = `SELECT COUNT(*) as count FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ? AND i.deleted_at IS NULL` +
     (showPendingReview ? '' : " AND i.status != 'pending_review'") +
     (status ? ` AND i.status IN (${status.split(',').filter(Boolean).map(() => '?').join(',')})` : '') +
     (search ? ' AND (i.invoice_number LIKE ? OR c.name LIKE ? OR s.name LIKE ? OR i.vendor_name LIKE ?)' : '') +
@@ -71,7 +71,7 @@ invoices.get('/:id/review', async (c) => {
      FROM invoices i
      LEFT JOIN customers c ON i.customer_id = c.id
      LEFT JOIN file_records f ON i.file_id = f.id
-     WHERE i.id = ? AND i.user_id = ?`
+     WHERE i.id = ? AND i.user_id = ? AND i.deleted_at IS NULL`
   ).bind(id, tenantId).first();
   if (!invoice) return c.json({ error: 'Invoice not found' }, 404);
   const items = await db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY sort_order').bind(id).all();
@@ -86,7 +86,7 @@ invoices.get('/:id', async (c) => {
   const db = c.env.DB;
   const id = c.req.param('id');
   const invoice = await db.prepare(
-    'SELECT i.*, c.name as customer_name, c.email as customer_email, c.address as customer_address FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.id = ? AND i.user_id = ?'
+    'SELECT i.*, c.name as customer_name, c.email as customer_email, c.address as customer_address FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.id = ? AND i.user_id = ? AND i.deleted_at IS NULL'
   ).bind(id, tenantId).first();
   if (!invoice) return c.json({ error: 'Invoice not found' }, 404);
   const items = await db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY sort_order').bind(id).all();
@@ -234,7 +234,7 @@ invoices.put('/:id', async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
   const id = c.req.param('id');
-  const existing = await db.prepare('SELECT id FROM invoices WHERE id = ? AND user_id = ?').bind(id, tenantId).first();
+  const existing = await db.prepare('SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(id, tenantId).first();
   if (!existing) return c.json({ error: 'Invoice not found' }, 404);
 
   const data = await c.req.json<any>();
@@ -268,7 +268,7 @@ invoices.post('/:id/confirm', async (c) => {
   const db = c.env.DB;
   const id = c.req.param('id');
 
-  const existing = await db.prepare('SELECT id, status, invoice_number, receipt_number FROM invoices WHERE id = ? AND user_id = ?').bind(id, tenantId).first<{ id: string; status: string; invoice_number: string; receipt_number: string | null }>();
+  const existing = await db.prepare('SELECT id, status, invoice_number, receipt_number FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(id, tenantId).first<{ id: string; status: string; invoice_number: string; receipt_number: string | null }>();
   if (!existing) return c.json({ error: 'Invoice not found' }, 404);
 
   // Detect if this is a receipt (invoice_number starts with REC- OR receipt_number already set)
@@ -336,9 +336,9 @@ invoices.patch('/:id/status', zValidator('json', z.object({ status: z.string() }
   const db = c.env.DB;
   const id = c.req.param('id');
   const { status } = c.req.valid('json');
-  const existing = await db.prepare('SELECT id FROM invoices WHERE id = ? AND user_id = ?').bind(id, tenantId).first();
+  const existing = await db.prepare('SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(id, tenantId).first();
   if (!existing) return c.json({ error: 'Invoice not found' }, 404);
-  await db.prepare('UPDATE invoices SET status = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(status, id).run();
+  await db.prepare('UPDATE invoices SET status = ?, updated_at = datetime(\'now\') WHERE id = ? AND deleted_at IS NULL').bind(status, id).run();
   const invoice = await db.prepare('SELECT * FROM invoices WHERE id = ?').bind(id).first();
   return c.json(invoice);
 });
@@ -350,45 +350,23 @@ invoices.delete('/:id', async (c) => {
   const id = c.req.param('id');
 
   const existing = await db.prepare(
-    'SELECT id, customer_id, supplier_id, file_id FROM invoices WHERE id = ? AND user_id = ?'
-  ).bind(id, tenantId).first<{ id: string; customer_id: string | null; supplier_id: string | null; file_id: string | null }>();
+    'SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(id, tenantId).first<{ id: string }>();
   if (!existing) return c.json({ error: 'Invoice not found' }, 404);
 
-  // Break circular FK: NULL out any linked_invoice_id references to this invoice
-  await db.prepare('UPDATE invoices SET linked_invoice_id = NULL WHERE linked_invoice_id = ?').bind(id).run();
+  // SOFT DELETE — aligned with the bank statement flow (2026-08-17).
+  // The file stays in File Storage (as the review-page dialog promises), the
+  // invoice row is restorable from the Recycle Bin for 30 days, and any
+  // receipt↔invoice links are preserved for restore.
+  const now = new Date().toISOString();
+  await db.prepare(
+    'UPDATE invoices SET deleted_at = ?, deleted_by = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(now, user.id, id, tenantId).run();
 
-  // Delete the invoice (invoice_items cascade via FK)
-  await db.prepare('DELETE FROM invoices WHERE id = ? AND user_id = ?').bind(id, tenantId).run();
+  await db.prepare('INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'soft_delete', 'invoice', id, JSON.stringify({ restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() })).run();
 
-  // Also remove the linked file from File Storage so it doesn't linger after discard
-  if (existing.file_id) {
-    await db.prepare('DELETE FROM file_records WHERE id = ? AND user_id = ?')
-      .bind(existing.file_id, tenantId).run();
-  }
-
-  // Clean up orphaned customer — delete only if no other invoices reference this customer
-  if (existing.customer_id) {
-    const otherInvoices = await db.prepare(
-      'SELECT COUNT(*) as cnt FROM invoices WHERE user_id = ? AND customer_id = ?'
-    ).bind(tenantId, existing.customer_id).first<{ cnt: number }>();
-    if ((otherInvoices?.cnt || 0) === 0) {
-      await db.prepare('DELETE FROM customers WHERE id = ? AND user_id = ?')
-        .bind(existing.customer_id, tenantId).run();
-    }
-  }
-
-  // Clean up orphaned supplier — delete only if no other invoices reference this supplier
-  if (existing.supplier_id) {
-    const otherInvoices = await db.prepare(
-      'SELECT COUNT(*) as cnt FROM invoices WHERE user_id = ? AND supplier_id = ?'
-    ).bind(tenantId, existing.supplier_id).first<{ cnt: number }>();
-    if ((otherInvoices?.cnt || 0) === 0) {
-      await db.prepare('DELETE FROM suppliers WHERE id = ? AND user_id = ?')
-        .bind(existing.supplier_id, tenantId).run();
-    }
-  }
-
-  return c.json({ success: true });
+  return c.json({ success: true, restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() });
 });
 
 // ── Auto-match receipts to invoices (returns suggestions, does NOT link) ──

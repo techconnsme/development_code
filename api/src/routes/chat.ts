@@ -926,6 +926,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       const stmt = await db.prepare('SELECT id, r2_key, file_name, file_type, ocr_text FROM bank_statements WHERE id = ? AND user_id = ?').bind(args.statement_id, userId).first<{ id: string; r2_key: string; file_name: string; file_type: string; ocr_text: string }>();
       if (!stmt) return JSON.stringify({ error: 'Bank statement not found' });
       if (!env?.FILE_BUCKET) return JSON.stringify({ error: 'Storage not available' });
+      if (!env?.GLM_API_KEY) return JSON.stringify({ error: 'GLM_API_KEY not configured' });
 
       try {
         const obj = await env.FILE_BUCKET.get(stmt.r2_key);
@@ -941,7 +942,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer bc604bbc774c49528e8615564aa51ea3.f0Hzibmlxdd5bKGZ',
+            'Authorization': `Bearer ${env.GLM_API_KEY}`,
           },
           body: JSON.stringify({ model: 'glm-ocr', file: `data:${stmt.file_type || 'application/pdf'};base64,${base64}` }),
         });

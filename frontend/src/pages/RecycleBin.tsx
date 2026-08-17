@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
-import { Trash2, RotateCcw, AlertTriangle, FileText, Landmark } from 'lucide-react';
+import { Trash2, RotateCcw, AlertTriangle, FileText, Landmark, ArrowLeft } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 
 function reviewPageFlags(result: any): string {
@@ -19,6 +19,7 @@ function reviewPageFlags(result: any): string {
 interface RecycleData {
   bank_statements: any[];
   files: any[];
+  invoices: any[];
   retention_days: number;
 }
 
@@ -27,6 +28,19 @@ function daysUntilPurge(deletedAt: string, retentionDays: number): number {
   const purgeAt = deleted + retentionDays * 86400_000;
   const days = Math.ceil((purgeAt - Date.now()) / 86400_000);
   return Math.max(0, days);
+}
+
+// Local date + time, e.g. "2026-08-17 14:32"
+function formatDeletedAt(deletedAt?: string | null): string {
+  if (!deletedAt) return '-';
+  const d = new Date(deletedAt);
+  if (isNaN(d.getTime())) return deletedAt.slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${day} ${hh}:${mm}`;
 }
 
 export default function RecycleBin() {
@@ -51,6 +65,18 @@ export default function RecycleBin() {
       queryClient.invalidateQueries({ queryKey: ['file-storage'] });
       // Navigate to review so user can verify before re-saving
       navigate(`/bank-statements/review/${id}`);
+    },
+    onError: (e: any) => alert(`Restore failed: ${e?.error || e?.message || 'unknown'}`),
+  });
+
+  // Restore invoice → navigate to the invoice review page
+  const restoreInvoiceMut = useMutation({
+    mutationFn: (id: string) =>
+      api(`/bank-statements/recycle/invoice/${id}/restore`, { method: 'POST' }),
+    onSuccess: (_res, id) => {
+      queryClient.invalidateQueries({ queryKey: ['recycle-bin'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      navigate(`/invoices/review/${id}`);
     },
     onError: (e: any) => alert(`Restore failed: ${e?.error || e?.message || 'unknown'}`),
   });
@@ -119,7 +145,7 @@ export default function RecycleBin() {
     mutationFn: () => api('/bank-statements/recycle/purge-old', { method: 'POST' }),
     onSuccess: (res: any) => {
       const p = res?.purged || {};
-      alert(`Purged: ${p.statements || 0} statement(s), ${p.transactions || 0} transaction(s), ${p.files || 0} file(s) older than 30 days.`);
+      alert(`Purged: ${p.statements || 0} statement(s), ${p.transactions || 0} transaction(s), ${p.files || 0} file(s), ${p.invoices || 0} invoice(s) older than 30 days.`);
       queryClient.invalidateQueries({ queryKey: ['recycle-bin'] });
     },
     onError: (e: any) => alert(`Purge failed: ${e?.error || e?.message || 'unknown'}`),
@@ -151,10 +177,30 @@ export default function RecycleBin() {
 
   const stmts = data?.bank_statements || [];
   const files = data?.files || [];
+  const invs = data?.invoices || [];
   const retentionDays = data?.retention_days || 30;
-  const total = stmts.length + files.length;
+  const total = stmts.length + files.length + invs.length;
 
-  const isWorking = restoreStatementMut.isPending || restoreFileMut.isPending || !!restoringId;
+  const isWorking = restoreStatementMut.isPending || restoreFileMut.isPending || restoreInvoiceMut.isPending || !!restoringId;
+
+  // Group soft-deleted files by category so the bin is categorized by file type
+  const fileGroups: Record<string, any[]> = {};
+  for (const f of files) {
+    const key = f.category || 'other';
+    if (!fileGroups[key]) fileGroups[key] = [];
+    fileGroups[key].push(f);
+  }
+
+  const categoryLabel = (cat: string) => {
+    const labels: Record<string, string> = {
+      bank_statement: tr('Bank Statements', '銀行月結單', '银行月结单'),
+      card_statement: tr('Card Statements', '信用卡月結單', '信用卡月结单'),
+      invoice: tr('Invoices', '發票', '发票'),
+      receipt: tr('Receipts', '收據', '收据'),
+      document: tr('Documents', '文件', '文件'),
+    };
+    return labels[cat] || (cat === 'other' ? tr('Other', '其他', '其他') : cat);
+  };
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -169,6 +215,10 @@ export default function RecycleBin() {
       )}
 
       <div>
+        <Link to="/file-storage"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-2">
+          <ArrowLeft className="h-4 w-4" /> {tr('Back to File Storage', '返回文件儲存', '返回文件存储')}
+        </Link>
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <Trash2 className="h-6 w-6 text-muted-foreground" />
           {tr('Recycle Bin', '回收站 Recycle Bin', '回收站 Recycle Bin')}
@@ -195,6 +245,7 @@ export default function RecycleBin() {
           <b>{total}</b> {tr('item(s) in recycle bin', '個項目在回收站', '个项目在回收站')}
           {stmts.length > 0 && <span className="text-muted-foreground"> · {stmts.length} {tr('statement(s)', '份月結單', '份月结单')}</span>}
           {files.length > 0 && <span className="text-muted-foreground"> · {files.length} {tr('file(s)', '個文件', '个文件')}</span>}
+          {invs.length > 0 && <span className="text-muted-foreground"> · {invs.length} {tr('invoice(s)', '張發票', '张发票')}</span>}
         </div>
         <div className="flex-1" />
         <button
@@ -240,7 +291,7 @@ export default function RecycleBin() {
                       <td className="px-3 py-2">{s.bank_name || '-'}</td>
                       <td className="px-3 py-2 font-mono text-xs">{s.account_number || '-'}</td>
                       <td className="px-3 py-2">{s.statement_year}-{String(s.statement_month || '').padStart(2, '0')}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">{s.deleted_at?.slice(0, 10)}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">{formatDeletedAt(s.deleted_at)}</td>
                       <td className="px-3 py-2">
                         <span className={days <= 7 ? 'text-red-600 font-bold' : 'text-muted-foreground'}>
                           {days} day{days === 1 ? '' : 's'}
@@ -272,33 +323,37 @@ export default function RecycleBin() {
         </div>
       )}
 
-      {files.length > 0 && (
+      {invs.length > 0 && (
         <div>
           <h2 className="text-sm font-bold mb-2 flex items-center gap-2">
-            <FileText className="h-4 w-4" /> {tr(`Files (${files.length})`, `文件 (${files.length})`, `文件 (${files.length})`)}
+            <FileText className="h-4 w-4" /> {tr(`Invoices (${invs.length})`, `發票 (${invs.length})`, `发票 (${invs.length})`)}
           </h2>
           <div className="bg-card border rounded-lg overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 text-xs uppercase">
                 <tr>
-                  <th className="px-3 py-2 text-left">{tr('Filename', '文件名', '文件名')}</th>
-                  <th className="px-3 py-2 text-left">{tr('Folder', '資料夾', '资料夹')}</th>
-                  <th className="px-3 py-2 text-left">{tr('Type', '類型', '類型')}</th>
+                  <th className="px-3 py-2 text-left">{tr('Number', '號碼', '号码')}</th>
+                  <th className="px-3 py-2 text-left">{tr('Vendor', '供應商', '供应商')}</th>
+                  <th className="px-3 py-2 text-left">{tr('Direction', '方向', '方向')}</th>
+                  <th className="px-3 py-2 text-left">{tr('Total', '金額', '金额')}</th>
                   <th className="px-3 py-2 text-left">{tr('Deleted', '刪除日期', '删除日期')}</th>
                   <th className="px-3 py-2 text-left">{tr('Days until purge', '距清除天數', '距清除天数')}</th>
                   <th className="px-3 py-2 text-left">{tr('Actions', '操作', '操作')}</th>
                 </tr>
               </thead>
               <tbody>
-                {files.map(f => {
-                  const days = daysUntilPurge(f.deleted_at, retentionDays);
-                  const isInvoiceFile = f.category === 'invoice' || f.category === 'receipt';
+                {invs.map((inv: any) => {
+                  const days = daysUntilPurge(inv.deleted_at, retentionDays);
+                  const isReceipt = !!inv.receipt_number;
                   return (
-                    <tr key={f.id} className="border-t">
-                      <td className="px-3 py-2 truncate max-w-xs" title={f.original_name || f.filename}>{f.original_name || f.filename}</td>
-                      <td className="px-3 py-2">{f.folder || '-'}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">{f.category || '-'}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">{f.deleted_at?.slice(0, 10)}</td>
+                    <tr key={inv.id} className="border-t">
+                      <td className="px-3 py-2 font-mono text-xs">{inv.invoice_number || inv.receipt_number || '-'}</td>
+                      <td className="px-3 py-2">{inv.vendor_name || '-'}</td>
+                      <td className="px-3 py-2 text-xs">
+                        {isReceipt ? tr('Receipt', '收據', '收据') : inv.direction === 'incoming' ? tr('AP (Incoming)', '應付 (收入)', '应付 (收入)') : tr('AR (Outgoing)', '應收 (支出)', '应收 (支出)')}
+                      </td>
+                      <td className="px-3 py-2">{inv.total != null ? Number(inv.total).toLocaleString() : '-'}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">{formatDeletedAt(inv.deleted_at)}</td>
                       <td className="px-3 py-2">
                         <span className={days <= 7 ? 'text-red-600 font-bold' : 'text-muted-foreground'}>
                           {days} day{days === 1 ? '' : 's'}
@@ -307,17 +362,14 @@ export default function RecycleBin() {
                       <td className="px-3 py-2">
                         <div className="flex gap-1">
                           <button
-                            onClick={() => restoreFileMut.mutate({ id: f.id, category: f.category, original_name: f.original_name || f.filename })}
+                            onClick={() => restoreInvoiceMut.mutate(inv.id)}
                             className="text-xs px-2 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 inline-flex items-center gap-1"
                             disabled={isWorking}
                           >
-                            <RotateCcw className="h-3 w-3" />
-                            {isInvoiceFile
-                              ? (tr('Restore + Review', '還原並審核', '还原並审核'))
-                              : (tr('Restore', '還原', '还原'))}
+                            <RotateCcw className="h-3 w-3" /> {tr('Restore + Review', '還原並審核', '还原並审核')}
                           </button>
                           <button
-                            onClick={() => setShowConfirmPurge({ type: 'file', id: f.id, name: f.original_name || f.filename })}
+                            onClick={() => setShowConfirmPurge({ type: 'invoice', id: inv.id, name: inv.invoice_number || inv.receipt_number || inv.id })}
                             className="text-xs px-2 py-1 border border-red-300 text-red-600 rounded hover:bg-red-50"
                           >
                             {tr('Delete forever', '永久刪除', '永久删除')}
@@ -330,6 +382,72 @@ export default function RecycleBin() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {files.length > 0 && (
+        <div className="space-y-4">
+          <h2 className="text-sm font-bold flex items-center gap-2">
+            <FileText className="h-4 w-4" /> {tr(`Files (${files.length})`, `文件 (${files.length})`, `文件 (${files.length})`)}
+          </h2>
+          {Object.entries(fileGroups).map(([cat, group]) => (
+            <div key={cat}>
+              <h3 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">
+                {categoryLabel(cat)} ({group.length})
+              </h3>
+              <div className="bg-card border rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 text-xs uppercase">
+                    <tr>
+                      <th className="px-3 py-2 text-left">{tr('Filename', '文件名', '文件名')}</th>
+                      <th className="px-3 py-2 text-left">{tr('Folder', '資料夾', '资料夹')}</th>
+                      <th className="px-3 py-2 text-left">{tr('Deleted', '刪除日期', '删除日期')}</th>
+                      <th className="px-3 py-2 text-left">{tr('Days until purge', '距清除天數', '距清除天数')}</th>
+                      <th className="px-3 py-2 text-left">{tr('Actions', '操作', '操作')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.map((f: any) => {
+                      const days = daysUntilPurge(f.deleted_at, retentionDays);
+                      const isInvoiceFile = f.category === 'invoice' || f.category === 'receipt';
+                      return (
+                        <tr key={f.id} className="border-t">
+                          <td className="px-3 py-2 truncate max-w-xs" title={f.original_name || f.filename}>{f.original_name || f.filename}</td>
+                          <td className="px-3 py-2">{f.folder || '-'}</td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">{formatDeletedAt(f.deleted_at)}</td>
+                          <td className="px-3 py-2">
+                            <span className={days <= 7 ? 'text-red-600 font-bold' : 'text-muted-foreground'}>
+                              {days} day{days === 1 ? '' : 's'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => restoreFileMut.mutate({ id: f.id, category: f.category, original_name: f.original_name || f.filename })}
+                                className="text-xs px-2 py-1 border border-green-300 text-green-700 rounded hover:bg-green-50 inline-flex items-center gap-1"
+                                disabled={isWorking}
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                                {isInvoiceFile
+                                  ? (tr('Restore + Review', '還原並審核', '还原並审核'))
+                                  : (tr('Restore', '還原', '还原'))}
+                              </button>
+                              <button
+                                onClick={() => setShowConfirmPurge({ type: 'file', id: f.id, name: f.original_name || f.filename })}
+                                className="text-xs px-2 py-1 border border-red-300 text-red-600 rounded hover:bg-red-50"
+                              >
+                                {tr('Delete forever', '永久刪除', '永久删除')}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

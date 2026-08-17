@@ -13,6 +13,7 @@ export type Bindings = {
   CF_ACCOUNT_ID: string;
   CF_ZONE_ID: string;
   DEEPSEEK_API_KEY: string;
+  GLM_API_KEY?: string;
   QWEN_API_KEY?: string;
 };
 
