@@ -19,7 +19,7 @@ export function getCodeType(code: string): string {
   if (code.startsWith('2')) return 'liability';
   if (code.startsWith('3')) return 'equity';
   if (code.startsWith('4')) return 'revenue';
-  if (code.startsWith('5') || code.startsWith('6') || code.startsWith('8')) return 'expense';
+  if (code.startsWith('5')) return 'cost';
   return 'expense';
 }
 
@@ -274,6 +274,9 @@ bookkeeping.get('/accounts', async (c) => {
   const asOf = c.req.query('as_of');
   const includeInactive = c.req.query('include_inactive') === 'true';
 
+  // Self-heal placeholder account names and missing parents (see repairCOA)
+  await repairCOA(db, tenantId);
+
   const rows = await db.prepare(
     `SELECT * FROM accounts WHERE user_id = ? ${includeInactive ? '' : 'AND is_active = 1'} ORDER BY account_code`
   ).bind(tenantId).all();
@@ -512,6 +515,56 @@ function getMissingParentChain(code: string, existingSet: Set<string>, visited: 
   return missing;
 }
 
+// Self-heal: repair placeholder accounts (account_name == account_code) created by older
+// auto-create paths that stored the code as the name and skipped parent accounts.
+// Also ensures every account's parent chain exists. Runs on COA read so the page
+// fixes itself on next load without a manual migration.
+async function repairCOA(db: any, tenantId: string) {
+  const rows = await db.prepare(
+    'SELECT account_code, account_name, account_type, parent_code FROM accounts WHERE user_id = ?'
+  ).bind(tenantId).all();
+  const accts = (rows.results as any[]);
+  if (accts.length === 0) return;
+
+  const existingSet = new Set(accts.map(a => a.account_code));
+  const toCreate = new Map<string, { name: string; type: string; parent: string | null }>();
+
+  for (const a of accts) {
+    // 0. Normalize account_type for 5xxxxx codes (auto-create paths may type them 'expense')
+    if (a.account_code?.startsWith('5') && a.account_type === 'expense') {
+      await db.prepare(
+        'UPDATE accounts SET account_type = ? WHERE user_id = ? AND account_code = ?'
+      ).bind('cost', tenantId, a.account_code).run();
+      a.account_type = 'cost';
+    }
+    // 1. Fix placeholder name + parent (e.g., account_name == "31201")
+    if (a.account_name === a.account_code) {
+      const info = HK_COA_NAMES[a.account_code];
+      if (info) {
+        await db.prepare(
+          'UPDATE accounts SET account_name = ?, parent_code = ? WHERE user_id = ? AND account_code = ?'
+        ).bind(info.name, info.parent, tenantId, a.account_code).run();
+      }
+    }
+    // 2. Collect any missing parent chain
+    for (const pc of getMissingParentChain(a.account_code, existingSet)) {
+      const info = HK_COA_NAMES[pc];
+      if (info && !toCreate.has(pc)) toCreate.set(pc, info);
+    }
+  }
+
+  // Create missing parents (root-level first so parent_code references resolve)
+  const sorted = Array.from(toCreate.keys()).sort((a, b) => a.length - b.length || a.localeCompare(b));
+  for (const pc of sorted) {
+    if (existingSet.has(pc)) continue;
+    const info = toCreate.get(pc)!;
+    await db.prepare(
+      'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, pc, info.name, info.type, info.parent).run();
+    existingSet.add(pc);
+  }
+}
+
 // POST /accounts/ensure — create a specific account + any missing parent accounts recursively
 bookkeeping.post('/accounts/ensure', bookkeeperMiddleware, async (c) => {
   const user = c.get('user');
@@ -573,7 +626,7 @@ bookkeeping.post('/accounts/ensure', bookkeeperMiddleware, async (c) => {
 const createAccountSchema = z.object({
   account_code: z.string().min(1).max(20),
   account_name: z.string().min(1).max(200),
-  account_type: z.enum(['asset', 'liability', 'equity', 'revenue', 'expense']),
+  account_type: z.enum(['asset', 'liability', 'equity', 'revenue', 'cost', 'expense']),
   parent_code: z.string().max(20).optional(),
   opening_balance: z.number().optional(),
 });
