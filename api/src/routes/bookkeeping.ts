@@ -953,6 +953,13 @@ bookkeeping.get('/income-statement', async (c) => {
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale'`
   ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
 
+  const cost = await db.prepare(
+    `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
+     JOIN journal_entries je ON jl.entry_id = je.id
+     JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'cost' AND je.status != 'stale'`
+  ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
+
   // Account-level breakdown for drill-down (journal-based)
   const revenueAccounts = await db.prepare(
     `SELECT jl.account_code, a.account_name,
@@ -980,15 +987,32 @@ bookkeeping.get('/income-statement', async (c) => {
      ORDER BY jl.account_code`
   ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
 
+  const costAccounts = await db.prepare(
+    `SELECT jl.account_code, a.account_name,
+            COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount
+     FROM journal_lines jl
+     JOIN journal_entries je ON jl.entry_id = je.id
+     JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
+       AND a.account_type = 'cost' AND je.status != 'stale'
+     GROUP BY jl.account_code, a.account_name
+     HAVING amount != 0
+     ORDER BY jl.account_code`
+  ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
+
   // If journal entries exist, use them
-  if ((revenue?.amount || 0) > 0 || (expenses?.amount || 0) > 0) {
-    const netIncome = (revenue?.amount || 0) - (expenses?.amount || 0);
+  if ((revenue?.amount || 0) > 0 || (cost?.amount || 0) > 0 || (expenses?.amount || 0) > 0) {
+    const grossProfit = (revenue?.amount || 0) - (cost?.amount || 0);
+    const netIncome = grossProfit - (expenses?.amount || 0);
     return c.json({
       revenue: revenue?.amount || 0,
+      cost: cost?.amount || 0,
+      gross_profit: grossProfit,
       expenses: expenses?.amount || 0,
       net_income: netIncome,
       source: 'journal',
       revenue_accounts: revenueAccounts?.results || [],
+      cost_accounts: costAccounts?.results || [],
       expense_accounts: expenseAccounts?.results || [],
       period: { start: startDate, end: endDate },
     });
