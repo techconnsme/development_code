@@ -9,6 +9,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import DropdownSelect from '../components/DropdownSelect';
 import { useDateFilter } from '../contexts/DateFilterContext';
+import PnlFormulaBanner from '../components/PnlFormulaBanner';
 
 export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'entries' | 'accounts' | 'trial' | 'pl' | 'bs' | 'ledger' | 'export'; hideTabs?: boolean }) {
   const { i18n } = useTranslation();
@@ -557,7 +558,15 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
 
       {/* P&L Tab */}
       {tab === 'pl' && incomeStatement && (
-        <div className="flex gap-4">
+        <>
+          <PnlFormulaBanner data={{
+            revenue: incomeStatement.revenue || 0,
+            cost: incomeStatement.cost || 0,
+            gross_profit: incomeStatement.gross_profit || 0,
+            expenses: incomeStatement.expenses || 0,
+            net_income: incomeStatement.net_income || 0,
+          }} />
+          <div className="flex gap-4">
           {/* Main P&L card */}
           <div className={`bg-card border rounded-xl overflow-hidden ${selectedPLAccount ? 'max-w-xl' : 'max-w-2xl'} flex-1 transition-all duration-300`}>
             {/* Revenue section */}
@@ -828,6 +837,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             )}
           </div>
         </div>
+        </>
       )}
 
       {/* Balance Sheet Tab */}
