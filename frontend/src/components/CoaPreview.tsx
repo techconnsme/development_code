@@ -11,7 +11,7 @@ import { useToast } from '../components/Toast';
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export type CoaMode = 'industry' | 'manual';
-export type CoaAccountType = 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
+export type CoaAccountType = 'asset' | 'liability' | 'equity' | 'revenue' | 'cost' | 'expense';
 
 export interface CoaAccount {
   account_code: string;
@@ -33,13 +33,14 @@ interface CoaPreviewProps {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const TYPE_ORDER: CoaAccountType[] = ['asset', 'liability', 'equity', 'revenue', 'expense'];
+const TYPE_ORDER: CoaAccountType[] = ['asset', 'liability', 'equity', 'revenue', 'cost', 'expense'];
 
 const TYPE_LABELS: Record<string, string> = {
   asset: tr('Assets', '資產', '资产'),
   liability: tr('Liabilities', '負債', '负债'),
   equity: tr('Equity', '權益', '权益'),
   revenue: tr('Revenue', '收入', '收入'),
+  cost: tr('Cost', '直接成本', '直接成本'),
   expense: tr('Expenses', '支出', '支出'),
 };
 
@@ -48,16 +49,18 @@ const TYPE_COLORS: Record<string, string> = {
   liability: 'bg-red-50 text-black font-bold dark:bg-red-900/30 dark:text-white',
   equity: 'bg-purple-50 text-black font-bold dark:bg-purple-900/30 dark:text-white',
   revenue: 'bg-green-50 text-black font-bold dark:bg-green-900/30 dark:text-white',
+  cost: 'bg-orange-50 text-black font-bold dark:bg-orange-900/30 dark:text-white',
   expense: 'bg-amber-50 text-black font-bold dark:bg-amber-900/30 dark:text-white',
 };
 
-/** Code range per type for renumbering. Expense spans 50000-69999 and 80000-89999. */
+/** Code range per type for renumbering. Cost spans 50000-59999, Expense 60000-89999. */
 const TYPE_CODE_RANGE: Record<string, { start: number; end: number }> = {
   asset: { start: 10000, end: 19999 },
   liability: { start: 20000, end: 29999 },
   equity: { start: 30000, end: 39999 },
   revenue: { start: 40000, end: 49999 },
-  expense: { start: 50000, end: 89999 },
+  cost: { start: 50000, end: 59999 },
+  expense: { start: 60000, end: 89999 },
 };
 
 function isParentCode(code: string): boolean {
