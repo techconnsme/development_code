@@ -469,7 +469,7 @@ card.post('/:id/post-to-gl', async (c) => {
   for (const code of codes) {
     const exists = await db.prepare('SELECT id FROM accounts WHERE user_id = ? AND account_code = ?').bind(tenantId, code).first();
     if (!exists) {
-      const type = code.startsWith('1') ? 'asset' : code.startsWith('2') ? 'liability' : code.startsWith('3') ? 'equity' : code.startsWith('4') ? 'revenue' : 'expense';
+      const type = code.startsWith('1') ? 'asset' : code.startsWith('2') ? 'liability' : code.startsWith('3') ? 'equity' : code.startsWith('4') ? 'revenue' : code.startsWith('5') ? 'cost' : 'expense';
       await db.prepare('INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, is_active) VALUES (?, ?, ?, ?, ?, 1)')
         .bind(`ac-${Date.now()}-${code}`, tenantId, code, `Card auto-created ${code}`, type).run();
     }

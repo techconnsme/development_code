@@ -434,12 +434,12 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
         const assets: any[] = [], liabilities: any[] = [], equity: any[] = [];
         let rev = 0, exp = 0;
         for (const r of rows.results as any[]) {
-          const bal = (r.account_type === 'asset' || r.account_type === 'expense' || (r.account_code||'').startsWith('1') || (r.account_code||'').startsWith('5')) ? (r.total_debit - r.total_credit) : (r.total_credit - r.total_debit);
+          const bal = (r.account_type === 'asset' || r.account_type === 'cost' || r.account_type === 'expense' || (r.account_code||'').startsWith('1')) ? (r.total_debit - r.total_credit) : (r.total_credit - r.total_debit);
           if (r.account_code?.startsWith('1') || r.account_type === 'asset') assets.push({ code: r.account_code, name: r.account_name, balance: bal });
           else if (r.account_code?.startsWith('2') || r.account_type === 'liability') liabilities.push({ code: r.account_code, name: r.account_name, balance: bal });
           else if (r.account_code?.startsWith('3') || r.account_type === 'equity') equity.push({ code: r.account_code, name: r.account_name, balance: bal });
           else if (r.account_code?.startsWith('4') || r.account_type === 'revenue') rev += bal;
-          else if (r.account_code?.startsWith('5') || r.account_type === 'expense') exp += bal;
+          else if (r.account_type === 'cost' || r.account_type === 'expense' || r.account_code?.startsWith('5')) exp += bal;
         }
         const re = rev - exp;
         if (Math.abs(re) > 0.01) equity.push({ code: '3xxx', name: 'Retained Earnings', balance: re });
@@ -463,7 +463,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       const name = args?.account_name;
       const type = args?.account_type;
       if (!code || !name || !type) return JSON.stringify({ error: 'account_code, account_name, and account_type are required' });
-      const validTypes = ['asset', 'liability', 'equity', 'revenue', 'expense'];
+      const validTypes = ['asset', 'liability', 'equity', 'revenue', 'cost', 'expense'];
       if (!validTypes.includes(type)) return JSON.stringify({ error: `Invalid type. Must be one of: ${validTypes.join(', ')}` });
       const existing = await db.prepare('SELECT account_code FROM accounts WHERE user_id = ? AND account_code = ?').bind(userId, code).first();
       if (existing) return JSON.stringify({ error: `Account ${code} already exists` });

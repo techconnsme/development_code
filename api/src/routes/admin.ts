@@ -750,7 +750,7 @@ admin.get('/audit-stats', async (c) => {
   const receiptExpense = await db.prepare(
     `SELECT
        COALESCE(SUM(CASE WHEN a.account_type = 'revenue' THEN jl.credit ELSE 0 END), 0) as total_receipts,
-       COALESCE(SUM(CASE WHEN a.account_type = 'expense' THEN jl.debit ELSE 0 END), 0) as total_expenses
+       COALESCE(SUM(CASE WHEN a.account_type IN ('expense', 'cost') THEN jl.debit ELSE 0 END), 0) as total_expenses
      FROM journal_lines jl
      JOIN accounts a ON jl.account_code = a.account_code
      JOIN journal_entries je ON jl.entry_id = je.id

@@ -91,7 +91,7 @@ dashboard.get('/', async (c) => {
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale' AND ${notOrphaned}`
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale' AND ${notOrphaned}`
   ).bind(tenantId, periodStart, periodEnd).first() as any;
 
   // Revenue MTD from bank (deposits this month)
@@ -205,7 +205,7 @@ dashboard.get('/', async (c) => {
             `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
              JOIN journal_entries je ON jl.entry_id = je.id
              JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-             WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale' AND ${notOrphaned}`
+             WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale' AND ${notOrphaned}`
           ).bind(tenantId, ps, pe).first() as any)?.amount || 0)
         : ((await db.prepare(
             `SELECT COALESCE(SUM(withdrawal_amount), 0) as amount FROM bank_transactions
