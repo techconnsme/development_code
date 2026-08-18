@@ -1030,14 +1030,22 @@ bookkeeping.get('/income-statement', async (c) => {
      AND NOT (account_code LIKE '3%' OR account_code LIKE '1%' OR account_code LIKE '2%')`
   ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
 
-  // Expenses: 5xxxx/6xxxx/8xxxx codes, plus uncategorized withdrawals
+  // Expenses: 6xxxx/8xxxx codes, plus uncategorized withdrawals
   const bankExpenses = await db.prepare(
     `SELECT COALESCE(SUM(withdrawal_amount), 0) as amount FROM bank_transactions
      WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL
-     AND (account_code LIKE '5%' OR account_code LIKE '6%' OR account_code LIKE '8%' OR (account_code IS NULL AND withdrawal_amount > 0
+     AND (account_code LIKE '6%' OR account_code LIKE '8%' OR (account_code IS NULL AND withdrawal_amount > 0
        AND description NOT LIKE '%LOAN REPAYMENT%'
        AND description NOT LIKE '%TD DESIGNATED%'
        AND description NOT LIKE '%轉賬支出%'))
+     AND NOT (account_code LIKE '3%' OR account_code LIKE '1%' OR account_code LIKE '2%')`
+  ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
+
+  // Cost: 5xxxx codes only
+  const bankCost = await db.prepare(
+    `SELECT COALESCE(SUM(withdrawal_amount), 0) as amount FROM bank_transactions
+     WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL
+     AND (account_code LIKE '5%')
      AND NOT (account_code LIKE '3%' OR account_code LIKE '1%' OR account_code LIKE '2%')`
   ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
 
@@ -1049,7 +1057,7 @@ bookkeeping.get('/income-statement', async (c) => {
 
   const catExpenses = await db.prepare(
     `SELECT COALESCE(SUM(withdrawal_amount), 0) as amount FROM bank_transactions
-     WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND (account_code LIKE '5%' OR account_code LIKE '6%' OR account_code LIKE '8%') AND deleted_at IS NULL`
+     WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND (account_code LIKE '6%' OR account_code LIKE '8%') AND deleted_at IS NULL`
   ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
 
   const uncategorized = await db.prepare(
@@ -1076,20 +1084,36 @@ bookkeeping.get('/income-statement', async (c) => {
             COALESCE(SUM(withdrawal_amount), 0) as amount
      FROM bank_transactions
      WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ?
-       AND (account_code LIKE '5%' OR account_code LIKE '6%' OR account_code LIKE '8%')
+       AND (account_code LIKE '6%' OR account_code LIKE '8%')
        AND deleted_at IS NULL
      GROUP BY account_code
      HAVING amount > 0
      ORDER BY account_code`
   ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
 
-  const netIncome = (bankRevenue?.amount || 0) - (bankExpenses?.amount || 0);
+  const bankCostAccounts = await db.prepare(
+    `SELECT COALESCE(account_code, 'uncategorized') as account_code,
+            'Bank Withdrawal' as account_name,
+            COALESCE(SUM(withdrawal_amount), 0) as amount
+     FROM bank_transactions
+     WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ?
+       AND account_code LIKE '5%' AND deleted_at IS NULL
+     GROUP BY account_code
+     HAVING amount > 0
+     ORDER BY account_code`
+  ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
+
+  const grossProfit = (bankRevenue?.amount || 0) - (bankCost?.amount || 0);
+  const netIncome = grossProfit - (bankExpenses?.amount || 0);
   return c.json({
     revenue: bankRevenue?.amount || 0,
+    cost: bankCost?.amount || 0,
+    gross_profit: grossProfit,
     expenses: bankExpenses?.amount || 0,
     net_income: netIncome,
     source: 'bank',
     revenue_accounts: bankRevenueAccounts?.results || [],
+    cost_accounts: bankCostAccounts?.results || [],
     expense_accounts: bankExpenseAccounts?.results || [],
     breakdown: {
       categorized_revenue: catRevenue?.amount || 0,
