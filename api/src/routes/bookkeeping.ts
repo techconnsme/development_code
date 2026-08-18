@@ -306,7 +306,7 @@ bookkeeping.get('/accounts', async (c) => {
       const name = (a.account_name || '').toLowerCase();
       const isContra = code.startsWith('123') || name.includes('accumulated depreciation')
         || name.includes('累計折舊') || name.includes('allowance') || name.includes('減值');
-      const isDebitNatural = !isContra && (a.account_type === 'asset' || a.account_type === 'expense');
+      const isDebitNatural = !isContra && (a.account_type === 'asset' || a.account_type === 'cost' || a.account_type === 'expense');
       const currentBalance = isDebitNatural ? opening + debit - credit : opening + credit - debit;
       return { ...a, total_debit: debit, total_credit: credit, current_balance: Math.round(currentBalance * 100) / 100 };
     });
@@ -719,7 +719,7 @@ bookkeeping.get('/accounts/:code/transactions', async (c) => {
   const acctName = ((account as any).account_name || '').toLowerCase();
   const isContra = acctCode.startsWith('123') || acctName.includes('accumulated depreciation')
     || acctName.includes('累計折舊') || acctName.includes('allowance') || acctName.includes('減值');
-  const isDebitNatural = !isContra && ((account as any).account_type === 'asset' || (account as any).account_type === 'expense');
+  const isDebitNatural = !isContra && ((account as any).account_type === 'asset' || (account as any).account_type === 'cost' || (account as any).account_type === 'expense');
 
   const transactions: any[] = [];
   let runningBalance = opening;
@@ -875,7 +875,7 @@ bookkeeping.get('/trial-balance', async (c) => {
     const name = (row.account_name || '').toLowerCase();
     const isContra = code.startsWith('123') || name.includes('accumulated depreciation')
       || name.includes('累計折舊') || name.includes('allowance') || name.includes('減值');
-    const isDebitNatural = !isContra && (type === 'asset' || type === 'expense');
+    const isDebitNatural = !isContra && (type === 'asset' || type === 'cost' || type === 'expense');
     const ending = isDebitNatural
       ? opening + row.total_debit - row.total_credit
       : opening + row.total_credit - row.total_debit;
@@ -1200,7 +1200,7 @@ bookkeeping.get('/balance-sheet', async (c) => {
         return row.total_credit - row.total_debit;
       }
       // Assets (1xxx) and Expenses (5xxx/6xxx/8xxx): debit balance
-      if (type === 'asset' || type === 'expense' || code.startsWith('1') || code.startsWith('5') || code.startsWith('6') || code.startsWith('8')) {
+      if (type === 'asset' || type === 'cost' || type === 'expense' || code.startsWith('1') || code.startsWith('5') || code.startsWith('6') || code.startsWith('8')) {
         return row.total_debit - row.total_credit;
       }
       // Liabilities (2xxx), Equity (3xxx), Revenue (4xxx): credit balance
@@ -1229,7 +1229,7 @@ bookkeeping.get('/balance-sheet', async (c) => {
         equity.push({ code: row.account_code, name: row.account_name, balance });
       } else if (row.account_code?.startsWith('4') || accountType === 'revenue') {
         totalRevenue += balance;
-      } else if (row.account_code?.startsWith('5') || row.account_code?.startsWith('6') || row.account_code?.startsWith('8') || accountType === 'expense') {
+      } else if (row.account_code?.startsWith('5') || row.account_code?.startsWith('6') || row.account_code?.startsWith('8') || accountType === 'cost' || accountType === 'expense') {
         totalExpenses += balance;
       }
     }
@@ -1355,7 +1355,7 @@ bookkeeping.get('/ledger', async (c) => {
       const g = groups[key];
       const lastBalance = g.entries.length > 0 ? g.entries[g.entries.length - 1].balance : g.opening_balance;
       // Assets/Expenses: debit increases, credit decreases. Liabilities/Equity/Revenue: opposite.
-      const isDebitNatural = row.account_type === 'asset' || row.account_type === 'expense';
+      const isDebitNatural = row.account_type === 'asset' || row.account_type === 'cost' || row.account_type === 'expense';
       const change = isDebitNatural ? (row.debit - row.credit) : (row.credit - row.debit);
       const balance = lastBalance + change;
       g.entries.push({ date: row.date, description: row.description, debit: row.debit, credit: row.credit, balance });
@@ -1382,7 +1382,7 @@ bookkeeping.get('/ledger', async (c) => {
     if (!groups[code]) groups[code] = { account_code: code, account_name: name, account_type: type, entries: [], total_debit: 0, total_credit: 0 };
     return groups[code];
   };
-  const push = (g: AccountGroup, e: LedgerEntry) => { const last = g.entries.length > 0 ? g.entries[g.entries.length - 1].balance : 0; const isDebitNat = g.account_type === 'asset' || g.account_type === 'expense'; const change = isDebitNat ? (e.debit - e.credit) : (e.credit - e.debit); e.balance = last + change; g.entries.push(e); g.total_debit += e.debit; g.total_credit += e.credit; };
+  const push = (g: AccountGroup, e: LedgerEntry) => { const last = g.entries.length > 0 ? g.entries[g.entries.length - 1].balance : 0; const isDebitNat = g.account_type === 'asset' || g.account_type === 'cost' || g.account_type === 'expense'; const change = isDebitNat ? (e.debit - e.credit) : (e.credit - e.debit); e.balance = last + change; g.entries.push(e); g.total_debit += e.debit; g.total_credit += e.credit; };
 
   for (const tx of bankRows.results as any[]) {
     const desc = tx.description || '';
@@ -1754,7 +1754,7 @@ bookkeeping.post('/year-end-close', bookkeeperMiddleware, async (c) => {
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale'`
+     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale'`
   ).bind(tenantId, fiscal_end_date).first<{ amount: number }>();
 
   const netIncome = (revenue?.amount || 0) - (expenses?.amount || 0);
@@ -1789,7 +1789,7 @@ bookkeeping.post('/year-end-close', bookkeeperMiddleware, async (c) => {
     `SELECT jl.account_code, jl.account_name, SUM(jl.debit) - SUM(jl.credit) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale'
+     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale'
      GROUP BY jl.account_code ORDER BY jl.account_code`
   ).bind(tenantId, fiscal_end_date).all();
 
@@ -1852,7 +1852,7 @@ bookkeeping.post('/profits-tax-provision', bookkeeperMiddleware, async (c) => {
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale'`
+     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale'`
   ).bind(tenantId, fiscal_end_date).first<{ amount: number }>();
 
   const netIncome = (revenue?.amount || 0) - (expenses?.amount || 0);
