@@ -13,13 +13,14 @@ import MissingCodesModal from '../components/MissingCodesModal';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
 
-const TYPE_ORDER = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;
+const TYPE_ORDER = ['asset', 'liability', 'equity', 'revenue', 'cost', 'expense'] as const;
 
 const TYPE_LABELS: Record<string, string> = {
   asset: tr('Assets', '資產', '资产'),
   liability: tr('Liabilities', '負債', '负债'),
   equity: tr('Equity', '權益', '权益'),
   revenue: tr('Revenue', '收入', '收入'),
+  cost: tr('Cost', '直接成本', '直接成本'),
   expense: tr('Expenses', '支出', '支出'),
 };
 
@@ -28,6 +29,7 @@ const TYPE_COLORS: Record<string, string> = {
   liability: 'bg-red-50 text-black font-bold dark:bg-red-900/30 dark:text-white',
   equity: 'bg-purple-50 text-black font-bold dark:bg-purple-900/30 dark:text-white',
   revenue: 'bg-green-50 text-black font-bold dark:bg-green-900/30 dark:text-white',
+  cost: 'bg-orange-50 text-black font-bold dark:bg-orange-900/30 dark:text-white',
   expense: 'bg-amber-50 text-black font-bold dark:bg-amber-900/30 dark:text-white',
 };
 
@@ -90,7 +92,7 @@ export default function ChartOfAccounts() {
   const [typeFilter, setTypeFilter] = useState('');
   const [search, setSearch] = useState('');
   const [expandedTypes, setExpandedTypes] = useState<Record<string, boolean>>({
-    asset: true, liability: true, equity: true, revenue: true, expense: true,
+    asset: true, liability: true, equity: true, revenue: true, cost: true, expense: true,
   });
   const [expandedAccounts, setExpandedAccounts] = useState<Record<string, boolean>>({});
   const [collapsedParents, setCollapsedParents] = useState<Set<string>>(new Set());
