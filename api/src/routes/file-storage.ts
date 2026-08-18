@@ -1,11 +1,22 @@
 import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import { Bindings, Variables } from '../types';
+import * as pdfjsWorkerModule from 'pdfjs-dist/build/pdf.worker.mjs';
+
+// pdf.js's fake worker (used when isNodeJS is true, which includes workerd's
+// nodejs_compat runtime) looks for `globalThis.pdfjsWorker.WorkerMessageHandler`
+// BEFORE its runtime `import(workerSrc)` — which workerd cannot resolve
+// ("No such module pdf.worker.mjs"). Publishing the statically-bundled worker
+// module there makes the in-process fake worker work in workerd.
+(globalThis as any).pdfjsWorker = pdfjsWorkerModule;
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { wsBroadcast } from './ws';
 import { generateReceiptNumber, detectOwnNumber } from '../lib/numbering';
 import { processBankStatement, extractCompanyInfo, extractBankInfo } from '../lib/bank-ocr';
-import { normalizeCompanyName, fuzzyMatchCompany, matchBankName } from '../lib/company-matcher';
+import { fuzzyMatchCompany, matchBankName } from '../lib/company-matcher';
+import { resolveDirection, extractAcName } from '../lib/direction-resolver';
+import { extractPrintedTotal } from '../lib/printed-total';
+import { buildTextFromItems } from '../lib/pdf-layout';
 import { reconcileDirections } from '../lib/balance-reconcile';
 
 // Audit logging helper
@@ -124,7 +135,7 @@ async function importStatementFromFile(
   // Parse with DeepSeek AI — with GLM-OCR retry on balance failure
   let parsed: any = null;
   let usage: any = null;
-  let ocrSource: 'tomarkdown' | 'glm-ocr' = 'tomarkdown';
+  let ocrSource: 'tomarkdown' | 'glm-ocr' | 'pdf-text' = 'tomarkdown';
 
   const tryDeepSeekParse = async (inputOcrText: string, ocrLabel: string): Promise<any> => {
     if (!deepseekKey) return null;
@@ -653,31 +664,91 @@ function padPassword(pw: string): Uint8Array {
 }
 
 // MD5 using Node.js crypto (nodejs_compat), with pure-JS fallback
-// ── pdfjs-dist for PDF text extraction (handles encrypted PDFs natively) ──
-let pdfjsLib: any = null;
-async function getPdfjsLib() {
-  if (pdfjsLib) return pdfjsLib;
-  try { pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js'); } catch { return null; }
-  return pdfjsLib;
+// ── PDF text-layer extraction (pdfjs-dist, driven directly) ──
+// unpdf's inlined serverless bundle crashes in workerd ("Cannot set
+// properties of undefined (setting '_isSameOrigin')"), and pdf.js's fake
+// worker relative import is not resolvable there either. So load
+// pdfjs-dist directly and point it at a vendored worker entry — wrangler
+// bundles files referenced via `new URL(..., import.meta.url)` as
+// sub-worker entrypoints, and workerd supports the Worker constructor.
+
+let lastPdfTextError: string | null = null;
+let pdfJsMod: any = null;
+
+async function getPdfJsModule(): Promise<any | null> {
+  if (pdfJsMod) return pdfJsMod;
+  try {
+    pdfJsMod = await import('pdfjs-dist');
+    return pdfJsMod;
+  } catch (e: any) {
+    lastPdfTextError = e?.message || String(e);
+    return null;
+  }
 }
 
 async function extractPdfTextWithPassword(
   pdfBytes: Uint8Array, password: string
 ): Promise<string | null> {
-  const lib = await getPdfjsLib();
+  const lib = await getPdfJsModule();
   if (!lib) return null;
   try {
-    const loadingTask = lib.getDocument({ data: pdfBytes, password, disableAutoFetch: true, disableStream: true });
-    const doc = await loadingTask.promise;
+    const doc = await lib.getDocument({ data: pdfBytes, password, disableAutoFetch: true, disableStream: true }).promise;
     const parts: string[] = [];
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i);
       const tc = await page.getTextContent();
-      parts.push(tc.items.map((it: any) => it.str).join(' '));
+      // Position-aware join: pdf.js fragments numbers ("3 4 , 2 00.00")
+      parts.push(buildTextFromItems(tc.items.map((it: any) => ({
+        str: it.str,
+        x: it.transform?.[4] ?? 0,
+        y: it.transform?.[5] ?? 0,
+        width: it.width ?? 0,
+        height: it.height ?? 10,
+        hasEOL: !!it.hasEOL,
+      }))));
     }
-    const text = parts.join('\n').trim();
-    return text.length > 20 ? text : null;
-  } catch { return null; }
+    const clean = parts.join('\n').trim();
+    return clean.length > 20 ? clean : null;
+  } catch (e: any) { lastPdfTextError = e?.message || String(e); return null; }
+}
+
+/**
+ * Extract the text layer of a PDF (no password).
+ * Free, deterministic — preferred over vision OCR for text-based PDFs.
+ * Returns null for scans / encrypted PDFs / failures (caller falls back).
+ */
+async function extractPdfText(pdfBytes: Uint8Array): Promise<string | null> {
+  const lib = await getPdfJsModule();
+  if (!lib) return null;
+  try {
+    const doc = await lib.getDocument({ data: pdfBytes, disableAutoFetch: true, disableStream: true }).promise;
+    const parts: string[] = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const tc = await page.getTextContent();
+      // Position-aware join: pdf.js fragments numbers ("3 4 , 2 00.00")
+      parts.push(buildTextFromItems(tc.items.map((it: any) => ({
+        str: it.str,
+        x: it.transform?.[4] ?? 0,
+        y: it.transform?.[5] ?? 0,
+        width: it.width ?? 0,
+        height: it.height ?? 10,
+        hasEOL: !!it.hasEOL,
+      }))));
+    }
+    const clean = parts.join('\n').trim();
+    return clean.length > 20 ? clean : null;
+  } catch (e: any) { lastPdfTextError = e?.message || String(e); return null; }
+}
+
+/**
+ * Sanity check: does the extracted text look like a real invoice/statement
+ * (has digits + invoice-like keywords), or is it scan garbage?
+ */
+function isMeaningfulPdfText(text: string): boolean {
+  if (!text || text.length < 150) return false;
+  if (!/\d/.test(text)) return false;
+  return /(invoice|receipt|total|amount|a\/c|payment|statement|hk\$|\busd\b|rmb|deposit|withdrawal|balance)/i.test(text);
 }
 
 let nodeCrypto: any = null;
@@ -1106,21 +1177,38 @@ async function importInvoiceFromFile(
   directionOverride?: string | null,
 ): Promise<{ success: boolean; invoice_id?: string; error?: string; items_count?: number; ocr_failed?: boolean; parsed?: any; folder?: string; is_receipt?: boolean; receipt_number?: string | null; needs_direction_review?: boolean; company_not_detected?: boolean; total_mismatch?: any; discount_amount?: number; discount_description?: string; ocr_source?: string; usage?: any; glm_usage?: any; deepseek_raw?: string | null; is_duplicate?: boolean; duplicate_status?: string | null; duplicate_existing_id?: string | null; auto_linked_invoice_id?: string | null; new_counterparty?: boolean; direction?: string; duplicate_info?: any; needs_review?: boolean }> {
   const fileRow = await db.prepare(
-    'SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_status, category, direction FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string; category: string; direction: string }>();
+    'SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_text_source, ocr_status, category, direction FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_text_source: string | null; ocr_status: string; category: string; direction: string }>();
   if (!fileRow) return { success: false, error: 'File not found' };
 
-  let ocrSource: 'tomarkdown' | 'glm-ocr' = 'tomarkdown';
+  let ocrSource: 'tomarkdown' | 'glm-ocr' | 'pdf-text' = 'tomarkdown';
   let glmUsage: any = null; // hoisted above the GLM fallback (TDZ fix 2026-08-17)
   let ocrText = fileRow.ocr_text || '';
+  // OCR already ran upstream (import-document / try-decrypt) — honor its source.
+  if (ocrText && ocrText.length >= 20 && (fileRow.ocr_text_source === 'pdf-text' || fileRow.ocr_text_source === 'glm-ocr' || fileRow.ocr_text_source === 'tomarkdown')) {
+    ocrSource = fileRow.ocr_text_source;
+  }
   if (!ocrText || ocrText.length < 20) {
     const obj = await fileBucket.get(fileRow.r2_key);
     if (obj) {
       const buffer = await obj.arrayBuffer();
       const mimeType = fileRow.file_type || 'application/pdf';
 
+      // Attempt 0: pdf.js text-layer extraction (free, deterministic — best
+      // for text-based PDFs like Pastel/VEII/EHSIA; scans fall through)
+      if (mimeType === 'application/pdf') {
+        try {
+          const pdfText = await extractPdfText(new Uint8Array(buffer));
+          if (pdfText && isMeaningfulPdfText(pdfText)) {
+            ocrText = pdfText;
+            ocrSource = 'pdf-text';
+            console.log('[OCR|pdf-text] Invoice succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
+          }
+        } catch {}
+      }
+
       // Attempt 1: GLM-OCR (best for scanned PDFs and images)
-      if (glmApiKey) {
+      if ((!ocrText || ocrText.length < 20) && glmApiKey) {
         try {
           const bytes = new Uint8Array(buffer);
           let binary = '';
@@ -1161,7 +1249,7 @@ async function importInvoiceFromFile(
       }
 
       if (ocrText && ocrText.length >= 20) {
-        await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
+        await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_text_source = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, ocrSource, fileId).run();
       }
     }
   }
@@ -1267,6 +1355,12 @@ ${ocrText.slice(0, 8000)}`;
       if (!isReceipt && regexParties.billToCustomer) {
         hints.push(`- The party being billed (customer) appears to be: ${regexParties.billToCustomer}`);
       }
+      if (!isReceipt) {
+        const acHint = extractAcName(ocrText);
+        if (acHint) {
+          hints.push(`- The bank "A/C Name" printed in the PAYMENT METHOD section is: ${acHint} — this is the bank account of the invoice ISSUER (the company being paid).`);
+        }
+      }
       if (hints.length > 0) {
         hints.push('- IMPORTANT: vendor_name MUST be the issuer (company that sent this bill), customer_name MUST be the party being billed.');
       }
@@ -1358,12 +1452,15 @@ ${ocrText.slice(0, 8000)}`;
   let isIncoming = false;
   let needsDirectionReview = false;
   let companyNotDetected = false;
+  // Hoisted out of the if-block: the GLM-OCR retry (sibling block) also
+  // needs the own-company candidates for its direction re-check.
+  let ownCandidates: string[] = [];
 
   if (!isReceipt) {
     const ownCompany = await db.prepare(
       'SELECT name, legal_name, short_name FROM company_settings WHERE user_id = ?'
     ).bind(userId).first<{ name: string | null; legal_name: string | null; short_name: string | null }>();
-    let ownCandidates = [ownCompany?.name, ownCompany?.legal_name, ownCompany?.short_name]
+    ownCandidates = [ownCompany?.name, ownCompany?.legal_name, ownCompany?.short_name]
       .filter((s): s is string => !!s && s.trim().length > 0);
     // Fallback: no company_settings row (e.g. legacy accounts) → use the user's
     // own company name so direction detection still has something to compare
@@ -1377,83 +1474,30 @@ ${ocrText.slice(0, 8000)}`;
         .bind(userId).first<{ company_name: string | null }>();
       if (u?.company_name && u.company_name.trim().length > 0) ownCandidates.push(u.company_name);
     }
-    const ownNorm = normalizeCompanyName(ownCandidates[0] || '');
-    const vendorNorm = normalizeCompanyName(parsed?.vendor_name);
-    const customerNorm = normalizeCompanyName(parsed?.customer_name);
-    const hasVendor = !!(parsed?.vendor_name && parsed.vendor_name.trim().length > 2);
-    const hasCustomer = !!(parsed?.customer_name && parsed.customer_name.trim().length > 2);
-    const ownKnown = !!(ownNorm && ownNorm.length > 3);
+    // ── Direction decision (fuzzy own-company match + A/C Name cross-check) ──
+    // The bank "A/C Name" holder is the invoice issuer in this business
+    // context (verified across Pastel / VEII / EHSIA families 2026-08-18).
+    // resolveDirection also swaps mislabeled vendor/customer pairs and flags
+    // thin parses for review instead of silently accepting a direction.
+    const direction = resolveDirection({
+      vendorName: parsed?.vendor_name || null,
+      customerName: parsed?.customer_name || null,
+      ocrText,
+      ownCompanyCandidates: ownCandidates,
+    });
 
-    // Fuzzy-match vendor & customer against own company
-    const vendorMatch = ownKnown && hasVendor
-      ? fuzzyMatchCompany(parsed?.vendor_name, ownCandidates, { topN: 3, minScore: 50 })
-      : null;
-    const customerMatch = ownKnown && hasCustomer
-      ? fuzzyMatchCompany(parsed?.customer_name, ownCandidates, { topN: 3, minScore: 50 })
-      : null;
-    const vendorIsOurs = vendorMatch?.best ? vendorMatch.best.score >= 70 : false;
-    const customerIsOurs = customerMatch?.best ? customerMatch.best.score >= 70 : false;
-
-    if (ownKnown && customerIsOurs) {
-      // ✅ The "Bill To:" / "Customer:" field on this invoice is US — supplier billed us.
-      isIncoming = true;
-      counterpartyName = parsed?.vendor_name || null;
-    } else if (ownKnown && vendorIsOurs) {
-      // ✅ The letterhead is US — we issued this invoice to a customer.
-      isIncoming = false;
-      counterpartyName = parsed?.customer_name || null;
-    } else if (hasVendor && hasCustomer && ownKnown) {
-      // ⚠️ Both vendor and customer are valid third parties, neither matches our company.
-      // Default: assume this is an invoice we RECEIVED from a supplier (incoming/AP).
-      // Flag for user confirmation on the review page.
-      isIncoming = true;
-      counterpartyName = parsed?.vendor_name || null;
-      needsDirectionReview = true;
-      companyNotDetected = true;
-    } else {
-      // Company settings not set, only one party extracted, or OCR incomplete.
-      // Fall back to heuristics — but also flag for review since we're uncertain.
-      needsDirectionReview = true;
-      // Own company unknown → no party can be matched to the client company
-      // (previously only the "both third parties" branch set this flag).
-      if (!ownKnown) companyNotDetected = true;
-      const ocrUpper = ocrText.toUpperCase();
-      const acNameMatch = ocrUpper.match(/A\/C\s*NAME\s*[:：]?\s*([A-Z\s&']+?)(?:\n|$)/);
-      const acName = normalizeCompanyName(acNameMatch?.[1] || '');
-      const emailMatch = ocrText.match(/([a-zA-Z0-9._%+-]+@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}))/);
-      const emailDomain = normalizeCompanyName(emailMatch?.[2]?.split('.')[0] || '');
-      const vendorNormFull = normalizeCompanyName(parsed?.vendor_name || '');
-      const customerNormFull = normalizeCompanyName(parsed?.customer_name || '');
-
-      if (acName && acName.length > 3) {
-        if (customerNormFull.length > 3 && acName.includes(customerNormFull)) {
-          isIncoming = false;
-          counterpartyName = parsed?.customer_name || null;
-        } else if (vendorNormFull.length > 3 && acName.includes(vendorNormFull)) {
-          isIncoming = true;
-          counterpartyName = parsed?.vendor_name || null;
-        } else if (customerNormFull.length > 3 && ownNorm && ownNorm.length > 3 && customerNormFull.includes(ownNorm.slice(0, 6))) {
-          isIncoming = true;
-          counterpartyName = acName ? acName : (parsed?.vendor_name || null);
-        } else {
-          if (!vendorNormFull && acName && customerNormFull.length > 3 && !acName.includes(customerNormFull)) {
-            isIncoming = true;
-            const rawAcName = ocrText.toUpperCase().match(/A\/C\s*NAME\s*[:：]?\s*([A-Z\s&']+?)(?:\n|$)/)?.[1]?.trim() || null;
-            counterpartyName = rawAcName ? rawAcName.split('\n')[0].trim() : null;
-          } else {
-            isIncoming = hasVendor;
-            counterpartyName = parsed?.customer_name || parsed?.vendor_name || null;
-          }
-        }
-      } else if (emailDomain && emailDomain.length > 3 && vendorNormFull && (emailDomain.includes(vendorNormFull.slice(0, 5)) || vendorNormFull.includes(emailDomain.slice(0, 5)))) {
-        isIncoming = true;
-        counterpartyName = parsed?.vendor_name || null;
-      } else {
-        isIncoming = true;
-        counterpartyName = parsed?.customer_name || parsed?.vendor_name || null;
-      }
+    // If the A/C Name proved the AI had vendor/customer backwards, fix the
+    // parsed roles so downstream counterparty routing uses the right party.
+    if (direction.swapped && parsed) {
+      const realVendor = parsed.customer_name;
+      parsed = { ...parsed, vendor_name: realVendor, customer_name: parsed.vendor_name };
     }
-    console.log('[DIRECTION] vendorIsOurs:', vendorIsOurs, '| customerIsOurs:', customerIsOurs, '| isIncoming:', isIncoming);
+
+    isIncoming = direction.isIncoming;
+    counterpartyName = direction.counterpartyName;
+    needsDirectionReview = direction.needsDirectionReview;
+    companyNotDetected = direction.companyNotDetected;
+    console.log('[DIRECTION]', JSON.stringify(direction));
   }
 
   // ── GLM-OCR retry on direction uncertainty ──
@@ -1513,17 +1557,24 @@ ${ocrText.slice(0, 8000)}`;
             if (retryMatch) try { retryParsed = JSON.parse(retryMatch[0]); } catch {}
 
             if (retryParsed) {
-              // Re-check direction with GLM-OCR result
-              const retryVendorMatch = fuzzyMatchCompany(retryParsed.vendor_name, ownCandidates, { topN: 3, minScore: 50 });
-              const retryCustMatch = fuzzyMatchCompany(retryParsed.customer_name, ownCandidates, { topN: 3, minScore: 50 });
-              const retryVendorOurs = retryVendorMatch?.best ? retryVendorMatch.best.score >= 70 : false;
-              const retryCustOurs = retryCustMatch?.best ? retryCustMatch.best.score >= 70 : false;
+              // Re-check direction with GLM-OCR result (same resolver, so the
+              // A/C Name swap + thin-parse guard apply to the retry too)
+              const retryDirection = resolveDirection({
+                vendorName: retryParsed.vendor_name || null,
+                customerName: retryParsed.customer_name || null,
+                ocrText: glmFormatted,
+                ownCompanyCandidates: ownCandidates,
+              });
 
-              if (retryCustOurs || retryVendorOurs) {
-                console.log('[DS-INVOICE|glm-ocr] Direction resolved: customerIsOurs=', retryCustOurs, 'vendorIsOurs=', retryVendorOurs);
+              if (!retryDirection.needsDirectionReview && !retryDirection.companyNotDetected) {
+                console.log('[DS-INVOICE|glm-ocr] Direction resolved:', JSON.stringify(retryDirection));
+                if (retryDirection.swapped) {
+                  const realVendor = retryParsed.customer_name;
+                  retryParsed = { ...retryParsed, vendor_name: realVendor, customer_name: retryParsed.vendor_name };
+                }
                 parsed = retryParsed;
-                isIncoming = retryCustOurs;
-                counterpartyName = retryCustOurs ? (retryParsed.vendor_name || null) : (retryParsed.customer_name || null);
+                isIncoming = retryDirection.isIncoming;
+                counterpartyName = retryDirection.counterpartyName;
                 needsDirectionReview = false;
                 companyNotDetected = false;
                 glmUsage = glmData.usage || null;
@@ -1669,10 +1720,10 @@ ${ocrText.slice(0, 8000)}`;
   // invoice #E2025501: AI stored the $480 unit price instead of the printed
   // $4,800 grand total — the self-consistency check below couldn't catch it
   // because the AI's own item sum agreed with its own wrong total).
-  const printedTotalMatch = ocrText.match(
-    /(?:TOTAL\s*AMOUNT\s*DUE|GRAND\s*TOTAL|TOTAL\s*DUE|AMOUNT\s*DUE|TOTAL|應付總額|應付金額|應繳金額|應繳總額|到期應付|付款總額|總金額|總計|總額|合計|合共|共計|總數|總價|總款項|应付总额|应付金额|应缴金额|应缴总额|到期应付|付款总额|总金额|总计|总额|合计|合共|共计|总数|总价|总款项)[\s:：]*[$HKD]*\s*(?:港幣|港元)?\s*([\d,]+\.?\d*)/i
-  );
-  const printedTotal = printedTotalMatch ? parseFloat(printedTotalMatch[1].replace(/,/g, '')) : null;
+  // Moved to src/lib/printed-total.ts — the inline regex's bare TOTAL
+  // alternative also matched "Monthly Total 1 Jan 2025" date lines on the
+  // pdf-text OCR, producing a bogus printedTotal=1 (2026-08-18).
+  const printedTotal = extractPrintedTotal(ocrText);
 
   // ── Total validation ──
   // Cross-check three signals — printed grand total (regex), AI total, item sum —
@@ -2930,7 +2981,7 @@ async function importCardStatementFromFile(
   ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string }>();
   if (!fileRow) return { success: false, error: 'File not found' };
 
-  let ocrSource: 'tomarkdown' | 'glm-ocr' = 'tomarkdown';
+  let ocrSource: 'tomarkdown' | 'glm-ocr' | 'pdf-text' = 'tomarkdown';
   let glmUsage: any = null; // hoisted above the GLM fallback (TDZ fix 2026-08-17)
 
   // Duplicate check
@@ -3199,6 +3250,8 @@ files.post('/:id/import-document', async (c) => {
   // Hoisted to the top: the empty-OCR fallback below uses this before the type-decision
   // section used to declare it (TDZ ReferenceError — fixed 2026-08-17).
   const forcedType = c.req.query('type') || '';
+  // Diagnostic: why did the pdf.js text-layer attempt fail (if it did)?
+  let pdfTextDiag: string | null = null;
 
   // Get the file's OCR text (or run OCR first if missing)
   // Retry up to 3 times with 500ms delay — D1 has eventual consistency
@@ -3231,7 +3284,7 @@ files.post('/:id/import-document', async (c) => {
       }
     }
     // Clear OCR cache so it re-runs fresh
-    await db.prepare("UPDATE file_records SET ocr_text = '', ocr_status = 'pending' WHERE id = ? AND user_id = ? AND deleted_at IS NULL")
+    await db.prepare("UPDATE file_records SET ocr_text = '', ocr_text_source = NULL, ocr_status = 'pending' WHERE id = ? AND user_id = ? AND deleted_at IS NULL")
       .bind(fileId, tenantId).run();
     // Re-fetch fileRow with cleared OCR
     fileRow = await db.prepare(
@@ -3257,8 +3310,28 @@ files.post('/:id/import-document', async (c) => {
       const buffer = await obj.arrayBuffer();
       const mimeType = fileRow.file_type || 'application/pdf';
 
+      // Attempt 0: pdf.js text-layer extraction (free, deterministic — best
+      // for text-based PDFs like Pastel/VEII/EHSIA; scans fall through)
+      if (mimeType === 'application/pdf') {
+        try {
+          const pdfText = await extractPdfText(new Uint8Array(buffer));
+          if (pdfText && isMeaningfulPdfText(pdfText)) {
+            ocrText = pdfText;
+            console.log('[OCR|pdf-text] Import-doc succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
+            await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_text_source = 'pdf-text', ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
+          } else {
+            pdfTextDiag = pdfText
+              ? `extracted ${pdfText.length} chars but failed isMeaningfulPdfText`
+              : `extractPdfText returned null${lastPdfTextError ? ' — ' + lastPdfTextError : ''}`;
+          }
+        } catch (e: any) {
+          pdfTextDiag = e?.message || String(e);
+          console.log('[OCR|pdf-text] Import-doc failed:', pdfTextDiag);
+        }
+      }
+
       // Attempt 1: Cloudflare AI Workers toMarkdown — best for text-layer PDFs (fast, free)
-      if (c.env.AI) {
+      if ((!ocrText || ocrText.length < 20) && c.env.AI) {
         try {
           const mdResult = await (c.env.AI as any).toMarkdown([{
             name: fileRow.original_name || fileRow.filename || 'file.pdf',
@@ -3296,7 +3369,7 @@ files.post('/:id/import-document', async (c) => {
                       ocrText = candidate2;
                       console.log('[OCR|tomarkdown] Import-doc: decrypted PDF, re-OCR succeeded, length:', ocrText.length);
                       await db.prepare(
-                        "UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
+                        "UPDATE file_records SET ocr_text = ?, ocr_text_source = 'pdf-text', ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
                       ).bind(ocrText, fileId).run();
                     }
                   } catch (e: any) {
@@ -3320,7 +3393,7 @@ files.post('/:id/import-document', async (c) => {
             } else {
               ocrText = candidate;
               console.log('[OCR|tomarkdown] Import-doc succeeded, length:', ocrText.length, 'preview:', ocrText.slice(0, 200));
-              await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
+              await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_text_source = 'tomarkdown', ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
             }
           }
         } catch (e: any) {
@@ -3346,7 +3419,7 @@ files.post('/:id/import-document', async (c) => {
             console.log('[OCR|GLM-OCR] Import-doc result:', candidate.slice(0, 200));
             if (candidate && candidate.length > 20) {
               ocrText = candidate;
-              await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
+              await db.prepare("UPDATE file_records SET ocr_text = ?, ocr_text_source = 'glm-ocr', ocr_status = 'completed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(ocrText, fileId).run();
             }
           }
         } catch (e: any) {
@@ -3372,7 +3445,7 @@ files.post('/:id/import-document', async (c) => {
         const result = await importInvoiceFromFile(
           fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY, directionOverride
         );
-        return c.json({ type: 'invoice', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice } }, result.success ? 201 : 422 as any);
+        return c.json({ type: 'invoice', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice }, pdf_text_diag: pdfTextDiag }, result.success ? 201 : 422 as any);
       }
       // forcedType === 'bank_statement' — fall through to default below
     } else if (filenameInvoice > filenameBank) {
@@ -3380,7 +3453,7 @@ files.post('/:id/import-document', async (c) => {
       const result = await importInvoiceFromFile(
         fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY, directionOverride
       );
-      return c.json({ type: 'invoice', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice } }, result.success ? 201 : 422 as any);
+      return c.json({ type: 'invoice', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice }, pdf_text_diag: pdfTextDiag }, result.success ? 201 : 422 as any);
     }
     // Default: bank statement empty draft
     const dupCheck = await db.prepare(
@@ -3546,7 +3619,8 @@ files.post('/:id/import-document', async (c) => {
     if (hashDuplicate && !result.duplicate_status) result.duplicate_status = 'active';
     console.log(`[SMART-IMPORT] file=${fileId} → invoice ocrSource=${result.ocr_source || 'unknown'}`);
     return c.json({ type, ...result, scores: { bankScore, invoiceScore, cardScore }, ocr_text: ocrText,
-      needs_review: !!(forcedType || result.needs_direction_review || result.company_not_detected || result.total_mismatch || result.needs_review) }, 201);
+      needs_review: !!(forcedType || result.needs_direction_review || result.company_not_detected || result.total_mismatch || result.needs_review),
+      pdf_text_diag: pdfTextDiag, __build: 'diag-v3' }, 201);
   }
 });
 
@@ -3590,7 +3664,7 @@ files.post('/:id/try-decrypt', async (c) => {
 
   // Store decrypted OCR text and update file record
   await c.env.DB.prepare(
-    "UPDATE file_records SET ocr_text = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?"
+    "UPDATE file_records SET ocr_text = ?, ocr_text_source = 'pdf-text', ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?"
   ).bind(ocrText.slice(0, 50000), fileId).run();
 
   // Re-trigger import based on category

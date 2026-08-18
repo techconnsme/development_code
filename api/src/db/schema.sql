@@ -433,6 +433,7 @@ CREATE TABLE IF NOT EXISTS file_records (
   r2_key TEXT NOT NULL,
   description TEXT DEFAULT '',
   ocr_text TEXT DEFAULT '',
+  ocr_text_source TEXT,          -- 'pdf-text' | 'tomarkdown' | 'glm-ocr' (2026-08-18)
   ocr_status TEXT DEFAULT 'pending',
   category TEXT DEFAULT '',
   direction TEXT,

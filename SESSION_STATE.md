@@ -1,11 +1,50 @@
-# Session State — 2026-08-17/18 (evening session)
+# Session State — 2026-08-18 (invoice direction + pdf-text OCR session)
 
 ## Deployed URLs (latest)
 
 | | URL |
 |---|---|
 | **Frontend (test)** | https://d85f468d.opcc-crm-testing.pages.dev |
-| **API Worker** | https://opcc-crm-api.ruhan-farhan.workers.dev (version `7884689d`) |
+| **API Worker** | https://opcc-crm-api.ruhan-farhan.workers.dev (version `34207216`, 2026-08-18) |
+
+## What was done this session (2026-08-18)
+
+### Invoice direction — Pastel incoming invoices were silently marked outgoing
+
+**Root cause:** Pastel invoice template has NO letterhead vendor name and NO "Bill To:" label — the vendor only appears in the bank "A/C Name" section. DeepSeek guessed roles by reading order (swapped parties, or person names like "Joseph Lin" counted as a party), and the old direction logic treated "vendor = our company" as confident outgoing with no review flag.
+
+**Fixes (all deployed):**
+1. **`api/src/lib/direction-resolver.ts` (NEW)** — pure `resolveDirection()` replacing the inline direction block:
+   - A/C Name cross-check: the A/C Name holder is the invoice issuer (verified across Pastel/VEII/EHSIA) → detects swapped vendor/customer and re-evaluates
+   - Rule 6: third-party A/C Name + only our company extracted → incoming from the A/C Name
+   - Thin-parse guard: one-party parses without corroboration → `needs_direction_review` (triggers GLM retry + review flag) instead of silent outgoing
+   - Person-name filter (`isLikelyPersonName`): "Joseph Lin" etc. no longer counts as an invoice party
+   - Reused by the GLM-OCR retry re-check (which previously had a latent ReferenceError on `ownCandidates` — hoisted now)
+2. **pdf.js text-layer OCR (NEW first attempt in the invoice OCR cascade)** — free, deterministic, fixes the toMarkdown failures (001397's OCR was nearly empty):
+   - `extractPdfText()` drives `pdfjs-dist` directly; the fake worker works in workerd ONLY after publishing the statically-imported worker module at `globalThis.pdfjsWorker` (pdf.js checks it before its runtime import, which workerd can't resolve). Lessons: unpdf's serverless bundle crashes in workerd; the legacy `require()` build silently returned null.
+   - `api/src/lib/pdf-layout.ts` (NEW) — position-aware join of pdf.js text items; plain `join(' ')` fragments numbers ("3 4 , 2 00.00" → "34,200.00")
+   - `file_records.ocr_text_source` column (schema.sql + live D1 ALTER) so `ocr_source` in responses is honest
+3. **`api/src/lib/printed-total.ts` (NEW)** — extracted the printed-total regex; the bare `TOTAL` alternative matched "Monthly Total 1 Jan 2025" dates on the pdf-text OCR (bogus printedTotal=1). Month/date guard added.
+4. DeepSeek hint: A/C Name is passed as "bank account of the invoice ISSUER".
+
+**Verified live (Joseph Lin account, then cleaned up):** 4 Pastel invoices all auto-import incoming with correct totals and NO review flags (001397: $19,600; 001414: $15,300; 001458: $5,600; 001547: $34,200); VEII 2025001 still outgoing $45,700 clean. ocr_source = 'pdf-text'.
+
+**Tests (NEW, run with `npx tsx tests/<file>.test.ts`):**
+- `tests/direction-resolver.test.ts` — 17 cases (real captures: Pastel swaps, thin parses, VEII outgoing + mirror-swap, EHSIA, person names, legacy fallbacks)
+- `tests/printed-total.test.ts` — 6 cases
+- `tests/pdf-layout.test.ts` — 5 cases
+
+### Notes
+- Z.AI (GLM-OCR) daily quota resets ~midnight UTC; was exhausted mid-session, recovered later — GLM retry works when quota allows.
+- Worker bundle: ~1,071 KiB gzip (pdf.js + worker included; deploys fine on this account tier).
+- Pre-existing tsc errors untouched (`paddedPw`, `GITHUB_TOKEN` bindings etc.) — deploy path uses esbuild, no type-check.
+- unpdf added to api/package.json but NO LONGER USED (its serverless bundle crashes in workerd) — safe to uninstall.
+- `pdf_text_diag` + `__build` fields were added to the import-document response for remote debugging (harmless, keep).
+- VEII Playwright regression (15 files) not re-run this session; API-level VEII check passed. Run: `TEST_BASE_URL=<url> npx playwright test tests/veii-direction-check.spec.ts --headed`
+
+## Previous session context (2026-08-17/18 evening)
+
+
 
 ## Test Credentials (verified)
 
