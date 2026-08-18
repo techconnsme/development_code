@@ -1239,6 +1239,7 @@ bank.post('/:id/auto-categorize', async (c) => {
   const rules: [RegExp, string][] = [
     [/B\/F\s+BALANCE|承上結餘/i, ''],
     [/INTEREST\s*(PAYMENT|收入)|利息/i, '42101'],
+    [/PASTEL\s*TECH|SUBCONTRACT|SUB-CONTRACT|OUTSOURC|外判|顧問費/i, '51101'],
     [/VISA\s+DEBIT.*-.*CR|CREDIT.*VISA/i, '62303'],
     [/VISA\s+DEBIT|扣賬卡交易/i, '62303'],
     [/TRANSFER-DEBIT|轉賬支出/i, '62303'],

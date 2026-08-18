@@ -406,6 +406,7 @@ card.post('/:id/auto-categorize', async (c) => {
     { pattern: /WATER|水費|水费/, code: '62202', name: 'Water' },
     { pattern: /TELECOM|PHONE|MOBILE|BROADBAND|電訊|電信|通讯/, code: '62302', name: 'Telecom' },
     { pattern: /SOFTWARE|SUBSCRIPTION|CLOUD|AWS|GOOGLE|MICROSOFT|ADOBE/, code: '62303', name: 'Software Subscriptions' },
+    { pattern: /PASTEL\s*TECH|SUBCONTRACT|SUB-CONTRACT|OUTSOURC|外判|顧問費/, code: '51101', name: 'Subcontractor Fees' },
     { pattern: /INSURANCE|保險|保险/, code: '63101', name: 'Insurance' },
     { pattern: /TRANSPORT|TAXI|UBER|MTR|BUS|交通/, code: '64101', name: 'Transport' },
     { pattern: /MEAL|RESTAURANT|DINING|餐飲|餐饮|餐廳|餐厅/, code: '64201', name: 'Meals & Entertainment' },
