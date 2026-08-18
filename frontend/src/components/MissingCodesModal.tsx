@@ -36,6 +36,7 @@ const TYPE_COLORS: Record<string, string> = {
   liability: 'bg-yellow-100 text-yellow-700',
   equity: 'bg-purple-100 text-purple-700',
   revenue: 'bg-green-100 text-green-700',
+  cost: 'bg-orange-100 text-orange-700',
   expense: 'bg-red-100 text-red-700',
 };
 

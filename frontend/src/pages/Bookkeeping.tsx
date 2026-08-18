@@ -997,10 +997,10 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                       const matchedAccount = (accounts?.data || []).find((a: any) => a.account_code === line.account_code);
                       const typeBadge = matchedAccount ? ({
                         asset: 'bg-blue-100 text-blue-700', liability: 'bg-orange-100 text-orange-700',
-                        equity: 'bg-green-100 text-green-700', revenue: 'bg-emerald-100 text-emerald-700', expense: 'bg-red-100 text-red-700',
+                        equity: 'bg-green-100 text-green-700', revenue: 'bg-emerald-100 text-emerald-700', cost: 'bg-orange-100 text-orange-700', expense: 'bg-red-100 text-red-700',
                       } as Record<string, string>)[matchedAccount.account_type] || '' : '';
                       const normalSide = matchedAccount ? (
-                        matchedAccount.account_type === 'asset' || matchedAccount.account_type === 'expense' ? 'Dr' : 'Cr'
+                        matchedAccount.account_type === 'asset' || matchedAccount.account_type === 'cost' || matchedAccount.account_type === 'expense' ? 'Dr' : 'Cr'
                       ) : '';
                       return (
                         <tr key={idx} className="border-b border-muted/30 hover:bg-muted/20">

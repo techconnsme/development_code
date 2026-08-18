@@ -259,7 +259,7 @@ export default function CardStatementReview() {
                           className="w-full px-1 py-0.5 border rounded text-[11px] bg-background"
                         >
                           <option value="">—</option>
-                          {accounts.filter((a: any) => a.account_type === 'expense').map((a: any) => (
+                          {accounts.filter((a: any) => a.account_type === 'expense' || a.account_type === 'cost').map((a: any) => (
                             <option key={a.account_code} value={a.account_code}>{a.account_code}</option>
                           ))}
                         </select>
