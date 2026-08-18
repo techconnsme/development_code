@@ -91,17 +91,17 @@ INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account
 
 -- ═══════ 50000-59999 直接成本 DIRECT COSTS ═══════
 -- Level 1
-('coa-hk-50000', 'u-hayson', '50000', '直接成本 Direct Costs', 'expense', NULL),
+('coa-hk-50000', 'u-hayson', '50000', '直接成本 Direct Costs', 'cost', NULL),
 -- Level 2
-('coa-hk-51000', 'u-hayson', '51000', '服務成本 Cost of Services', 'expense', '50000'),
-('coa-hk-52000', 'u-hayson', '52000', '銷售成本 Cost of Sales', 'expense', '50000'),
+('coa-hk-51000', 'u-hayson', '51000', '服務成本 Cost of Services', 'cost', '50000'),
+('coa-hk-52000', 'u-hayson', '52000', '銷售成本 Cost of Sales', 'cost', '50000'),
 -- Level 3
-('coa-hk-51100', 'u-hayson', '51100', '外判及顧問費 Subcontractor & Consultant', 'expense', '51000'),
-('coa-hk-51200', 'u-hayson', '51200', '直接人工 Direct Labour', 'expense', '51000'),
+('coa-hk-51100', 'u-hayson', '51100', '外判及顧問費 Subcontractor & Consultant', 'cost', '51000'),
+('coa-hk-51200', 'u-hayson', '51200', '直接人工 Direct Labour', 'cost', '51000'),
 -- Level 4
-('coa-hk-51101', 'u-hayson', '51101', '外判工作費用 Subcontractor Fees', 'expense', '51100'),
-('coa-hk-51102', 'u-hayson', '51102', '專業顧問費 Professional Consultant', 'expense', '51100'),
-('coa-hk-51201', 'u-hayson', '51201', '項目人員薪酬 Project Staff Salary', 'expense', '51200'),
+('coa-hk-51101', 'u-hayson', '51101', '外判工作費用 Subcontractor Fees', 'cost', '51100'),
+('coa-hk-51102', 'u-hayson', '51102', '專業顧問費 Professional Consultant', 'cost', '51100'),
+('coa-hk-51201', 'u-hayson', '51201', '項目人員薪酬 Project Staff Salary', 'cost', '51200'),
 
 -- ═══════ 60000-69999 營運支出 OPERATING EXPENSES ═══════
 -- Level 1

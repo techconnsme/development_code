@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   user_id TEXT NOT NULL REFERENCES users(id),
   account_code TEXT NOT NULL,
   account_name TEXT NOT NULL,
-  account_type TEXT NOT NULL CHECK (account_type IN ('asset', 'liability', 'equity', 'revenue', 'expense')),
+  account_type TEXT NOT NULL CHECK (account_type IN ('asset', 'liability', 'equity', 'revenue', 'cost', 'expense')),
   parent_code TEXT,
   opening_balance REAL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
