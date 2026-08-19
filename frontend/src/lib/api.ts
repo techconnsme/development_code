@@ -105,7 +105,20 @@ export async function streamChat(
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       const detail = err?.error_detail || err?.error || res.statusText;
-      onError(`Request Failed (HTTP ${res.status}): ${detail}`);
+      // Extract the error code + message from backend error_detail like
+      // "DeepSeek API error: 402 {"error":{"message":"Insufficient Balance",...}}"
+      const codeMatch = detail.match(/\b(\d{3})\b/);
+      const jsonMatch = detail.match(/\{.*\}/s);
+      let code = codeMatch ? codeMatch[1] : String(res.status);
+      let message = detail;
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          message = parsed?.error?.message || parsed?.message || message;
+          if (parsed?.error?.code && /^\d+$/.test(String(parsed.error.code))) code = String(parsed.error.code);
+        } catch {}
+      }
+      onError(`Request Failed (${code}): ${message}`);
       return;
     }
 
