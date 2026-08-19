@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { hash } from 'bcryptjs';
 import { authMiddleware } from '../middleware/auth';
 import { Bindings, Variables } from '../types';
+import { jePosted } from '../lib/journal-filters';
 
 const chat = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 chat.use('*', authMiddleware);
@@ -399,7 +400,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       // Try journal entries first
       try {
         const jlRows = await db.prepare(
-          "SELECT a.account_code as code, a.account_name as name, a.account_type as type, SUM(COALESCE(jl.debit,0)) as total_debit, SUM(COALESCE(jl.credit,0)) as total_credit FROM journal_lines jl JOIN accounts a ON jl.account_code = a.account_code JOIN journal_entries je ON jl.entry_id = je.id WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? GROUP BY a.account_code, a.account_name, a.account_type ORDER BY a.account_code"
+          `SELECT a.account_code as code, a.account_name as name, a.account_type as type, SUM(COALESCE(jl.debit,0)) as total_debit, SUM(COALESCE(jl.credit,0)) as total_credit FROM journal_lines jl JOIN accounts a ON jl.account_code = a.account_code JOIN journal_entries je ON jl.entry_id = je.id WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} GROUP BY a.account_code, a.account_name, a.account_type ORDER BY a.account_code`
         ).bind(userId, startDate, endDate).all();
         if (jlRows.results.length > 0) return JSON.stringify(jlRows.results);
       } catch {}
@@ -426,7 +427,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
         `SELECT jl.account_code, jl.account_name, a.account_type, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
          FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
          LEFT JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-         WHERE je.user_id = ? AND je.entry_date <= ?
+         WHERE je.user_id = ? AND je.entry_date <= ? AND ${jePosted()}
          GROUP BY jl.account_code, jl.account_name
          ORDER BY jl.account_code`
       ).bind(userId, asOf).all();
@@ -479,7 +480,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       if (!accountCode) {
         // Return all journal entries with their lines for the date range
         const entries = await db.prepare(
-          `SELECT je.id, je.entry_number, je.entry_date, je.description, je.status FROM journal_entries je WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? ORDER BY je.entry_date ASC, je.created_at ASC LIMIT 50`
+          `SELECT je.id, je.entry_number, je.entry_date, je.description, je.status FROM journal_entries je WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} ORDER BY je.entry_date ASC, je.created_at ASC LIMIT 50`
         ).bind(userId, startDate, endDate).all();
         const result: any[] = [];
         for (const e of entries.results as any[]) {
@@ -495,7 +496,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       const rows = await db.prepare(
         `SELECT je.entry_date, je.entry_number, je.id as entry_id, je.description as entry_description, jl.account_code, jl.account_name, jl.description as line_description, jl.debit, jl.credit
          FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
-         WHERE je.user_id = ? AND jl.account_code = ? AND je.entry_date BETWEEN ? AND ? AND je.status = 'posted'
+         WHERE je.user_id = ? AND jl.account_code = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()}
          ORDER BY je.entry_date ASC, je.created_at ASC`
       ).bind(userId, accountCode, startDate, endDate).all();
       let balance = 0;

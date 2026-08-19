@@ -4,24 +4,17 @@ import { zValidator } from '@hono/zod-validator';
 import { v4 as uuidv4 } from 'uuid';
 import { Bindings, Variables } from '../types';
 import { authMiddleware, auditorMiddleware, bookkeeperMiddleware } from '../middleware/auth';
-import { getCoaTemplate, BASE_HK_COA, buildAccountNameMap, INDUSTRIES, type CoaMode } from '../lib/coa-templates';
+import { getCoaTemplate, INDUSTRIES, type CoaMode } from '../lib/coa-templates';
 import { postPaymentToGl } from '../lib/post-payment';
+import { postInvoiceToGl } from '../lib/post-invoice';
+import { jePosted, jeLive, jeDeleted } from '../lib/journal-filters';
+import { HK_COA_NAMES, getCodeType, ensureMissingAccounts } from '../lib/ensure-accounts';
+
+// Re-exported for backward compatibility with anything importing them from here.
+export { HK_COA_NAMES, getCodeType };
 
 const bookkeeping = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 bookkeeping.use('*', authMiddleware);
-
-// HK COA account name lookup — sourced from coa-templates.ts
-export const HK_COA_NAMES: Record<string, { name: string; type: string; parent: string | null }> =
-  buildAccountNameMap(BASE_HK_COA) as Record<string, { name: string; type: string; parent: string | null }>;
-
-export function getCodeType(code: string): string {
-  if (code.startsWith('1')) return 'asset';
-  if (code.startsWith('2')) return 'liability';
-  if (code.startsWith('3')) return 'equity';
-  if (code.startsWith('4')) return 'revenue';
-  if (code.startsWith('5')) return 'cost';
-  return 'expense';
-}
 
 function getParentCandidates(code: string): string[] {
   const parents: string[] = [];
@@ -43,25 +36,6 @@ function getParentCandidates(code: string): string[] {
   return parents;
 }
 
-async function ensureMissingAccounts(db: any, tenantId: string, codes: string[], created: number[]) {
-  const existingRows = await db.prepare(
-    `SELECT account_code FROM accounts WHERE user_id = ? AND account_code IN (${codes.map(() => '?').join(',')})`
-  ).bind(tenantId, ...codes).all();
-  const existingSet = new Set((existingRows.results as any[]).map(r => r.account_code));
-
-  for (const code of codes) {
-    if (existingSet.has(code)) continue;
-    const info = HK_COA_NAMES[code];
-    const name = info?.name || `${code} (${getCodeType(code)})`;
-    const type = info?.type || getCodeType(code);
-    const parentCode = info?.parent || null;
-    await db.prepare(
-      'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, code, name, type, parentCode).run();
-    created[0]++;
-  }
-}
-
 async function collectTransactionCodes(db: any, tenantId: string): Promise<string[]> {
   const codeSet = new Set<string>();
 
@@ -75,7 +49,7 @@ async function collectTransactionCodes(db: any, tenantId: string): Promise<strin
   const jlRows = await db.prepare(
     `SELECT DISTINCT jl.account_code FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
-     WHERE je.user_id = ? AND je.status != 'stale'`
+     WHERE je.user_id = ? AND ${jeLive()}`
   ).bind(tenantId).all();
   for (const r of jlRows.results as any[]) codeSet.add(r.account_code);
 
@@ -114,7 +88,7 @@ bookkeeping.get('/entries', async (c) => {
 
   let query = `SELECT je.*, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
     FROM journal_entries je LEFT JOIN journal_lines jl ON je.id = jl.entry_id
-    WHERE je.user_id = ? AND je.status != 'stale'`;
+    WHERE je.user_id = ? AND ${jeLive()}`;
   const params: any[] = [tenantId];
   if (startDate) { query += ' AND je.entry_date >= ?'; params.push(startDate); }
   if (endDate) { query += ' AND je.entry_date <= ?'; params.push(endDate); }
@@ -289,7 +263,7 @@ bookkeeping.get('/accounts', async (c) => {
               COALESCE(SUM(jl.credit), 0) as total_credit
        FROM journal_lines jl
        JOIN journal_entries je ON jl.entry_id = je.id
-       WHERE je.user_id = ? AND je.entry_date <= ? AND je.status != 'stale'
+       WHERE je.user_id = ? AND je.entry_date <= ? AND ${jePosted()}
        GROUP BY jl.account_code`
     ).bind(tenantId, asOf).all();
     const balanceMap = new Map<string, { debit: number; credit: number }>();
@@ -455,7 +429,7 @@ bookkeeping.get('/accounts/missing-codes/details', async (c) => {
       `SELECT jl.id, je.id as entry_id, je.entry_number, je.entry_date, jl.description, jl.debit, jl.credit
        FROM journal_lines jl
        JOIN journal_entries je ON jl.entry_id = je.id
-       WHERE je.user_id = ? AND jl.account_code = ? AND je.status != 'stale'
+       WHERE je.user_id = ? AND jl.account_code = ? AND ${jeLive()}
        ORDER BY je.entry_date DESC LIMIT 20`
     ).bind(tenantId, code).all();
 
@@ -710,7 +684,7 @@ bookkeeping.get('/accounts/:code/transactions', async (c) => {
      JOIN journal_entries je ON jl.entry_id = je.id
      WHERE jl.account_code = ? AND je.user_id = ?
        AND je.entry_date >= ? AND je.entry_date <= ?
-       AND je.status != 'stale'
+       AND ${jePosted()}
      ORDER BY je.entry_date, jl.sort_order`
   ).bind(code, tenantId, sDate, eDate).all();
 
@@ -863,7 +837,7 @@ bookkeeping.get('/trial-balance', async (c) => {
     `SELECT jl.account_code, jl.account_name, a.account_type, a.opening_balance, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
      LEFT JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND je.status != 'stale' GROUP BY jl.account_code, jl.account_name ORDER BY jl.account_code`
+     WHERE je.user_id = ? AND je.entry_date <= ? AND ${jePosted()} GROUP BY jl.account_code, jl.account_name ORDER BY jl.account_code`
   ).bind(tenantId, asOf).all();
 
   // Compute ending balances: opening + debit - credit (for assets/expenses) or opening + credit - debit (for liabilities/equity/revenue)
@@ -916,7 +890,7 @@ bookkeeping.get('/export', authMiddleware, async (c) => {
   const entries = await db.prepare(
     `SELECT je.*, jl.account_code, jl.account_name, jl.description as line_description, jl.debit, jl.credit
      FROM journal_entries je JOIN journal_lines jl ON je.id = jl.entry_id
-     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND je.status != 'stale'
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND ${jePosted()}
      ORDER BY je.entry_date, je.entry_number, jl.sort_order`
   ).bind(tenantId, startDate, endDate).all();
 
@@ -943,21 +917,21 @@ bookkeeping.get('/income-statement', async (c) => {
     `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND je.status != 'stale'`
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND ${jePosted()}`
   ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
 
   const expenses = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'expense' AND je.status != 'stale'`
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'expense' AND ${jePosted()}`
   ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
 
   const cost = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'cost' AND je.status != 'stale'`
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'cost' AND ${jePosted()}`
   ).bind(tenantId, startDate, endDate).first<{ amount: number }>();
 
   // Account-level breakdown for drill-down (journal-based)
@@ -968,7 +942,7 @@ bookkeeping.get('/income-statement', async (c) => {
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
-       AND a.account_type = 'revenue' AND je.status != 'stale'
+       AND a.account_type = 'revenue' AND ${jePosted()}
      GROUP BY jl.account_code, a.account_name
      HAVING amount != 0
      ORDER BY jl.account_code`
@@ -981,7 +955,7 @@ bookkeeping.get('/income-statement', async (c) => {
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
-       AND a.account_type = 'expense' AND je.status != 'stale'
+       AND a.account_type = 'expense' AND ${jePosted()}
      GROUP BY jl.account_code, a.account_name
      HAVING amount != 0
      ORDER BY jl.account_code`
@@ -994,7 +968,7 @@ bookkeeping.get('/income-statement', async (c) => {
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
-       AND a.account_type = 'cost' AND je.status != 'stale'
+       AND a.account_type = 'cost' AND ${jePosted()}
      GROUP BY jl.account_code, a.account_name
      HAVING amount != 0
      ORDER BY jl.account_code`
@@ -1141,7 +1115,7 @@ bookkeeping.get('/income-statement/:code/transactions', async (c) => {
             jl.debit, jl.credit, jl.description as line_desc
      FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
-     WHERE je.user_id = ? AND jl.account_code = ? AND je.entry_date >= ? AND je.entry_date <= ? AND je.status != 'stale'
+     WHERE je.user_id = ? AND jl.account_code = ? AND je.entry_date >= ? AND je.entry_date <= ? AND ${jePosted()}
      ORDER BY je.entry_date, je.entry_number`
   ).bind(tenantId, code, startDate, endDate).all();
 
@@ -1173,13 +1147,13 @@ bookkeeping.get('/balance-sheet', async (c) => {
     `SELECT jl.account_code, jl.account_name, a.account_type, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
      LEFT JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND je.status != 'stale'
+     WHERE je.user_id = ? AND je.entry_date <= ? AND ${jePosted()}
      GROUP BY jl.account_code, jl.account_name
      ORDER BY jl.account_code`
   ).bind(tenantId, asOf).all();
 
   const jeCount = await db.prepare(
-    "SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND entry_date <= ? AND status != 'stale'"
+    `SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND entry_date <= ? AND ${jePosted('journal_entries')}`
   ).bind(tenantId, asOf).first<{ cnt: number }>();
 
   if ((jeCount?.cnt || 0) > 0 && (rows.results || []).length > 0) {
@@ -1323,7 +1297,7 @@ bookkeeping.get('/ledger', async (c) => {
 
   // Check if journal entries exist
   const jeCount = await db.prepare(
-    "SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND entry_date >= ? AND entry_date <= ? AND status != 'stale'"
+    `SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND entry_date >= ? AND entry_date <= ? AND ${jePosted('journal_entries')}`
   ).bind(tenantId, startDate, endDate).first<{ cnt: number }>();
 
   if ((jeCount?.cnt || 0) > 0) {
@@ -1331,7 +1305,7 @@ bookkeeping.get('/ledger', async (c) => {
     let query = `SELECT jl.account_code, jl.account_name, a.account_type, je.entry_date as date, je.description, jl.debit, jl.credit
       FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
       LEFT JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND je.status != 'stale'`;
+      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND ${jePosted()}`;
     const params: any[] = [tenantId, startDate, endDate];
     if (filterAccount) { query += ' AND jl.account_code LIKE ?'; params.push(`${filterAccount}%`); }
     query += ' ORDER BY jl.account_code, je.entry_date, jl.sort_order';
@@ -1439,19 +1413,23 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
 
-  // Count and delete stale entries so they can be regenerated
+  // Count and delete tombstoned entries so they can be regenerated
   const staleCount = await db.prepare(
-    "SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND reference_type = 'bank_transaction' AND status = 'stale'"
+    `SELECT COUNT(*) as cnt FROM journal_entries
+     WHERE user_id = ? AND reference_type = 'bank_transaction' AND ${jeDeleted('journal_entries')}`
   ).bind(tenantId).first<{ cnt: number }>();
   if ((staleCount?.cnt || 0) > 0) {
     await db.prepare(
-      "DELETE FROM journal_entries WHERE user_id = ? AND reference_type = 'bank_transaction' AND status = 'stale'"
+      `DELETE FROM journal_entries
+       WHERE user_id = ? AND reference_type = 'bank_transaction' AND ${jeDeleted('journal_entries')}`
     ).bind(tenantId).run();
   }
 
-  // Get bank transactions already converted (skip stale ones just deleted)
+  // Get bank transactions already converted (tombstoned ones were deleted above,
+  // but filter explicitly rather than depending on that ordering)
   const existingRefs = await db.prepare(
-    "SELECT reference_id FROM journal_entries WHERE user_id = ? AND reference_type = 'bank_transaction'"
+    `SELECT reference_id FROM journal_entries
+     WHERE user_id = ? AND reference_type = 'bank_transaction' AND ${jeLive('journal_entries')}`
   ).bind(tenantId).all();
   const refSet = new Set((existingRefs.results as any[]).map(r => r.reference_id));
 
@@ -1569,72 +1547,25 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
   return c.json({ created, total_transactions: txRows.results.length, skipped: refSet.size, stale_deleted: staleCount?.cnt || 0 });
 });
 
-// Post an invoice to GL: Dr Accounts Receivable, Cr Revenue
+// Post an invoice to GL — Dr AR / Cr Revenue (outgoing), or Dr Expense / Cr AP
+// (incoming). Thin wrapper over the shared helper in lib/post-invoice.ts, which
+// is also called automatically on invoice confirm and on clean OCR import.
 bookkeeping.post('/post-invoice/:id', bookkeeperMiddleware, async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
-  const db = c.env.DB;
   const invoiceId = c.req.param('id');
+  if (!invoiceId) return c.json({ error: 'Invoice id required' }, 400);
 
-  const inv = await db.prepare(
-    'SELECT * FROM invoices WHERE id = ? AND user_id = ?'
-  ).bind(invoiceId, tenantId).first<{ id: string; invoice_number: string; issue_date: string; total: number; customer_id: string; direction: string; expense_category: string; notes: string }>();
-  if (!inv) return c.json({ error: 'Invoice not found' }, 404);
+  const r = await postInvoiceToGl(c.env.DB, tenantId, invoiceId);
 
-  // Check not already posted
-  const existing = await db.prepare(
-    "SELECT id FROM journal_entries WHERE reference_type = 'invoice' AND reference_id = ? AND user_id = ?"
-  ).bind(invoiceId, tenantId).first();
-  if (existing) return c.json({ error: 'Invoice already posted to GL', entry_id: (existing as any).id }, 409);
-
-  const jeId = `je-${uuidv4().slice(0, 8)}`;
-  const jeNum = `JE-INV-${inv.invoice_number}`;
-  const isIncoming = inv.direction === 'incoming';
-  const expenseCat = inv.expense_category || 'general';
-
-  // Map expense_category to expense account
-  const expenseAccountMap: Record<string, string> = {
-    cash: '67001',       // Petty Cash Expenses
-    reimburse: '61203',  // Employee Reimbursements
-    director: '21201',   // Director Loan / Current Account
-  };
-  const expenseAccount = isIncoming ? (expenseAccountMap[expenseCat] || '66203') : '11201';
-  const expenseAccountName = isIncoming
-    ? (expenseCat === 'cash' ? 'Petty Cash Expenses' : expenseCat === 'reimburse' ? 'Employee Reimbursements' : expenseCat === 'director' ? 'Director Current Account' : 'Miscellaneous Expenses')
-    : 'Trade Debtors 應收賬款';
-
-  if (isIncoming) {
-    // AP invoice: Dr Expense / Cr Trade Creditors
-    await ensureMissingAccounts(db, tenantId, [expenseAccount, '21101'], [0]);
-    await db.prepare(
-      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
-    ).bind(jeId, tenantId, jeNum, inv.issue_date, `AP Invoice ${inv.invoice_number}: ${inv.notes || 'Supplier bill'}`, 'invoice', invoiceId).run();
-    // Dr Expense
-    await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, expenseAccount, expenseAccountName, inv.invoice_number, inv.total, 0, null, 0).run();
-    // Cr AP
-    await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '21101', 'Trade Creditors 應付賬款', inv.invoice_number, 0, inv.total, null, 1).run();
-  } else {
-    // AR invoice: Dr AR / Cr Revenue
-    await ensureMissingAccounts(db, tenantId, ['11201', '41101'], [0]);
-    await db.prepare(
-      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?,?,?,?,?,?,?)'
-    ).bind(jeId, tenantId, jeNum, inv.issue_date, `Invoice ${inv.invoice_number}: ${inv.notes || 'Services'}`, 'invoice', invoiceId).run();
-    // Dr AR
-    await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '11201', 'Trade Debtors 應收賬款', inv.invoice_number, inv.total, 0, null, 0).run();
-    // Cr Revenue
-    await db.prepare(
-      'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
-    ).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, '41101', 'Professional Services 專業服務收入', inv.invoice_number, 0, inv.total, null, 1).run();
+  if (r.error) return c.json({ error: r.error }, r.error === 'Invoice not found' ? 404 : 400);
+  if (r.already_posted) return c.json({ error: 'Invoice already posted to GL', entry_id: r.entry_id }, 409);
+  if (r.not_postable) {
+    return c.json({ error: `Invoice status is '${r.not_postable}' — only a finalised invoice can be posted to the GL.` }, 400);
   }
 
-  await auditLog(db, user.id, 'post_invoice', 'invoice', invoiceId, { invoice_number: inv.invoice_number, total: inv.total, direction: inv.direction });
-  return c.json({ entry_id: jeId, entry_number: jeNum, invoice_id: invoiceId, direction: inv.direction }, 201);
+  await auditLog(c.env.DB, user.id, 'post_invoice', 'invoice', invoiceId, { entry_number: r.entry_number });
+  return c.json({ entry_id: r.entry_id, entry_number: r.entry_number, invoice_id: invoiceId }, 201);
 });
 
 // When an invoice payment is matched, create the receipt/payment entry
@@ -1676,7 +1607,9 @@ bookkeeping.post('/post-transaction/:transactionId', bookkeeperMiddleware, async
 
   // Check not already posted
   const existing = await db.prepare(
-    "SELECT id FROM journal_entries WHERE reference_type = 'bank_transaction' AND reference_id = ? AND user_id = ?"
+    `SELECT id FROM journal_entries
+     WHERE reference_type = 'bank_transaction' AND reference_id = ? AND user_id = ?
+     AND ${jeLive('journal_entries')}`
   ).bind(txId, tenantId).first();
   if (existing) return c.json({ error: 'Transaction already posted to GL', entry_id: (existing as any).id }, 409);
 
@@ -1747,14 +1680,14 @@ bookkeeping.post('/year-end-close', bookkeeperMiddleware, async (c) => {
     `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND je.status != 'stale'`
+     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND ${jePosted()}`
   ).bind(tenantId, fiscal_end_date).first<{ amount: number }>();
 
   const expenses = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale'`
+     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND ${jePosted()}`
   ).bind(tenantId, fiscal_end_date).first<{ amount: number }>();
 
   const netIncome = (revenue?.amount || 0) - (expenses?.amount || 0);
@@ -1773,7 +1706,7 @@ bookkeeping.post('/year-end-close', bookkeeperMiddleware, async (c) => {
     `SELECT jl.account_code, jl.account_name, SUM(jl.credit) - SUM(jl.debit) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND je.status != 'stale'
+     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND ${jePosted()}
      GROUP BY jl.account_code ORDER BY jl.account_code`
   ).bind(tenantId, fiscal_end_date).all();
 
@@ -1789,7 +1722,7 @@ bookkeeping.post('/year-end-close', bookkeeperMiddleware, async (c) => {
     `SELECT jl.account_code, jl.account_name, SUM(jl.debit) - SUM(jl.credit) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale'
+     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND ${jePosted()}
      GROUP BY jl.account_code ORDER BY jl.account_code`
   ).bind(tenantId, fiscal_end_date).all();
 
@@ -1815,7 +1748,7 @@ bookkeeping.post('/year-end-close', bookkeeperMiddleware, async (c) => {
   const bsAccounts = await db.prepare(
     `SELECT a.account_code, COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as journal_balance, a.opening_balance
      FROM accounts a LEFT JOIN journal_lines jl ON a.account_code = jl.account_code
-     LEFT JOIN journal_entries je ON jl.entry_id = je.id AND je.entry_date <= ? AND je.status != 'stale'
+     LEFT JOIN journal_entries je ON jl.entry_id = je.id AND je.entry_date <= ? AND ${jePosted()}
      WHERE a.user_id = ? AND a.is_active = 1 AND a.account_type IN ('asset', 'liability', 'equity')
      GROUP BY a.account_code`
   ).bind(fiscal_end_date, tenantId).all();
@@ -1845,14 +1778,14 @@ bookkeeping.post('/profits-tax-provision', bookkeeperMiddleware, async (c) => {
     `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND je.status != 'stale'`
+     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND ${jePosted()}`
   ).bind(tenantId, fiscal_end_date).first<{ amount: number }>();
 
   const expenses = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale'`
+     WHERE je.user_id = ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND ${jePosted()}`
   ).bind(tenantId, fiscal_end_date).first<{ amount: number }>();
 
   const netIncome = (revenue?.amount || 0) - (expenses?.amount || 0);

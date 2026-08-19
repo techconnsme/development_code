@@ -153,7 +153,12 @@ CREATE TABLE IF NOT EXISTS journal_entries (
   description TEXT NOT NULL,
   reference_type TEXT, -- 'invoice', 'bill', 'expense', 'journal'
   reference_id TEXT,
-  status TEXT NOT NULL DEFAULT 'posted', -- draft, posted, reconciled
+  status TEXT NOT NULL DEFAULT 'posted', -- lifecycle only: draft, posted, reconciled
+  -- Soft-delete tombstone. Set when the source record (e.g. a bank statement) is
+  -- deleted; cleared on restore. Kept separate from status so a deleted entry
+  -- retains its lifecycle value. Only status IN ('posted','reconciled') AND
+  -- deleted_at IS NULL counts toward financial statements.
+  deleted_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(user_id, entry_number)
@@ -234,6 +239,7 @@ CREATE INDEX IF NOT EXISTS idx_quotations_customer ON quotations(customer_id);
 CREATE INDEX IF NOT EXISTS idx_quotations_status ON quotations(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_journal_entries_user ON journal_entries(user_id);
 CREATE INDEX IF NOT EXISTS idx_journal_entries_date ON journal_entries(user_id, entry_date);
+CREATE INDEX IF NOT EXISTS idx_journal_entries_active ON journal_entries(user_id, deleted_at, status);
 CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
 -- ═══════════════════════════════════════════

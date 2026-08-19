@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { jeLive } from './journal-filters';
 
 // Shared GL payment posting for a confirmed bank-transaction ↔ invoice match.
 // Used by the unified confirm flow (PATCH /bank-statements/transactions/:id/match)
@@ -21,9 +22,12 @@ export async function postPaymentToGl(
   ).bind(txId, tenantId).first<{ id: string; transaction_date: string; deposit_amount: number; withdrawal_amount: number; invoice_id: string; invoice_number: string; invoice_total: number; direction: string; bank_account_code: string | null }>();
   if (!tx || !tx.invoice_id) return { error: 'Transaction not found or not matched to an invoice', entry_id: '', entry_number: '' };
 
-  // Idempotency: one payment JE per transaction
+  // Idempotency: one payment JE per transaction. Tombstoned entries don't count —
+  // otherwise a deleted-then-restored statement could never be re-posted.
   const existing = await db.prepare(
-    "SELECT id, entry_number FROM journal_entries WHERE reference_type = 'payment' AND reference_id = ? AND user_id = ?"
+    `SELECT id, entry_number FROM journal_entries
+     WHERE reference_type = 'payment' AND reference_id = ? AND user_id = ?
+     AND ${jeLive('journal_entries')}`
   ).bind(txId, tenantId).first<{ id: string; entry_number: string }>();
   if (existing) return { entry_id: existing.id, entry_number: existing.entry_number, already_posted: true };
 

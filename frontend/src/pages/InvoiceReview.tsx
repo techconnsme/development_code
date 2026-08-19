@@ -192,6 +192,9 @@ export default function InvoiceReview() {
     onSuccess: () => {
       toast.success(tr('Posted to General Ledger!', '已過賬至總賬！', '已过账至总账！'));
       queryClient.invalidateQueries({ queryKey: ['entries'] });
+      // Refetch the invoice so posted_to_gl flips and the button hides.
+      queryClient.invalidateQueries({ queryKey: ['invoice-review', id] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
     },
     onError: (err: any) => {
       if (/already posted/i.test(err?.message || err?.error || '')) {
@@ -776,7 +779,12 @@ export default function InvoiceReview() {
                     ? (tr('Saving…', '儲存中…', '储存中…'))
                     : (tr(`Save ${docLabel}`, `儲存${docLabel}`, `储存${docLabel}`))}
               </button>
-              {saved && (
+              {/* Shown whenever the invoice has no GL entry yet. This was previously
+                  gated on a `saved` flag that was never set to true, so the button
+                  never rendered at all — and saving navigates away regardless.
+                  Invoices now post server-side on confirm; this stays as a manual
+                  recovery path for anything already in the books unposted. */}
+              {!invoiceData?.posted_to_gl && (
                 <button onClick={() => postGlMut.mutate()} disabled={postGlMut.isPending}
                   className="flex-1 min-w-[100px] flex items-center justify-center gap-1 py-2 bg-green-600 text-white rounded-md text-sm hover:bg-green-700 disabled:opacity-60">
                   {postGlMut.isPending

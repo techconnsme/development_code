@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { Bindings, Variables } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { jePosted, jeLive, jeDraft } from '../lib/journal-filters';
 
 const dashboard = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 dashboard.use('*', authMiddleware);
@@ -18,7 +19,7 @@ dashboard.get('/', async (c) => {
   // A journal entry generated from a bank transaction is "orphaned" if that transaction
   // has since been soft-deleted (e.g. its parent bank statement was moved to the recycle
   // bin) but the entry itself wasn't cleaned up. Exclude those live, in addition to the
-  // status != 'stale' check above — this also self-heals any data that was orphaned
+  // jePosted() check on each query — this also self-heals any data that was orphaned
   // before this check existed, without needing a backfill.
   const notOrphaned = `(je.reference_type != 'bank_transaction' OR EXISTS (
     SELECT 1 FROM bank_transactions bt2 WHERE bt2.id = je.reference_id AND bt2.deleted_at IS NULL
@@ -28,7 +29,7 @@ dashboard.get('/', async (c) => {
   const cashFromGL = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
-     WHERE je.user_id = ? AND jl.account_code LIKE '111%' AND je.status != 'stale' AND ${notOrphaned}`
+     WHERE je.user_id = ? AND jl.account_code LIKE '111%' AND ${jePosted()} AND ${notOrphaned}`
   ).bind(tenantId).first() as any;
 
   // Cash balance — use latest confirmed closing balance per bank account (correct accounting approach)
@@ -54,14 +55,14 @@ dashboard.get('/', async (c) => {
   const arBalance = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
-     WHERE je.user_id = ? AND jl.account_code LIKE '112%' AND je.status != 'stale' AND ${notOrphaned}`
+     WHERE je.user_id = ? AND jl.account_code LIKE '112%' AND ${jePosted()} AND ${notOrphaned}`
   ).bind(tenantId).first() as any;
 
   // Accounts Payable from GL
   const apBalance = await db.prepare(
     `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
-     WHERE je.user_id = ? AND jl.account_code LIKE '211%' AND je.status != 'stale' AND ${notOrphaned}`
+     WHERE je.user_id = ? AND jl.account_code LIKE '211%' AND ${jePosted()} AND ${notOrphaned}`
   ).bind(tenantId).first() as any;
 
   // AR/AP from unpaid invoices (fallback when no GL entries exist)
@@ -83,7 +84,7 @@ dashboard.get('/', async (c) => {
     `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND je.status != 'stale' AND ${notOrphaned}`
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND ${jePosted()} AND ${notOrphaned}`
   ).bind(tenantId, periodStart, periodEnd).first() as any;
 
   // Expenses MTD from GL
@@ -91,7 +92,7 @@ dashboard.get('/', async (c) => {
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
      JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale' AND ${notOrphaned}`
+     WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND ${jePosted()} AND ${notOrphaned}`
   ).bind(tenantId, periodStart, periodEnd).first() as any;
 
   // Revenue MTD from bank (deposits this month)
@@ -122,16 +123,18 @@ dashboard.get('/', async (c) => {
     "SELECT COUNT(*) as cnt FROM invoices WHERE user_id = ? AND deleted_at IS NULL AND (status = 'pending_review' OR (needs_review IS NOT NULL AND needs_review != ''))"
   ).bind(tenantId).first() as any;
   const reviewJE = await db.prepare(
-    "SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND status IN ('draft', 'stale')"
+    `SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id = ? AND ${jeDraft('journal_entries')}`
   ).bind(tenantId).first() as any;
   const reviewQueueTotal = (reviewBank?.cnt || 0) + (reviewCard?.cnt || 0) + (reviewInv?.cnt || 0) + (reviewJE?.cnt || 0);
 
-  // Recent journal entries
+  // Recent journal entries. jeLive (not jePosted) — this is an activity feed, so
+  // drafts belong here; deleted entries do not. Previously unfiltered, which let
+  // tombstoned entries surface in the dashboard's Recent Activity list.
   const recentEntries = await db.prepare(
     `SELECT je.id, je.entry_number, je.entry_date, je.description, je.status,
      SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
      FROM journal_entries je LEFT JOIN journal_lines jl ON je.id = jl.entry_id
-     WHERE je.user_id = ? GROUP BY je.id ORDER BY je.created_at DESC LIMIT 5`
+     WHERE je.user_id = ? AND ${jeLive()} GROUP BY je.id ORDER BY je.created_at DESC LIMIT 5`
   ).bind(tenantId).all();
 
   // Compliance deadlines (next 30 days)
@@ -192,7 +195,7 @@ dashboard.get('/', async (c) => {
             `SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount FROM journal_lines jl
              JOIN journal_entries je ON jl.entry_id = je.id
              JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-             WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND je.status != 'stale' AND ${notOrphaned}`
+             WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type = 'revenue' AND ${jePosted()} AND ${notOrphaned}`
           ).bind(tenantId, ps, pe).first() as any)?.amount || 0)
         : ((await db.prepare(
             `SELECT COALESCE(SUM(deposit_amount), 0) as amount FROM bank_transactions
@@ -205,7 +208,7 @@ dashboard.get('/', async (c) => {
             `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount FROM journal_lines jl
              JOIN journal_entries je ON jl.entry_id = je.id
              JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-             WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND je.status != 'stale' AND ${notOrphaned}`
+             WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ? AND a.account_type IN ('expense', 'cost') AND ${jePosted()} AND ${notOrphaned}`
           ).bind(tenantId, ps, pe).first() as any)?.amount || 0)
         : ((await db.prepare(
             `SELECT COALESCE(SUM(withdrawal_amount), 0) as amount FROM bank_transactions
@@ -223,7 +226,7 @@ dashboard.get('/', async (c) => {
         `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND (status='pending_review' OR (needs_review IS NOT NULL AND needs_review!='')) AND issue_date>=? AND issue_date<=?`
       ).bind(tenantId, ps, pe).first()) as any;
       const pRevJE = (await db.prepare(
-        `SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id=? AND status IN ('draft','stale') AND entry_date>=? AND entry_date<=?`
+        `SELECT COUNT(*) as cnt FROM journal_entries WHERE user_id=? AND ${jeDraft('journal_entries')} AND entry_date>=? AND entry_date<=?`
       ).bind(tenantId, ps, pe).first()) as any;
       const pReview = (pRevBank?.cnt || 0) + (pRevCard?.cnt || 0) + (pRevInv?.cnt || 0) + (pRevJE?.cnt || 0);
 

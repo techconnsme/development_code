@@ -10,6 +10,8 @@ import * as pdfjsWorkerModule from 'pdfjs-dist/build/pdf.worker.mjs';
 // module there makes the in-process fake worker work in workerd.
 (globalThis as any).pdfjsWorker = pdfjsWorkerModule;
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
+import { jeLive } from '../lib/journal-filters';
+import { tryPostInvoiceToGl } from '../lib/post-invoice';
 import { wsBroadcast } from './ws';
 import { generateReceiptNumber, detectOwnNumber } from '../lib/numbering';
 import { processBankStatement, extractCompanyInfo, extractBankInfo } from '../lib/bank-ocr';
@@ -551,7 +553,8 @@ ${inputOcrText.slice(0, 8000)}` }],
 
       // Get unprocessed transactions
       const existingRefs = await db.prepare(
-        "SELECT reference_id FROM journal_entries WHERE user_id = ? AND reference_type = 'bank_transaction'"
+        `SELECT reference_id FROM journal_entries
+         WHERE user_id = ? AND reference_type = 'bank_transaction' AND ${jeLive('journal_entries')}`
       ).bind(userId).all();
       const refSet = new Set((existingRefs.results as any[]).map(r => r.reference_id));
 
@@ -1871,6 +1874,18 @@ ${ocrText.slice(0, 8000)}`;
       .bind(linkedInvoiceId, invId).run();
   }
 
+  // Post the invoice leg to the GL. This is the dominant import path — a clean
+  // OCR import lands as 'active' and never visits the review page, so without
+  // this the receivable/payable is never recorded and only the later payment
+  // leg reaches the ledger, driving AR/AP negative.
+  //
+  // Idempotent and non-fatal. 'pending_review' imports are skipped by the
+  // helper's status guard and post later, when the review is confirmed.
+  await tryPostInvoiceToGl(db, userId, invId);
+  // A matched receipt flips its counterpart to 'paid'; post that one too, so a
+  // previously-unposted invoice doesn't end up settled but never recorded.
+  if (linkedInvoiceId) await tryPostInvoiceToGl(db, userId, linkedInvoiceId);
+
   // Keep the file in the classified folder (Invoices or Receipts) — no per-partner subfolders
   const folder = isReceipt ? 'Receipts' : 'Invoices';
 
@@ -2081,20 +2096,41 @@ files.post('/upload', async (c) => {
   // Validate file size (max 10MB base64 ≈ 13.3MB encoded)
   if (file_data.length > 14_000_000) return c.json({ error: 'File too large. Maximum 10MB.' }, 400);
 
+  const id = `fs-${uuidv4().slice(0, 8)}`;
+  const safeName = original_name || filename || 'untitled';
+
+  // Resolve the MIME type from the filename when the client's value is missing
+  // or opaque. Browsers derive file.type from an OS-level extension map, so the
+  // same file arrives as 'image/heic' from macOS but '' from Windows. Validating
+  // the raw value alone let identical uploads pass on one OS and fail on the
+  // other, and made a plain octet-stream fallback a hard 400.
+  const extMime: Record<string, string> = {
+    pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    gif: 'image/gif', webp: 'image/webp', csv: 'text/csv',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls: 'application/vnd.ms-excel',
+  };
+  const ext = safeName.includes('.') ? safeName.split('.').pop()!.toLowerCase() : '';
+  const claimedType = String(file_type || '').toLowerCase().trim();
+  const effectiveType = (claimedType && claimedType !== 'application/octet-stream')
+    ? claimedType
+    : (extMime[ext] || '');
+
   // Validate file type
   const allowedTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv', 'application/vnd.ms-excel'];
-  if (file_type && !allowedTypes.includes(file_type)) {
-    return c.json({ error: `File type not allowed: ${file_type}` }, 400);
+  if (!allowedTypes.includes(effectiveType)) {
+    if (ext === 'heic' || ext === 'heif') {
+      return c.json({ error: 'HEIC/HEIF photos are not supported. On iPhone: Settings > Camera > Formats > "Most Compatible", or export the photo as JPEG first.' }, 400);
+    }
+    return c.json({ error: `File type not allowed: ${claimedType || (ext ? '.' + ext : 'unknown')}` }, 400);
   }
 
-  const id = `fs-${uuidv4().slice(0, 8)}`;
-  const safeName = original_name || filename || 'untitled';
   const r2Key = `${tenantId}/${id}-${safeName}`;
   const displayName = filename || safeName;
 
   // Auto-classify
-  const classification = classifyFile(safeName, file_type || '');
+  const classification = classifyFile(safeName, effectiveType);
   const folder = reqFolder || classification.folder;
 
   // Skip GLM-OCR during upload — it blocks for 20-40s and times out frequently.
@@ -2112,7 +2148,7 @@ files.post('/upload', async (c) => {
     .map(b => b.toString(16).padStart(2, '0')).join('');
 
   await c.env.FILE_BUCKET.put(r2Key, binary, {
-    httpMetadata: { contentType: file_type || 'application/octet-stream' },
+    httpMetadata: { contentType: effectiveType },
     customMetadata: { originalName: safeName, userId: user.id },
   });
 
@@ -2120,7 +2156,7 @@ files.post('/upload', async (c) => {
     `INSERT INTO file_records (id, user_id, folder, filename, original_name, file_type, file_size, r2_key, description, ocr_text, ocr_status, category, direction, amount, content_hash)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(id, tenantId, folder, displayName, safeName,
-    file_type || 'application/octet-stream', file_size || binary.byteLength,
+    effectiveType, file_size || binary.byteLength,
     r2Key, description || '', ocrResult.text, ocrResult.status, classification.category,
     ocrDirection || null, ocrAmount, contentHash).run();
 
@@ -2130,7 +2166,7 @@ files.post('/upload', async (c) => {
 
   // Notify OCR worker via WebSocket
   try {
-    wsBroadcast(user.id, { type: 'ocr_request', file_id: id, filename: displayName, file_type: file_type || 'application/octet-stream', folder: folder, category: classification.category });
+    wsBroadcast(user.id, { type: 'ocr_request', file_id: id, filename: displayName, file_type: effectiveType, folder: folder, category: classification.category });
   } catch { /* WebSocket not available */ }
 
   // NOTE: Bank statement auto-import is now handled explicitly by the frontend calling

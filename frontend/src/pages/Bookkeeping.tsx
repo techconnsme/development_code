@@ -235,18 +235,18 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     }
   }
 
+  // 'stale' is no longer a status — deleted entries carry deleted_at instead and
+  // are filtered out server-side, so they never reach this table.
   function statusBadge(s: string) {
     const styles: Record<string, string> = {
       draft: 'bg-muted text-muted-foreground',
       posted: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
       reconciled: 'bg-blue-100 text-blue-700 dark:bg-blue-950/40',
-      stale: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40',
     };
     const labels: Record<string, string> = {
       draft: tr('Draft', '草稿 Draft', '草稿 Draft'),
       posted: tr('Posted', '已過帳 Posted', '已过帐 Posted'),
       reconciled: tr('Reconciled', '已對帳 Reconciled', '已对帐 Reconciled'),
-      stale: tr('⚠ Stale', '⚠ 過時 Stale', '⚠ 过时 Stale'),
     };
     return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${styles[s] || 'bg-muted text-muted-foreground'}`}>{labels[s] || s}</span>;
   }
@@ -338,7 +338,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
 
       {/* Entries Tab */}
       {tab === 'entries' && (() => {
-        const draftCount = (entries?.data || []).filter((e: any) => e.status === 'draft' || e.status === 'stale').length;
+        const draftCount = (entries?.data || []).filter((e: any) => e.status === 'draft').length;
         return (
         <div className="space-y-4">
           {draftCount > 0 && (
@@ -376,7 +376,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             <tbody>
               {(entries?.data || []).map((e: any) => (
                 <React.Fragment key={e.id}>
-                <tr id={`entry-row-${e.id}`} className={`border-b hover:bg-muted/30 ${expandedId === e.id ? 'bg-muted/40' : ''} ${e.status === 'draft' ? 'bg-amber-50 dark:bg-amber-950/20' : ''} ${e.status === 'stale' ? 'bg-red-50 dark:bg-red-950/20' : ''}`}>
+                <tr id={`entry-row-${e.id}`} className={`border-b hover:bg-muted/30 ${expandedId === e.id ? 'bg-muted/40' : ''} ${e.status === 'draft' ? 'bg-amber-50 dark:bg-amber-950/20' : ''}`}>
                   <td className="p-3">
                     <button onClick={() => toggleEntryDetail(e.id)} className="p-0.5 hover:bg-muted rounded">
                       {expandedId === e.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}

@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { Bindings, Variables } from '../types';
 import { authMiddleware } from '../middleware/auth';
+import { jeDraft } from '../lib/journal-filters';
 
 const rq = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 rq.use('*', authMiddleware);
@@ -49,11 +50,13 @@ rq.get('/', async (c) => {
      ORDER BY created_at DESC LIMIT ?`
   ).bind(tenantId, ...dateParams, limit).all();
 
-  // Journal entries (draft or stale)
+  // Journal entries awaiting review. Tombstoned (deleted_at) entries are no longer
+  // listed here — a deleted entry isn't something to review; restoring its parent
+  // statement is handled by the recycle-bin flow instead.
   const journalPending = await db.prepare(
     `SELECT id, entry_number, entry_date, description, reference_type, reference_id, status, created_at
      FROM journal_entries
-     WHERE user_id = ? AND status IN ('draft', 'stale') ${jeDateFilter}
+     WHERE user_id = ? AND ${jeDraft('journal_entries')} ${jeDateFilter}
      ORDER BY created_at DESC LIMIT ?`
   ).bind(tenantId, ...dateParams, limit).all();
 
@@ -72,7 +75,7 @@ rq.get('/', async (c) => {
   ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const journalCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM journal_entries
-     WHERE user_id = ? AND status IN ('draft', 'stale') ${jeDateFilter}`
+     WHERE user_id = ? AND ${jeDraft('journal_entries')} ${jeDateFilter}`
   ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
 
   const counts = {
@@ -135,15 +138,14 @@ rq.get('/', async (c) => {
   }
 
   for (const row of journalPending.results as any[]) {
-    const reason = row.status === 'stale' ? 'stale' : 'draft';
     items.push({
       type: 'journal_entry',
       id: row.id,
       title: row.entry_number || 'Journal Entry',
       subtitle: row.description?.slice(0, 80) || undefined,
       date: row.entry_date || row.created_at?.slice(0, 10),
-      reason,
-      reviewUrl: reason === 'stale' ? '/bank-statements' : `/GJE?entry=${row.id}`,
+      reason: 'draft',
+      reviewUrl: `/GJE?entry=${row.id}`,
     });
   }
 
@@ -182,7 +184,7 @@ rq.get('/count', async (c) => {
   ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
   const journalCount = await db.prepare(
     `SELECT COUNT(*) as cnt FROM journal_entries
-     WHERE user_id = ? AND status IN ('draft', 'stale') ${jeDateFilter}`
+     WHERE user_id = ? AND ${jeDraft('journal_entries')} ${jeDateFilter}`
   ).bind(tenantId, ...dateParams).first<{ cnt: number }>();
 
   return c.json({

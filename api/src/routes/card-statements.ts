@@ -4,6 +4,7 @@ import { verify as jwtVerify } from 'jsonwebtoken';
 import { Bindings, Variables } from '../types';
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { getJwtSecret } from '../middleware/auth';
+import { jeLive } from '../lib/journal-filters';
 const card = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 // Audit log helper
 async function auditLog(db: any, userId: string, action: string, entityType: string, entityId: string | null, changes?: object) {
@@ -454,6 +455,7 @@ card.post('/:id/post-to-gl', async (c) => {
   const txs = await db.prepare(
     `SELECT ct.* FROM card_transactions ct
      LEFT JOIN journal_entries je ON je.reference_id = ct.id AND je.reference_type = 'card_transaction'
+       AND ${jeLive()}
      WHERE ct.card_statement_id = ? AND ct.user_id = ?
      AND ct.expense_account_code IS NOT NULL
      AND ct.deleted_at IS NULL

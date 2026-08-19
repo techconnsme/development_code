@@ -6,6 +6,15 @@ import { Bindings, Variables } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { ensureProducts } from '../lib/auto-product';
 import { generateInvoiceNumber, generateReceiptNumber } from '../lib/numbering';
+import { tryPostInvoiceToGl } from '../lib/post-invoice';
+import { jeLive } from '../lib/journal-filters';
+import { tombstoneInvoiceJournal } from '../lib/invoice-journal';
+
+// 1 when the invoice already has a live GL entry, else NULL. Lets the UI offer a
+// persistent "Post to GL" control for anything still unposted, instead of the
+// old button that only appeared for a moment after saving a review.
+const POSTED_TO_GL_SELECT = `(SELECT 1 FROM journal_entries je
+  WHERE je.reference_type = 'invoice' AND je.reference_id = i.id AND ${jeLive()} LIMIT 1) AS posted_to_gl`;
 
 const invoices = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 invoices.use('*', authMiddleware);
@@ -27,7 +36,7 @@ invoices.get('/', async (c) => {
 
   // Default: exclude pending_review unless explicitly requested
   const showPendingReview = status === 'pending_review';
-  let query = `SELECT i.*, c.name as customer_name, c.company_name as customer_company, s.name as supplier_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ? AND i.deleted_at IS NULL`;
+  let query = `SELECT i.*, c.name as customer_name, c.company_name as customer_company, s.name as supplier_name, ${POSTED_TO_GL_SELECT} FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id WHERE i.user_id = ? AND i.deleted_at IS NULL`;
   if (!showPendingReview) query += " AND i.status != 'pending_review'";
   const params: any[] = [tenantId];
   if (status) { const statuses = status.split(',').filter(Boolean); query += ` AND i.status IN (${statuses.map(() => '?').join(',')})`; params.push(...statuses); }
@@ -67,7 +76,8 @@ invoices.get('/:id/review', async (c) => {
   const id = c.req.param('id');
   const invoice = await db.prepare(
     `SELECT i.*, c.name as customer_name, c.email as customer_email, c.address as customer_address,
-     f.original_name as file_original_name, f.file_type as file_mime_type
+     f.original_name as file_original_name, f.file_type as file_mime_type,
+     ${POSTED_TO_GL_SELECT}
      FROM invoices i
      LEFT JOIN customers c ON i.customer_id = c.id
      LEFT JOIN file_records f ON i.file_id = f.id
@@ -284,8 +294,11 @@ invoices.post('/:id/confirm', async (c) => {
   const discount = body.discount_amount ?? 0;
   const total = subtotal !== undefined ? subtotal + (taxAmount ?? 0) - discount : undefined;
 
-  // Build dynamic SET clause
-  const sets: string[] = ["status = 'draft'", "updated_at = datetime('now')"];
+  // Build dynamic SET clause.
+  // Confirming a review finalises the invoice, so it becomes 'active' — the same
+  // status a clean OCR import gets. It previously became 'draft', which left a
+  // reviewed invoice marked un-issued and therefore ineligible for GL posting.
+  const sets: string[] = ["status = 'active'", "updated_at = datetime('now')"];
   const params: any[] = [];
   const fieldMap: Record<string, any> = {
     expense_category: body.expense_category,
@@ -325,6 +338,12 @@ invoices.post('/:id/confirm', async (c) => {
   await db.prepare('INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'confirm_review', 'invoice', id, JSON.stringify({ previous_status: existing.status })).run();
 
+  // Post the invoice leg to the GL now that it is finalised. Without this the
+  // ledger only ever receives the payment leg (posted on bank match-confirm),
+  // which drives AR/AP negative. Idempotent and non-fatal — the manual
+  // "Post to GL" control remains the recovery path if this fails.
+  await tryPostInvoiceToGl(db, tenantId, id);
+
   const invoice = await db.prepare('SELECT * FROM invoices WHERE id = ?').bind(id).first();
   const items = await db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY sort_order').bind(id).all();
   return c.json({ ...invoice, items: items.results });
@@ -363,6 +382,12 @@ invoices.delete('/:id', async (c) => {
     'UPDATE invoices SET deleted_at = ?, deleted_by = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
   ).bind(now, user.id, id, tenantId).run();
 
+  // Tombstone the invoice's ledger entries too — its own entry and any payments
+  // settling it. Without this the payment keeps debiting AP (or crediting AR)
+  // with no invoice left to offset it, leaving the balance permanently wrong.
+  // Mirrors what deleting a bank statement already does for its entries.
+  const jeTombstoned = await tombstoneInvoiceJournal(db, tenantId, id, now);
+
   let fileDeleted = false;
   if (existing.file_id) {
     const fRes = await db.prepare(
@@ -372,9 +397,9 @@ invoices.delete('/:id', async (c) => {
   }
 
   await db.prepare('INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'soft_delete', 'invoice', id, JSON.stringify({ file_deleted: fileDeleted, restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() })).run();
+    .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'soft_delete', 'invoice', id, JSON.stringify({ file_deleted: fileDeleted, journal_entries_tombstoned: jeTombstoned, restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() })).run();
 
-  return c.json({ success: true, file_deleted: fileDeleted, restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() });
+  return c.json({ success: true, file_deleted: fileDeleted, journal_entries_tombstoned: jeTombstoned, restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() });
 });
 
 // ── Auto-match receipts to invoices (returns suggestions, does NOT link) ──

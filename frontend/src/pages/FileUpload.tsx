@@ -8,6 +8,7 @@ import EncryptedPdfModal from '../components/EncryptedPdfModal';
 import { Upload, FileText, Image, File, Loader2, AlertCircle, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 import { writeTokenUsage, clearTokenUsage } from '../components/TokenPopup';
+import { validateFiles, ACCEPT_ATTR, MAX_FILE_BYTES, type RejectedFile, type RejectReason } from '../lib/fileValidation';
 
 // ── Channel types ─────────────────────────────────────────────────────────
 
@@ -35,6 +36,34 @@ const CHANNELS: ChannelDef[] = [
 
 function channelLabel(ch: ChannelDef): string {
   return tr(ch.label, ch.labelZh, ch.labelCn);
+}
+
+function rejectionMessage(r: RejectReason): string {
+  const maxMb = MAX_FILE_BYTES / 1024 / 1024;
+  switch (r.kind) {
+    case 'apple_image': {
+      const fmt = r.ext.slice(1).toUpperCase();
+      return tr(
+        `${fmt} photos can't be read. On iPhone: Settings › Camera › Formats › "Most Compatible", or export the photo as JPEG first.`,
+        `無法讀取 ${fmt} 相片。請於 iPhone 設定 › 相機 › 格式 › 選擇「最相容」，或先將相片匯出為 JPEG。`,
+        `无法读取 ${fmt} 照片。请于 iPhone 设置 › 相机 › 格式 › 选择「最兼容」，或先将照片导出为 JPEG。`,
+      );
+    }
+    case 'unsupported':
+      return tr(
+        `${r.ext || 'This file type'} is not supported. Use PDF, PNG, JPG, WEBP or GIF.`,
+        `不支援 ${r.ext || '此文件類型'}。請使用 PDF、PNG、JPG、WEBP 或 GIF。`,
+        `不支援 ${r.ext || '此文件类型'}。请使用 PDF、PNG、JPG、WEBP 或 GIF。`,
+      );
+    case 'too_large': {
+      const mb = (r.bytes / 1024 / 1024).toFixed(1);
+      return tr(
+        `Too large (${mb} MB). Maximum is ${maxMb} MB.`,
+        `文件過大（${mb} MB）。上限為 ${maxMb} MB。`,
+        `文件过大（${mb} MB）。上限为 ${maxMb} MB。`,
+      );
+    }
+  }
 }
 
 function reviewPageFlags(result: any): string {
@@ -143,6 +172,8 @@ export default function FileUpload() {
   const [encryptedFile, setEncryptedFile] = useState<{ fileId: string; fileName: string } | null>(null);
   const [fileErrors, setFileErrors] = useState<Record<number, string>>({});
   const [fileStatuses, setFileStatuses] = useState<Record<number, 'pending' | 'processing' | 'success' | 'error'>>({});
+  const [rejected, setRejected] = useState<RejectedFile[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Channel selection
   const [channel, setChannel] = useState<UploadChannel>('bank_statement');
@@ -166,16 +197,35 @@ export default function FileUpload() {
     setBatchProgress({ done: batchRef.current.done, total: batchRef.current.total, currentFile: filename });
   }
 
+  // Every entry path (picker, drag-drop) funnels through here. The `accept`
+  // attribute only filters the OS picker — it enforces nothing and drag-drop
+  // ignores it entirely — so validation has to live at this junction.
+  const applySelection = useCallback((incoming: File[]) => {
+    const { accepted, rejected: bad } = validateFiles(incoming);
+    setFiles(accepted);
+    setRejected(bad);
+    setFileErrors({});
+    setFileStatuses({});
+  }, []);
+
+  // Guards both entry points: the button and the surrounding clickable prompt.
+  const openPicker = useCallback(() => {
+    if (uploading) return;
+    fileInputRef.current?.click();
+  }, [uploading]);
+
   const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); setDragOver(true); }, []);
   const handleDragLeave = useCallback(() => setDragOver(false), []);
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setDragOver(false);
-    if (e.dataTransfer.files.length > 0) { setFiles(Array.from(e.dataTransfer.files)); setFileErrors({}); setFileStatuses({}); }
-  }, []);
+    if (e.dataTransfer.files.length > 0) applySelection(Array.from(e.dataTransfer.files));
+  }, [applySelection]);
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) { setFiles(Array.from(e.target.files)); setFileErrors({}); setFileStatuses({}); }
-  }, []);
+    if (e.target.files && e.target.files.length > 0) applySelection(Array.from(e.target.files));
+    // Reset so picking the same file again still fires a change event.
+    e.target.value = '';
+  }, [applySelection]);
 
   // Extract inferred values from OCR result for display
   function extractInferredValues(result: any): Record<string, string> {
@@ -514,6 +564,7 @@ export default function FileUpload() {
 
     setFiles([]);
     setDescription('');
+    setRejected([]);
 
     const storedTokens = (() => { try { const r = sessionStorage.getItem('aiTokenUsage'); return r ? JSON.parse(r) : null; } catch { return null; } })();
 
@@ -581,7 +632,7 @@ export default function FileUpload() {
         {CHANNELS.map(ch => (
           <button
             key={ch.key}
-            onClick={() => { setChannel(ch.key); setFiles([]); setFileErrors({}); setFileStatuses({}); }}
+            onClick={() => { setChannel(ch.key); setFiles([]); setFileErrors({}); setFileStatuses({}); setRejected([]); }}
             className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
               channel === ch.key
                 ? 'border-primary text-primary'
@@ -606,19 +657,40 @@ export default function FileUpload() {
 
       <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
         className={`bg-card border-2 border-dashed rounded-xl p-8 transition-colors ${dragOver ? 'border-primary bg-primary/5' : 'border-border'}`}>
-        <div className="flex flex-col items-center gap-4">
+        {/* Kept outside the clickable prompt below: input.click() dispatches a
+            bubbling click event, which would otherwise re-enter openPicker. */}
+        <input ref={fileInputRef} type="file" accept={ACCEPT_ATTR} onChange={handleFileInput}
+          className="sr-only" tabIndex={-1} multiple />
+
+        <div onClick={openPicker}
+          className={`flex flex-col items-center gap-4 ${uploading ? '' : 'cursor-pointer'}`}>
           <div className={`rounded-full p-4 transition-colors ${dragOver ? 'bg-primary/10' : 'bg-muted'}`}>
             <Upload className={`h-8 w-8 ${dragOver ? 'text-primary' : 'text-muted-foreground'}`} />
           </div>
           <div className="text-center">
             <p className="font-medium">{dragOver ? tr('Drop files here', '放開以上傳', '放開以上传') : tr('Drag & drop files here, or click to browse', '拖放文件至此，或點擊瀏覽', '拖放文件至此，或点击浏览')}</p>
-            <p className="text-sm text-muted-foreground mt-1">{tr('Supports PDF, PNG, JPG. OCR auto-detects bank statements, card statements & invoices.', '支援 PDF、PNG、JPG。OCR 自動檢測銀行月結單、信用卡月結單及發票。', '支援 PDF、PNG、JPG。OCR 自动检测银行月结单、信用卡月结单及发票。')}</p>
+            <p className="text-sm text-muted-foreground mt-1">{tr('Supports PDF, PNG, JPG, WEBP, GIF · max 10 MB each. OCR auto-detects bank statements, card statements & invoices.', '支援 PDF、PNG、JPG、WEBP、GIF · 每個檔案上限 10 MB。OCR 自動檢測銀行月結單、信用卡月結單及發票。', '支援 PDF、PNG、JPG、WEBP、GIF · 每个文件上限 10 MB。OCR 自动检测银行月结单、信用卡月结单及发票。')}</p>
           </div>
-          <label className="cursor-pointer bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
+          <button type="button" disabled={uploading}
+            onClick={e => { e.stopPropagation(); openPicker(); }}
+            className="cursor-pointer bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-default">
             {uploading ? tr('Uploading...', '上傳中...', '上传中...') : tr('Select Files', '選擇文件', '选择文件')}
-            <input type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={handleFileInput} className="hidden" multiple />
-          </label>
+          </button>
         </div>
+
+        {rejected.length > 0 && (
+          <div className="mt-4 pt-4 border-t space-y-2">
+            {rejected.map((r, i) => (
+              <div key={i} className="flex items-start gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-md">
+                <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                <div className="min-w-0 text-xs">
+                  <p className="font-medium text-amber-800 dark:text-amber-200 truncate">{r.file.name}</p>
+                  <p className="text-amber-700 dark:text-amber-300 mt-0.5">{rejectionMessage(r.reason)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         {files.length > 0 && (
           <>
             <div className="mt-4 pt-4 border-t">
@@ -671,7 +743,7 @@ export default function FileUpload() {
               </div>
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => { setFiles([]); setDescription(''); setFileErrors({}); setFileStatuses({}); }}
+              <button onClick={() => { setFiles([]); setDescription(''); setFileErrors({}); setFileStatuses({}); setRejected([]); }}
                 className="px-4 py-2 border rounded-md text-sm hover:bg-muted">{tr('Clear', '清除', '清除')}</button>
               <button onClick={handleUpload} disabled={uploading}
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-2">

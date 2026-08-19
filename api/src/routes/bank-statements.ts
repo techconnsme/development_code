@@ -5,6 +5,8 @@ import { verify as jwtVerify } from 'jsonwebtoken';
 import { Bindings, Variables } from '../types';
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { postPaymentToGl } from '../lib/post-payment';
+import { jePosted, jeLive, jeDeleted } from '../lib/journal-filters';
+import { restoreInvoiceJournal, purgeInvoiceJournal } from '../lib/invoice-journal';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -588,7 +590,8 @@ bank.patch('/transactions/:id', async (c) => {
   if (body.account_code !== undefined || body.deposit_amount !== undefined || body.withdrawal_amount !== undefined || body.description !== undefined) {
     // Delete existing journal entry (CASCADE handles lines)
     await db.prepare(
-      "DELETE FROM journal_entries WHERE reference_type = 'bank_transaction' AND reference_id = ? AND status != 'reconciled'"
+      `DELETE FROM journal_entries WHERE reference_type = 'bank_transaction' AND reference_id = ?
+       AND status != 'reconciled' AND ${jeLive('journal_entries')}`
     ).bind(txId).run();
 
     // Regenerate fresh journal entry from updated transaction
@@ -1170,14 +1173,15 @@ bank.delete('/:id', async (c) => {
     'UPDATE bank_transactions SET deleted_at = ? WHERE bank_statement_id = ? AND user_id = ? AND deleted_at IS NULL'
   ).bind(now, stmtId, tenantId).run();
 
-  // 1b) Mark any journal entries auto-generated from those transactions as stale, so they
+  // 1b) Tombstone any journal entries auto-generated from those transactions, so they
   // stop being counted on the dashboard/ledger. They aren't deleted outright so a restore
-  // (within the 30-day recycle window) can bring them back to normal status.
+  // (within the 30-day recycle window) can bring them back — and because deleted_at is
+  // separate from status, each entry keeps its own lifecycle value across the round trip.
   const jeStaled = await db.prepare(
-    `UPDATE journal_entries SET status = 'stale', updated_at = ?
-     WHERE user_id = ? AND reference_type = 'bank_transaction' AND status != 'stale'
+    `UPDATE journal_entries SET deleted_at = ?, updated_at = ?
+     WHERE user_id = ? AND reference_type = 'bank_transaction' AND ${jeLive('journal_entries')}
      AND reference_id IN (SELECT id FROM bank_transactions WHERE bank_statement_id = ? AND user_id = ?)`
-  ).bind(now, tenantId, stmtId, tenantId).run();
+  ).bind(now, now, tenantId, stmtId, tenantId).run();
 
   // 2) Soft-delete the linked file_record row
   let fileDel = false;
@@ -1396,7 +1400,7 @@ bank.post('/:id/reconcile', async (c) => {
   const glBalance = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND jl.account_code = ?`
+     WHERE je.user_id = ? AND je.entry_date <= ? AND jl.account_code = ? AND ${jePosted()}`
   ).bind(tenantId, stmt.period_end || new Date().toISOString().split('T')[0], glAccountCode).first<{ balance: number }>();
 
   // Get outstanding (un-reconciled) transactions
@@ -1522,11 +1526,13 @@ bank.post('/recycle/:type/:id/restore', async (c) => {
     await db.prepare(
       'UPDATE bank_transactions SET deleted_at = NULL WHERE bank_statement_id = ? AND user_id = ?'
     ).bind(id, tenantId).run();
-    // Un-stale any journal entries that were auto-generated from those transactions
-    // and got marked stale when the statement was deleted.
+    // Un-tombstone the journal entries auto-generated from those transactions.
+    // Only deleted_at is cleared — status is left alone, so an entry that was a
+    // draft before the delete comes back as a draft rather than being promoted
+    // to 'posted' (which the old status-based tombstone did).
     await db.prepare(
-      `UPDATE journal_entries SET status = 'posted', updated_at = ?
-       WHERE user_id = ? AND reference_type = 'bank_transaction' AND status = 'stale'
+      `UPDATE journal_entries SET deleted_at = NULL, updated_at = ?
+       WHERE user_id = ? AND reference_type = 'bank_transaction' AND ${jeDeleted('journal_entries')}
        AND reference_id IN (SELECT id FROM bank_transactions WHERE bank_statement_id = ? AND user_id = ?)`
     ).bind(new Date().toISOString(), tenantId, id, tenantId).run();
     // Restore linked file record too
@@ -1556,8 +1562,12 @@ bank.post('/recycle/:type/:id/restore', async (c) => {
       'UPDATE invoices SET deleted_at = NULL, deleted_by = NULL WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL'
     ).bind(id, tenantId).run();
     if (!(r.meta?.changes)) return c.json({ error: 'Not found in recycle bin' }, 404);
-    await auditLog(db, user.id, 'restore', 'invoice', id);
-    return c.json({ success: true });
+    // Revive the ledger entries tombstoned when the invoice was deleted. Payment
+    // entries only come back if their bank transaction is still live — a payment
+    // whose statement is also deleted stays tombstoned until that is restored too.
+    const jeRestored = await restoreInvoiceJournal(db, tenantId, id);
+    await auditLog(db, user.id, 'restore', 'invoice', id, { journal_entries_restored: jeRestored });
+    return c.json({ success: true, journal_entries_restored: jeRestored });
   }
 
   return c.json({ error: 'Unknown type. Use bank_statement, file, or invoice.' }, 400);
@@ -1606,12 +1616,16 @@ bank.delete('/recycle/:type/:id', async (c) => {
       'SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL'
     ).bind(id, tenantId).first<{ id: string }>();
     if (!inv) return c.json({ error: 'Not found in recycle bin' }, 404);
+    // Hard-delete the tombstoned ledger entries FIRST — the payment lookup joins
+    // through bank_transactions.invoice_id, which stops resolving once the
+    // invoice row is gone, and the entry would be orphaned beyond tracing.
+    const jePurged = await purgeInvoiceJournal(db, tenantId, id);
     // Break receipt↔invoice links pointing at this row before the hard delete
     await db.prepare('UPDATE invoices SET linked_invoice_id = NULL WHERE linked_invoice_id = ? AND user_id = ?').bind(id, tenantId).run();
     // Hard delete (invoice_items cascade via FK). The linked file stays in File Storage.
     await db.prepare('DELETE FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL').bind(id, tenantId).run();
-    await auditLog(db, user.id, 'purge', 'invoice', id);
-    return c.json({ success: true });
+    await auditLog(db, user.id, 'purge', 'invoice', id, { journal_entries_purged: jePurged });
+    return c.json({ success: true, journal_entries_purged: jePurged });
   }
 
   return c.json({ error: 'Unknown type. Use bank_statement, file, or invoice.' }, 400);
@@ -1635,7 +1649,7 @@ bank.post('/recycle/purge-old', async (c) => {
   // (must run before the bank_transactions themselves are deleted, since the lookup
   // below joins on them; journal_lines cascade automatically via FK).
   const je = await db.prepare(
-    `DELETE FROM journal_entries WHERE user_id = ? AND reference_type = 'bank_transaction' AND status = 'stale'
+    `DELETE FROM journal_entries WHERE user_id = ? AND reference_type = 'bank_transaction' AND ${jeDeleted('journal_entries')}
      AND reference_id IN (SELECT id FROM bank_transactions WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at < ?)`
   ).bind(tenantId, tenantId, cutoff).run();
   const s = await db.prepare(

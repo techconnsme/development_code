@@ -107,6 +107,18 @@ export default function Invoices() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices'] }),
   });
 
+  // Manual recovery path for invoices that have no GL entry. Invoices now post
+  // automatically on confirm and on clean OCR import, so this only appears for
+  // ones that predate that or whose automatic posting failed.
+  const postGlMut = useMutation({
+    mutationFn: (id: string) => api(`/bookkeeping/post-invoice/${id}`, { method: 'POST' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices'] }),
+  });
+
+  // Mirrors POSTABLE_STATUSES in api/src/lib/post-invoice.ts — a draft or
+  // pending_review invoice must not reach the books.
+  const POSTABLE = ['active', 'sent', 'paid', 'overdue'];
+
   function addItem() {
     setForm({ ...form, items: [...form.items, { description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   }
@@ -382,6 +394,13 @@ export default function Invoices() {
                     {inv.status === 'sent' && (
                       <button onClick={() => updateStatus.mutate({ id: inv.id, status: 'paid' })} className="text-xs text-green-600 hover:underline mr-2">
                         {tr('Mark Paid', '標記已付', '标记已付')}
+                      </button>
+                    )}
+                    {!inv.posted_to_gl && POSTABLE.includes(inv.status) && (
+                      <button onClick={() => postGlMut.mutate(inv.id)} disabled={postGlMut.isPending}
+                        className="text-xs text-emerald-700 dark:text-emerald-400 hover:underline mr-2 disabled:opacity-50"
+                        title={tr('This invoice is not in the General Ledger yet', '此發票尚未過賬至總賬', '此发票尚未过账至总账')}>
+                        {tr('Post to GL', '過賬', '过账')}
                       </button>
                     )}
                     <button onClick={() => { if (confirm(tr('Delete this item?', '確定刪除?', '确定删除?'))) deleteMut.mutate(inv.id); }} className="p-1 hover:bg-muted rounded text-destructive"><Trash2 className="h-4 w-4" /></button>

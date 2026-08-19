@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useDateFilter } from '../contexts/DateFilterContext';
-import { Landmark, CreditCard, FileText, Calculator, CheckCircle2, ArrowRight, AlertTriangle, Info, Copy, AlertCircle } from 'lucide-react';
+import { Landmark, CreditCard, FileText, Calculator, CheckCircle2, ArrowRight, AlertTriangle, Info, Copy } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 
 interface QueueItem {
@@ -49,7 +49,6 @@ function ReasonBadge({ reason }: { reason: string }) {
           case 'duplicate': return <span key="dup" className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1"><Copy className="h-2.5 w-2.5" />Duplicate</span>;
           case 'total': return <span key="tot" className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full font-medium">Total mismatch</span>;
           case 'pending_review': return <span key="pr" className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded-full font-medium">Needs review</span>;
-          case 'stale': return <span key="stale" className="text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1"><AlertCircle className="h-2.5 w-2.5" />Stale</span>;
           default: return <span key={r} className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full font-medium">{r}</span>;
         }
       })}

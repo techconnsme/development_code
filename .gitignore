@@ -20,6 +20,7 @@ TeCS_DEVELOPMENT_ROADMAP.md
 demo-redesign.html
 fix-admin-password.sql
 session-*.md
+AP-AR-GL-FIX-HANDOFF.md
 
 # Test artifacts
 tests/
@@ -30,3 +31,18 @@ test-samples-generated/
 
 # Playwright
 test-*.png
+playwright-report/
+
+# Manual source backups (*.ts.bak, *.tsx.bak). Stale duplicates of live files —
+# they also pollute grep/search results with outdated code.
+*.bak
+
+# One-off operational scratch: R2 cleanup lists and the per-tenant dumps of
+# zero-byte placeholder files they produce. Contains tenant ids + customer
+# document names; should not be in the repo.
+api/r2-keys-to-delete.txt
+api/hard-delete-joseph-uploads.sql
+api/u-*/
+
+# Local scratch dirs used for throwaway verification scripts
+.tmp-*/
