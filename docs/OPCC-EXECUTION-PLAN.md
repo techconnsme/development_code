@@ -657,7 +657,7 @@ OPCC 技術棧 v2.0
     ├── CDN           Cloudflare (300+ 節點)
     ├── SSL           Cloudflare (免費)
     ├── DNS           Cloudflare
-    └── Domain        oppc-crm.techforliving.net
+    └── Domain        opcc-crm.techforliving.net
 ```
 
 ### 11.2 每會員每月成本
@@ -675,4 +675,4 @@ OPCC 技術棧 v2.0
 ---
 
 *文件維護者：OPCC 團隊*
-*聯絡：hello@oppc-crm.techforliving.net*
+*聯絡：hello@opcc-crm.techforliving.net*

@@ -8,7 +8,7 @@ API_BASE="${API_BASE:-https://your-domain.com}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}"
 WRANGLER="npx wrangler"
 CFG="api/wrangler.toml"
-BUCKET="oppc-crm-files"
+BUCKET="opcc-crm-files"
 R2_PREFIX="u-5dc14ca8/fs-"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PARSER="$SCRIPT_DIR/parse_hsbc.py"
@@ -18,7 +18,7 @@ trap "rm -rf $TMPDIR" EXIT
 echo "=== OPCC CRM Bank Statement Import ==="
 echo ""
 
-# â”€â”€ Step 1: Login to get JWT â”€â”€
+# ?€?€ Step 1: Login to get JWT ?€?€
 echo ">> Logging in as PnR..."
 read -sp "Password for admin user: " PASSWORD
 echo ""
@@ -37,9 +37,9 @@ fi
 echo "Logged in as user: $USER_ID"
 echo ""
 
-# â”€â”€ Step 2: Get list of eStatement PDFs from R2 â”€â”€
+# ?€?€ Step 2: Get list of eStatement PDFs from R2 ?€?€
 echo ">> Fetching eStatement list from D1..."
-R2_KEYS=$($WRANGLER d1 execute oppc-crm-db --remote --config "$CFG" --json --command \
+R2_KEYS=$($WRANGLER d1 execute opcc-crm-db --remote --config "$CFG" --json --command \
   "SELECT r2_key, filename FROM file_records WHERE user_id = '$USER_ID' AND filename LIKE 'eStatement%' ORDER BY filename" 2>/dev/null \
   | python3 -c "
 import sys, json
@@ -57,7 +57,7 @@ TOTAL=$(echo "$R2_KEYS" | wc -l | tr -d ' ')
 echo "Found $TOTAL eStatement PDFs to import"
 echo ""
 
-# â”€â”€ Step 3: Process each PDF â”€â”€
+# ?€?€ Step 3: Process each PDF ?€?€
 SUCCESS=0
 SKIPPED=0
 FAILED=0

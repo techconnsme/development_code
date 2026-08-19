@@ -1,5 +1,5 @@
 -- One-time migrations (safe to ignore errors)
--- Run: npx wrangler d1 execute oppc-crm-db --remote --file=src/db/migrate-once.sql
+-- Run: npx wrangler d1 execute opcc-crm-db --remote --file=src/db/migrate-once.sql
 
 ALTER TABLE bank_transactions ADD COLUMN account_code TEXT;
 ALTER TABLE bank_statements ADD COLUMN account_code TEXT;

@@ -148,7 +148,7 @@ npx wrangler secret put JWT_SECRET
 |------|-----|
 | Production | `https://sme.techforliving.net` |
 | Old API Worker | `https://opcc-crm-api.ruhan-farhan.workers.dev` |
-| Old API Worker (alt) | `https://oppc-crm-api.ai-caseylai.workers.dev` |
+| Old API Worker (alt) | `https://oppc-crm-api.ai-caseylai.workers.dev` ⚠️ **DO NOT USE** — `oppc` is a typo. Canonical worker is `opcc-crm-api.ruhan-farhan.workers.dev`. |
 | Old Pages | `https://opcc-crm.pages.dev` |
 | GitHub Repo | `https://github.com/techconnsme/development_code` |
 | LLM Gateway | `https://llm.techforliving.net` |

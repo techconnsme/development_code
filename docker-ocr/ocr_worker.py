@@ -231,7 +231,7 @@ class OCRWorker:
 
 def main():
     parser = argparse.ArgumentParser(description='OPCC CRM OCR Worker')
-    parser.add_argument('--url', default='https://oppc-crm.techforliving.net', help='API base URL')
+    parser.add_argument('--url', default='https://opcc-crm.techforliving.net', help='API base URL')
     parser.add_argument('--email', required=True, help='Login email')
     parser.add_argument('--password', required=True, help='Login password')
     args = parser.parse_args()

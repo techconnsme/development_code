@@ -1,5 +1,5 @@
 -- Compliance module migration
--- Run: cd api && npx wrangler d1 execute oppc-crm-db --remote --file=src/db/migrate-compliance.sql
+-- Run: cd api && npx wrangler d1 execute opcc-crm-db --remote --file=src/db/migrate-compliance.sql
 
 -- Add compliance columns to company_settings (safe to run if they already exist)
 ALTER TABLE company_settings ADD COLUMN br_number TEXT;

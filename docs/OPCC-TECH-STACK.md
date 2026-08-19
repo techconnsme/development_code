@@ -138,7 +138,7 @@ OPCC 是為香港一人公司（One Person Company）俱樂部會員設計的多
 ### 3.4 Wrangler 設定 (wrangler.toml)
 
 ```toml
-name = "oppc-crm-api"
+name = "opcc-crm-api"
 main = "src/index.ts"
 compatibility_date = "2025-01-13"
 compatibility_flags = ["nodejs_compat"]
@@ -146,8 +146,8 @@ account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "oppc-crm-db"
-database_id = "c455dc9a-1920-42c5-86c4-e93cec21dcfb"
+database_name = "opcc-crm-db"
+database_id = "218544bf-f765-40ae-b90d-2915033b1e67"
 
 [[kv_namespaces]]
 binding = "KV"
@@ -353,7 +353,7 @@ expired  cancelled
 ### Base URL
 
 - 開發：`http://localhost:8787/api`
-- 生產：`https://oppc-crm.techforliving.net/api`
+- 生產：`https://opcc-crm.techforliving.net/api`
 
 ### 6.1 認證 (`/api/auth`)
 
@@ -619,7 +619,7 @@ D1 Database
 
 | 項目 | 值 |
 |---|---|
-| 域名 | `oppc-crm.techforliving.net` |
+| 域名 | `opcc-crm.techforliving.net` |
 | DNS | Cloudflare DNS |
 | SSL | Cloudflare 自動 SSL（免費） |
 | CDN | Cloudflare CDN（免費） |
@@ -629,7 +629,7 @@ D1 Database
 | 環境 | API URL | 前端 URL |
 |---|---|---|
 | 開發 | `http://localhost:8787` | `http://localhost:5173` |
-| 生產 | `https://oppc-crm.techforliving.net/api` | `https://oppc-crm.techforliving.net` |
+| 生產 | `https://opcc-crm.techforliving.net/api` | `https://opcc-crm.techforliving.net` |
 
 ---
 
@@ -646,8 +646,8 @@ D1 Database
 
 ```bash
 # 1. 克隆專案
-git clone <repo-url> oppc-crm
-cd oppc-crm
+git clone <repo-url> opcc-crm
+cd opcc-crm
 
 # 2. 安裝根依賴
 npm install
@@ -730,7 +730,7 @@ npm run deploy:frontend
 1. 下載 QClaw：https://qclawsg.qq.com/
 2. 一鍵安裝
 3. 開啟 QClaw → 選擇 WhatsApp → 掃 QR Code
-4. 設定 Webhook URL：https://oppc-crm.techforliving.net/api/whatsapp/webhook
+4. 設定 Webhook URL：https://opcc-crm.techforliving.net/api/whatsapp/webhook
 5. 完成
 ```
 
@@ -920,7 +920,7 @@ OPCC 技術棧 v1.0
     ├── CDN         Cloudflare（300+ 節點）
     ├── SSL         Cloudflare（免費）
     ├── DNS         Cloudflare
-    └── Domain      oppc-crm.techforliving.net
+    └── Domain      opcc-crm.techforliving.net
 ```
 
 ---
@@ -939,4 +939,4 @@ OPCC 技術棧 v1.0
 ---
 
 *文件維護者：OPCC 團隊*
-*技術支援：hello@oppc-crm.techforliving.net*
+*技術支援：hello@opcc-crm.techforliving.net*

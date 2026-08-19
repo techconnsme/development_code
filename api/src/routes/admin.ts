@@ -753,7 +753,7 @@ admin.get('/audit-stats', async (c) => {
        COALESCE(SUM(CASE WHEN a.account_type = 'revenue' THEN jl.credit ELSE 0 END), 0) as total_receipts,
        COALESCE(SUM(CASE WHEN a.account_type IN ('expense', 'cost') THEN jl.debit ELSE 0 END), 0) as total_expenses
      FROM journal_lines jl
-     JOIN accounts a ON jl.account_code = a.account_code
+     JOIN accounts a ON jl.account_code = a.account_code AND a.user_id = je.user_id
      JOIN journal_entries je ON jl.entry_id = je.id
      WHERE je.entry_date >= date('now', '-12 months') AND ${jePosted()}`
   ).first<{ total_receipts: number; total_expenses: number }>();

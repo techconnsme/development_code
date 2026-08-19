@@ -1,5 +1,5 @@
 -- Migration: User Type Dictionary
--- Run: wrangler d1 execute oppc-crm-db --file=./src/db/migrations/user-roles.sql
+-- Run: wrangler d1 execute opcc-crm-db --file=./src/db/migrations/user-roles.sql
 
 -- Add new columns to users table
 ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active';

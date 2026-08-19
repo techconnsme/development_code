@@ -69,7 +69,13 @@ BANK STATEMENT RULES:
 
 FIRM TOOLS: Use list_firms for firm info, list_staff for staff, add_staff_member to add employees. NEVER use query_database for these.
 CODE TOOLS: Use read_code/write_code/list_project_files/git_log/deploy_frontend to edit code. Always read_code first, then write COMPLETE file content.
-For counts/numbers: if user asks "多少/幾個/數量/how many/count", call get_counts.`;
+For counts/numbers: if user asks "多少/幾個/數量/how many/count", call get_counts.
+
+CLIENT COMPANY SCOPE RULES:
+- By default, ALL tools operate ONLY on the CURRENT CLIENT COMPANY shown in your system context. Never report data from other companies unless the user EXPLICITLY asks about ALL their clients/companies.
+- If the user asks about "all clients" or "all companies", use list_client_companies FIRST to show the available client companies, then ask the user to pick which companies to include (or confirm "all") BEFORE running any aggregation.
+- Use get_bookkeeping_all_clients ONLY when the user has explicitly confirmed they want ALL client companies included. It returns per-company and combined totals.
+- Never use query_database or any other tool to bypass client scoping or read another company's data.`;
 
 type UiLang = 'en' | 'zh-Hant' | 'zh-Hans';
 
@@ -258,13 +264,15 @@ const TOOLS: any[] = [
   { type: 'function', function: { name: 'list_firms', description: 'List firms the current user belongs to', parameters: { type: 'object', properties: {}, required: [] } } },
   { type: 'function', function: { name: 'list_staff', description: 'List all staff members in the firm', parameters: { type: 'object', properties: {}, required: [] } } },
   { type: 'function', function: { name: 'add_staff_member', description: 'Add a staff member to the firm. Returns login password.', parameters: { type: 'object', properties: { email: { type: 'string' }, password: { type: 'string' }, name: { type: 'string' }, role: { type: 'string' } }, required: ['email'] } } },
+  { type: 'function', function: { name: 'list_client_companies', description: 'List the client companies the current user can access. Firm staff see the firm\'s clients; standalone owners see their sub-accounts. Use this before any "all clients" aggregation to show the user what companies exist and ask which to include.', parameters: { type: 'object', properties: {}, required: [] } } },
+  { type: 'function', function: { name: 'get_bookkeeping_all_clients', description: 'Aggregate profit & loss (bookkeeping) across ALL accessible client companies. Only use when the user has EXPLICITLY confirmed they want all clients included. Returns per-company breakdown and combined totals for the given date range.', parameters: { type: 'object', properties: { start_date: { type: 'string', description: 'Start date YYYY-MM-DD' }, end_date: { type: 'string', description: 'End date YYYY-MM-DD' } }, required: [] } } },
   { type: 'function', function: { name: 'read_code', description: 'Read source code from GitHub repo ai-caseylai/opcc-crm', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'write_code', description: 'Write a file to GitHub. Read first, then write COMPLETE content.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, message: { type: 'string' } }, required: ['path', 'content', 'message'] } } },
   { type: 'function', function: { name: 'list_project_files', description: 'List files in project repo directory', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: [] } } },
   { type: 'function', function: { name: 'git_log', description: 'Show recent git commits', parameters: { type: 'object', properties: { count: { type: 'number' } }, required: [] } } },
   { type: 'function', function: { name: 'deploy_frontend', description: 'Deploy frontend to Cloudflare Pages', parameters: { type: 'object', properties: { confirm: { type: 'boolean' } }, required: ['confirm'] } } },
 
-  { type: 'function', function: { name: 'query_database', description: 'Execute a SQL SELECT query on the database to retrieve data. Only SELECT queries are allowed. Use this when no specific function covers the data you need. Tables: customers, suppliers, products, invoices, invoice_items, quotations, quotation_items, purchase_orders, purchase_order_items, service_orders, service_order_items, services, service_bookings, todos, calendar_events, journal_entries, journal_lines, accounts, bank_statements, bank_transactions, expense_receipts, file_records, documents, chat_sessions, chat_messages, company_settings, domains. All tables have user_id column for filtering.', parameters: { type: 'object', properties: { sql: { type: 'string', description: 'SQL SELECT query. Must include WHERE user_id = ? placeholder. Example: SELECT * FROM customers WHERE user_id = ? AND name LIKE ? LIMIT 10' }, params: { type: 'array', description: 'Parameters for the query. First param must always be the user_id, additional params as needed.', items: { type: 'string' } } }, required: ['sql'] } } },
+  { type: 'function', function: { name: 'query_database', description: 'Execute a SQL SELECT query on the database to retrieve data. Only SELECT queries are allowed and ONLY on these tenant-scoped tables (each has a user_id column): customers, suppliers, products, invoices, quotations, purchase_orders, service_orders, services, service_bookings, todos, calendar_events, journal_entries, accounts, bank_statements, bank_transactions, expense_receipts, file_records, documents, chat_sessions, chat_messages, company_settings, domains. NEVER query journal_lines or any *_items table directly. Use this when no specific function covers the data you need.', parameters: { type: 'object', properties: { sql: { type: 'string', description: 'SQL SELECT query on an allowed table. Must include WHERE user_id = ? placeholder. Example: SELECT * FROM customers WHERE user_id = ? AND name LIKE ? LIMIT 10' }, params: { type: 'array', description: 'Parameters for the query. First param must always be the user_id, additional params as needed.', items: { type: 'string' } } }, required: ['sql'] } } },
 ];
 
 async function ensureAccount(db: D1Database, userId: string, code: string): Promise<{ code: string; name: string } | null> {
@@ -277,6 +285,58 @@ async function ensureAccount(db: D1Database, userId: string, code: string): Prom
     return { code, name: `Expense ${code}` };
   }
   return null;
+}
+
+// Resolve the client companies a user can access (mirrors firms.ts /my-clients logic):
+// - Firm admins: all firm_clients + sub-accounts linked via parent_user_id
+// - Firm staff: assigned firm_clients only
+// - Standalone supervisor/accountant/admin: sub-accounts linked via parent_user_id
+async function resolveAccessibleClients(db: D1Database, firmUserId: string): Promise<{ client_user_id: string; display_name: string | null }[]> {
+  const fm = await db.prepare('SELECT firm_id, role FROM firm_members WHERE user_id = ? AND is_active = 1 LIMIT 1').bind(firmUserId).first<{ firm_id: string; role: string }>();
+  if (fm) {
+    if (fm.role === 'admin') {
+      const rows = await db.prepare(
+        `SELECT client_user_id, display_name FROM firm_clients WHERE firm_id = ? AND status = ?
+         UNION ALL
+         SELECT id, company_name FROM users WHERE parent_user_id = ? AND status = ?`
+      ).bind(fm.firm_id, 'active', firmUserId, 'active').all();
+      return (rows.results as any[]).map(r => ({ client_user_id: r.client_user_id, display_name: r.display_name || r.company_name || null }));
+    }
+    const rows = await db.prepare(
+      `SELECT fc.client_user_id, fc.display_name
+       FROM firm_clients fc
+       JOIN firm_client_assignments fca ON fca.firm_client_id = fc.id
+       JOIN firm_members fme ON fme.id = fca.firm_member_id
+       WHERE fme.user_id = ? AND fme.firm_id = ? AND fc.status = ? AND fme.is_active = 1`
+    ).bind(firmUserId, fm.firm_id, 'active').all();
+    return (rows.results as any[]).map(r => ({ client_user_id: r.client_user_id, display_name: r.display_name || null }));
+  }
+  const u = await db.prepare('SELECT role FROM users WHERE id = ?').bind(firmUserId).first<{ role: string }>();
+  if (u && ['admin', 'supervisor', 'accountant'].includes(u.role)) {
+    const rows = await db.prepare(
+      `SELECT id, company_name FROM users WHERE parent_user_id = ? AND status = 'active' ORDER BY created_at DESC`
+    ).bind(firmUserId).all();
+    return (rows.results as any[]).map(r => ({ client_user_id: r.id, display_name: r.company_name || null }));
+  }
+  return [];
+}
+
+// Compute P&L (revenue / expenses / net) for a single client user using the properly
+// scoped JOIN (je.user_id = a.user_id) so account codes never fan out across tenants.
+async function computeClientPnl(db: D1Database, userId: string, startDate: string, endDate: string): Promise<{ revenue: number; expenses: number; net: number } | null> {
+  const rows = await db.prepare(
+    `SELECT a.account_type as type, SUM(COALESCE(jl.debit,0)) as total_debit, SUM(COALESCE(jl.credit,0)) as total_credit
+     FROM journal_lines jl JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id JOIN journal_entries je ON jl.entry_id = je.id
+     WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()}
+     GROUP BY a.account_type`
+  ).bind(userId, startDate, endDate).all();
+  if (!rows.results.length) return null;
+  let revenue = 0, expenses = 0;
+  for (const r of rows.results as any[]) {
+    if (r.type === 'revenue') revenue += Number(r.total_credit) || 0;
+    else if (r.type === 'expense' || r.type === 'cost') expenses += Number(r.total_debit) || 0;
+  }
+  return { revenue, expenses, net: revenue - expenses };
 }
 
 async function executeTool(name: string, db: D1Database, userId: string, args: any = {}, env?: any, realUserId?: string): Promise<string> {
@@ -400,17 +460,17 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       // Try journal entries first
       try {
         const jlRows = await db.prepare(
-          `SELECT a.account_code as code, a.account_name as name, a.account_type as type, SUM(COALESCE(jl.debit,0)) as total_debit, SUM(COALESCE(jl.credit,0)) as total_credit FROM journal_lines jl JOIN accounts a ON jl.account_code = a.account_code JOIN journal_entries je ON jl.entry_id = je.id WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} GROUP BY a.account_code, a.account_name, a.account_type ORDER BY a.account_code`
+          `SELECT a.account_code as code, a.account_name as name, a.account_type as type, SUM(COALESCE(jl.debit,0)) as total_debit, SUM(COALESCE(jl.credit,0)) as total_credit FROM journal_lines jl JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id JOIN journal_entries je ON jl.entry_id = je.id WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} GROUP BY a.account_code, a.account_name, a.account_type ORDER BY a.account_code`
         ).bind(userId, startDate, endDate).all();
         if (jlRows.results.length > 0) return JSON.stringify(jlRows.results);
       } catch {}
       // Fallback: bank transactions
       try {
         const deposits = await db.prepare(
-          'SELECT COALESCE(SUM(deposit_amount),0) as total FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ?'
+          'SELECT COALESCE(SUM(deposit_amount),0) as total FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL'
         ).bind(userId, startDate, endDate).first<{ total: number }>();
         const withdrawals = await db.prepare(
-          'SELECT COALESCE(SUM(withdrawal_amount),0) as total FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ?'
+          'SELECT COALESCE(SUM(withdrawal_amount),0) as total FROM bank_transactions WHERE user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND deleted_at IS NULL'
         ).bind(userId, startDate, endDate).first<{ total: number }>();
         return JSON.stringify([
           { code: 'REV', name: 'Revenue (Bank Deposits)', type: 'revenue', total_credit: deposits?.total || 0 },
@@ -450,8 +510,8 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
         return JSON.stringify({ as_of: asOf, total_assets: ta, total_liabilities: tl, total_equity: te, retained_earnings: re, check: Math.abs(ta - (tl + te)) < 0.01, assets, liabilities, equity });
       }
       // Fallback
-      const dep = await db.prepare('SELECT COALESCE(SUM(deposit_amount),0) as amount FROM bank_transactions WHERE user_id = ? AND transaction_date <= ?').bind(userId, asOf).first<{amount:number}>();
-      const wit = await db.prepare('SELECT COALESCE(SUM(withdrawal_amount),0) as amount FROM bank_transactions WHERE user_id = ? AND transaction_date <= ?').bind(userId, asOf).first<{amount:number}>();
+      const dep = await db.prepare('SELECT COALESCE(SUM(deposit_amount),0) as amount FROM bank_transactions WHERE user_id = ? AND transaction_date <= ? AND deleted_at IS NULL').bind(userId, asOf).first<{amount:number}>();
+      const wit = await db.prepare('SELECT COALESCE(SUM(withdrawal_amount),0) as amount FROM bank_transactions WHERE user_id = ? AND transaction_date <= ? AND deleted_at IS NULL').bind(userId, asOf).first<{amount:number}>();
       const net = (dep?.amount||0) - (wit?.amount||0);
       return JSON.stringify({ as_of: asOf, total_assets: Math.max(net,0), total_liabilities: Math.max(-net,0), total_equity: net, retained_earnings: net, check: true, assets: [{code:'1101',name:'Cash (est.)',balance:Math.max(net,0)}], liabilities: net<0?[{code:'2102',name:'Dir Loan (est.)',balance:-net}]:[], equity: [{code:'3xxx',name:'Retained Earnings (est.)',balance:net}], source: 'bank_estimate' });
     }
@@ -701,7 +761,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
     }
     case 'update_invoice_status': {
       await db.prepare("UPDATE invoices SET status = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?").bind(args.status, args.id, userId).run();
-      if (args.status === 'paid') await db.prepare("UPDATE invoices SET paid_date = datetime('now') WHERE id = ?").bind(args.id).run();
+      if (args.status === 'paid') await db.prepare("UPDATE invoices SET paid_date = datetime('now') WHERE id = ? AND user_id = ?").bind(args.id, userId).run();
       return JSON.stringify({ success: true, id: args.id, status: args.status });
     }
 
@@ -769,7 +829,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
     }
     case 'update_purchase_order_status': {
       await db.prepare("UPDATE purchase_orders SET status = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?").bind(args.status, args.id, userId).run();
-      if (args.status === 'paid') await db.prepare("UPDATE purchase_orders SET paid_date = datetime('now') WHERE id = ?").bind(args.id).run();
+      if (args.status === 'paid') await db.prepare("UPDATE purchase_orders SET paid_date = datetime('now') WHERE id = ? AND user_id = ?").bind(args.id, userId).run();
       return JSON.stringify({ success: true, id: args.id, status: args.status });
     }
 
@@ -930,7 +990,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
 
     // ── Bank Statements ──
     case 'list_bank_statements': {
-      let q = 'SELECT id, bank_name, account_number, statement_year, statement_month, opening_balance, closing_balance, file_name, created_at FROM bank_statements WHERE user_id = ?';
+      let q = 'SELECT id, bank_name, account_number, statement_year, statement_month, opening_balance, closing_balance, file_name, created_at FROM bank_statements WHERE user_id = ? AND deleted_at IS NULL';
       const params: any[] = [userId];
       if (args?.year) { q += ' AND statement_year = ?'; params.push(args.year); }
       q += ' ORDER BY statement_year DESC, statement_month DESC LIMIT ?'; params.push(limit);
@@ -938,9 +998,9 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       return JSON.stringify(rows.results);
     }
     case 'get_bank_statement': {
-      const bs = await db.prepare('SELECT * FROM bank_statements WHERE id = ? AND user_id = ?').bind(args.id, userId).first();
+      const bs = await db.prepare('SELECT * FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(args.id, userId).first();
       if (!bs) return JSON.stringify({ error: 'Bank statement not found' });
-      const txns = await db.prepare('SELECT transaction_date, description, deposit_amount, withdrawal_amount FROM bank_transactions WHERE bank_statement_id = ? AND description NOT LIKE ? ORDER BY sort_order LIMIT 50').bind(args.id, '%TRANSACTION SUMMARY%').all();
+      const txns = await db.prepare('SELECT transaction_date, description, deposit_amount, withdrawal_amount FROM bank_transactions WHERE bank_statement_id = ? AND deleted_at IS NULL AND description NOT LIKE ? ORDER BY sort_order LIMIT 50').bind(args.id, '%TRANSACTION SUMMARY%').all();
       const lines = txns.results.map((t: any) =>
         `${t.transaction_date} | ${(t.deposit_amount||0) > 0 ? '+' + t.deposit_amount : ''}${(t.withdrawal_amount||0) > 0 ? '-' + t.withdrawal_amount : ''} | ${(t.description||'').slice(0,60)}`
       ).join('\n');
@@ -954,10 +1014,10 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       });
     }
     case 'get_bank_statement_raw': {
-      const bs = await db.prepare('SELECT id, file_name, bank_name, account_number, currency, statement_year, statement_month, period_start, period_end, opening_balance, closing_balance FROM bank_statements WHERE id = ? AND user_id = ?').bind(args.id, userId).first<any>();
+      const bs = await db.prepare('SELECT id, file_name, bank_name, account_number, currency, statement_year, statement_month, period_start, period_end, opening_balance, closing_balance FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(args.id, userId).first<any>();
       if (!bs) return JSON.stringify({ error: 'Bank statement not found' });
       const txns = await db.prepare(
-        "SELECT transaction_date, description, deposit_amount, withdrawal_amount, balance FROM bank_transactions WHERE bank_statement_id = ? AND description NOT LIKE '%TRANSACTION SUMMARY%' AND description NOT LIKE '%CARRIED FORWARD%' ORDER BY sort_order LIMIT 100"
+        "SELECT transaction_date, description, deposit_amount, withdrawal_amount, balance FROM bank_transactions WHERE bank_statement_id = ? AND deleted_at IS NULL AND description NOT LIKE '%TRANSACTION SUMMARY%' AND description NOT LIKE '%CARRIED FORWARD%' ORDER BY sort_order LIMIT 100"
       ).bind(args.id).all();
 
       let display = `## ${bs.file_name} — ${bs.bank_name} ${bs.account_number}\n`;
@@ -977,13 +1037,13 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       return JSON.stringify({ display, count: txns.results.length });
     }
     case 'get_bank_statement_summary': {
-      const bs = await db.prepare('SELECT id, file_name, bank_name, account_number, currency, statement_year, statement_month, period_start, period_end, opening_balance, closing_balance FROM bank_statements WHERE id = ? AND user_id = ?').bind(args.id, userId).first();
+      const bs = await db.prepare('SELECT id, file_name, bank_name, account_number, currency, statement_year, statement_month, period_start, period_end, opening_balance, closing_balance FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(args.id, userId).first();
       if (!bs) return JSON.stringify({ error: 'Bank statement not found' });
       const totals = await db.prepare(
-        "SELECT COUNT(*) as tx_count, COALESCE(SUM(deposit_amount),0) as total_dep, COALESCE(SUM(withdrawal_amount),0) as total_wit FROM bank_transactions WHERE bank_statement_id = ? AND description NOT LIKE '%TRANSACTION SUMMARY%' AND description NOT LIKE '%CARRIED FORWARD%'"
+        "SELECT COUNT(*) as tx_count, COALESCE(SUM(deposit_amount),0) as total_dep, COALESCE(SUM(withdrawal_amount),0) as total_wit FROM bank_transactions WHERE bank_statement_id = ? AND deleted_at IS NULL AND description NOT LIKE '%TRANSACTION SUMMARY%' AND description NOT LIKE '%CARRIED FORWARD%'"
       ).bind(args.id).first();
       const topTx = await db.prepare(
-        "SELECT transaction_date, description, deposit_amount, withdrawal_amount FROM bank_transactions WHERE bank_statement_id = ? ORDER BY (deposit_amount + withdrawal_amount) DESC LIMIT 10"
+        "SELECT transaction_date, description, deposit_amount, withdrawal_amount FROM bank_transactions WHERE bank_statement_id = ? AND deleted_at IS NULL ORDER BY (deposit_amount + withdrawal_amount) DESC LIMIT 10"
       ).bind(args.id).all();
       return JSON.stringify({ ...bs, ...totals, top_transactions: topTx.results });
     }
@@ -1161,7 +1221,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       const fileId = args.file_id;
       const fileRow = await db.prepare('SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_status, category, folder FROM file_records WHERE id = ? AND user_id = ?').bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string; category: string; folder: string }>();
       if (!fileRow) return JSON.stringify({ error: 'File not found. Use list_files to find available files.' });
-      const existing = await db.prepare('SELECT id FROM bank_statements WHERE user_id = ? AND r2_key = ?').bind(userId, fileRow.r2_key).first();
+      const existing = await db.prepare('SELECT id FROM bank_statements WHERE user_id = ? AND r2_key = ? AND deleted_at IS NULL').bind(userId, fileRow.r2_key).first();
       if (existing) return JSON.stringify({ error: 'This file has already been imported as a bank statement', statement_id: existing.id });
       let ocrText = fileRow.ocr_text || '';
       if (!ocrText || ocrText.length < 20) {
@@ -1367,6 +1427,15 @@ ${ocrText.slice(0, 8000)}` }],
           return JSON.stringify({ error: `Keyword ${kw} is not allowed` });
         }
       }
+      // Only allow tables that have a user_id column (tenant-scoped). Reject any query
+      // that references tables without one (e.g. journal_lines, *_items, users, firms,
+      // firm_clients) to prevent unscoped cross-tenant reads.
+      const userScopedTables = ['customers', 'suppliers', 'products', 'invoices', 'quotations', 'purchase_orders', 'service_orders', 'services', 'service_bookings', 'todos', 'calendar_events', 'journal_entries', 'accounts', 'bank_statements', 'bank_transactions', 'expense_receipts', 'file_records', 'documents', 'chat_sessions', 'chat_messages', 'company_settings', 'domains'];
+      const tableRefs = [...sql.matchAll(/\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)/gi)].map(m => m[1].toLowerCase());
+      const badTables = tableRefs.filter(t => !userScopedTables.includes(t));
+      if (badTables.length > 0) {
+        return JSON.stringify({ error: `Query references table(s) that are not tenant-scoped: ${badTables.join(', ')}. Only these tables are allowed (each has user_id): ${userScopedTables.join(', ')}` });
+      }
       // Ensure user_id filter — inject if not present
       if (!sql.includes('user_id')) {
         // Try to inject WHERE user_id = ? before LIMIT/ORDER BY/GROUP BY
@@ -1397,6 +1466,28 @@ ${ocrText.slice(0, 8000)}` }],
     case 'list_firms': {
       const rows = await db.prepare('SELECT f.id, f.name, fm.role FROM firms f JOIN firm_members fm ON fm.firm_id = f.id WHERE fm.user_id = ? AND fm.is_active = 1').bind(firmUserId).all();
       return JSON.stringify(rows.results);
+    }
+    case 'list_client_companies': {
+      const clients = await resolveAccessibleClients(db, firmUserId);
+      return JSON.stringify({ count: clients.length, clients });
+    }
+    case 'get_bookkeeping_all_clients': {
+      const clients = await resolveAccessibleClients(db, firmUserId);
+      if (clients.length === 0) return JSON.stringify({ error: 'No client companies accessible' });
+      const startDate = args?.start_date || '2020-01-01';
+      const endDate = args?.end_date || '2099-12-31';
+      const perClient: any[] = [];
+      let combined = { revenue: 0, expenses: 0, net: 0 };
+      for (const c of clients) {
+        const pnl = await computeClientPnl(db, c.client_user_id, startDate, endDate);
+        if (pnl) {
+          perClient.push({ client_user_id: c.client_user_id, display_name: c.display_name, ...pnl });
+          combined.revenue += pnl.revenue;
+          combined.expenses += pnl.expenses;
+          combined.net += pnl.net;
+        }
+      }
+      return JSON.stringify({ start_date: startDate, end_date: endDate, per_client: perClient, combined });
     }
     case 'list_staff': {
       const rows = await db.prepare('SELECT u.name, u.email, fm.role, fm.is_active FROM firm_members fm JOIN users u ON u.id = fm.user_id WHERE fm.firm_id IN (SELECT firm_id FROM firm_members WHERE user_id = ? AND is_active = 1) ORDER BY fm.is_active DESC').bind(firmUserId).all();
@@ -1671,7 +1762,26 @@ chat.post('/', async (c) => {
 
   try {
     const today = new Date().toISOString().split('T')[0];
-    const systemPrompt = SYSTEM_PROMPT + `\n\nCurrent date: ${today}\n\nLANGUAGE: The user's latest message is written in ${t.langName}. ALWAYS reply in that language (English, 繁體中文, or 简体中文). If the user switches language, switch with them.`;
+
+    // Resolve active client company context for scoping
+    let companyContext = '';
+    const activeClientId = c.get('client_user_id');
+    if (activeClientId) {
+      const client = await db.prepare(
+        `SELECT fc.display_name, u.company_name, u.name
+         FROM users u
+         LEFT JOIN firm_clients fc ON fc.client_user_id = u.id AND fc.firm_id = ?
+         WHERE u.id = ?`
+      ).bind(user.firm_id || '', activeClientId).first<any>();
+      const companyName = client?.display_name || client?.company_name || client?.name || activeClientId;
+      companyContext = `\n\nCURRENT CLIENT COMPANY: ${companyName}\nYou are assisting with ${companyName}'s data. All tools are scoped to this client company. Report ONLY ${companyName}'s data unless the user explicitly asks about ALL their clients.`;
+    } else if (user.firm_id) {
+      companyContext = `\n\nCURRENT CLIENT COMPANY: none selected.\nYou are in the firm staff user's own context. For client company data, remind the user to select a client company first. Do not fabricate or guess client data.`;
+    } else {
+      companyContext = `\n\nCURRENT CLIENT COMPANY: your own company.\nAll tools are scoped to your own data. Report only your own company's data unless the user explicitly asks about ALL their companies/clients.`;
+    }
+
+    const systemPrompt = SYSTEM_PROMPT + `\n\nCurrent date: ${today}\n\nLANGUAGE: The user's latest message is written in ${t.langName}. ALWAYS reply in that language (English, 繁體中文, or 简体中文). If the user switches language, switch with them.` + companyContext;
     const messages: any[] = [{ role: 'system', content: systemPrompt }];
     if (Array.isArray(history)) {
       for (const msg of history.slice(-8)) {
