@@ -363,7 +363,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
         } catch { counts[t] = 0; }
       }
       try {
-        const invTotal = await db.prepare("SELECT COALESCE(SUM(total),0) as total FROM invoices WHERE user_id = ? AND status = 'paid'").bind(userId).first<{total:number}>();
+        const invTotal = await db.prepare("SELECT COALESCE(SUM(total),0) as total FROM invoices WHERE user_id = ? AND status = 'paid' AND deleted_at IS NULL").bind(userId).first<{total:number}>();
         const poTotal = await db.prepare("SELECT COALESCE(SUM(total),0) as total FROM purchase_orders WHERE user_id = ? AND status = 'paid'").bind(userId).first<{total:number}>();
         counts.income_paid = invTotal?.total || 0;
         counts.expense_paid = poTotal?.total || 0;
@@ -374,12 +374,12 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
     case 'search_invoices': {
       const q = args?.query || '';
       const rows = await db.prepare(
-        `SELECT i.id, i.invoice_number, i.status, i.total, i.currency, i.issue_date, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.user_id = ? AND (i.invoice_number LIKE ? OR c.name LIKE ?) ORDER BY i.created_at DESC LIMIT ?`
+        `SELECT i.id, i.invoice_number, i.status, i.total, i.currency, i.issue_date, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.user_id = ? AND i.deleted_at IS NULL AND (i.invoice_number LIKE ? OR c.name LIKE ?) ORDER BY i.created_at DESC LIMIT ?`
       ).bind(userId, `%${q}%`, `%${q}%`, limit).all();
       return JSON.stringify(rows.results);
     }
     case 'list_invoices': {
-      let q = `SELECT i.id, i.invoice_number, i.status, i.total, i.currency, i.issue_date, i.due_date, i.paid_date, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.user_id = ?`;
+      let q = `SELECT i.id, i.invoice_number, i.status, i.total, i.currency, i.issue_date, i.due_date, i.paid_date, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.user_id = ? AND i.deleted_at IS NULL`;
       const params: any[] = [userId];
       if (args?.status) { q += ' AND i.status = ?'; params.push(args.status); }
       q += ' ORDER BY i.created_at DESC LIMIT ?'; params.push(limit);
@@ -388,7 +388,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
     }
     case 'get_invoice': {
       const inv = await db.prepare(
-        'SELECT i.*, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.id = ? AND i.user_id = ?'
+        'SELECT i.*, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.id = ? AND i.user_id = ? AND i.deleted_at IS NULL'
       ).bind(args.id, userId).first();
       if (!inv) return JSON.stringify({ error: 'Invoice not found' });
       const items = await db.prepare('SELECT description, quantity, unit_price, amount FROM invoice_items WHERE invoice_id = ? ORDER BY sort_order').bind(args.id).all();
@@ -540,7 +540,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       if (!accountCode) {
         // Return all journal entries with their lines for the date range
         const entries = await db.prepare(
-          `SELECT je.id, je.entry_number, je.entry_date, je.description, je.status FROM journal_entries je WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} AND ${jeNotOrphaned()} ORDER BY je.entry_date ASC, je.created_at ASC LIMIT 50`
+          `SELECT je.id, je.entry_number, je.entry_date, je.description, je.status FROM journal_entries je WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} AND ${jeNotOrphaned()} ORDER BY je.entry_date DESC, je.created_at DESC LIMIT 50`
         ).bind(userId, startDate, endDate).all();
         const result: any[] = [];
         for (const e of entries.results as any[]) {
@@ -1699,11 +1699,22 @@ chat.post('/', async (c) => {
 
   const qwenKey = c.env.QWEN_API_KEY as string | undefined;
   const dsKey = c.env.DEEPSEEK_API_KEY;
-  const apiKey = qwenKey || dsKey;
-  if (!apiKey) return c.json({ reply: 'No LLM API key configured' });
-  const useQwen = !!qwenKey;
-  const callLLM = (msgs: any[], tools?: any[], force?: boolean) =>
-    useQwen ? callQwen(apiKey, msgs, tools, force) : callDeepSeek(apiKey, msgs, tools, force);
+  if (!qwenKey && !dsKey) return c.json({ reply: 'No LLM API key configured' });
+  const callLLM = async (msgs: any[], tools?: any[], force?: boolean) => {
+    if (qwenKey) {
+      try {
+        return await callQwen(qwenKey, msgs, tools, force);
+      } catch (err: any) {
+        // Qwen may be unavailable (free quota exhausted, throttled, etc.) — fall
+        // back to DeepSeek rather than failing the whole request.
+        if (dsKey && /Qwen API error: (403|429)/.test(err?.message || '')) {
+          return await callDeepSeek(dsKey, msgs, tools, force);
+        }
+        throw err;
+      }
+    }
+    return callDeepSeek(dsKey, msgs, tools, force);
+  };
 
   const db = c.env.DB;
 

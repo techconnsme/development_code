@@ -155,7 +155,7 @@ workbuddy.get('/invoices', tokenAuth, async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const status = c.req.query('status');
-  let query = 'SELECT * FROM invoices WHERE user_id = ?';
+  let query = 'SELECT * FROM invoices WHERE user_id = ? AND deleted_at IS NULL';
   const params: any[] = [user.id];
   if (status) { query += ' AND status = ?'; params.push(status); }
   query += ' ORDER BY created_at DESC LIMIT 50';
@@ -629,7 +629,7 @@ workbuddy.get('/summary', tokenAuth, async (c) => {
     } catch { counts[t] = 0; }
   }
   try {
-    const invTotal = await c.env.DB.prepare("SELECT COALESCE(SUM(total),0) as total FROM invoices WHERE user_id = ? AND status = 'paid'").bind(user.id).first<{ total: number }>();
+    const invTotal = await c.env.DB.prepare("SELECT COALESCE(SUM(total),0) as total FROM invoices WHERE user_id = ? AND status = 'paid' AND deleted_at IS NULL").bind(user.id).first<{ total: number }>();
     const poTotal = await c.env.DB.prepare("SELECT COALESCE(SUM(total),0) as total FROM purchase_orders WHERE user_id = ? AND status = 'paid'").bind(user.id).first<{ total: number }>();
     counts.income_paid = invTotal?.total || 0;
     counts.expense_paid = poTotal?.total || 0;
@@ -705,7 +705,7 @@ workbuddy.get('/invoices/search', tokenAuth, async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const q = c.req.query('q') || '';
   const rows = await c.env.DB.prepare(
-    `SELECT i.id, i.invoice_number, i.status, i.total, i.currency, i.issue_date, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.user_id = ? AND (i.invoice_number LIKE ? OR c.name LIKE ?) ORDER BY i.created_at DESC LIMIT ?`
+    `SELECT i.id, i.invoice_number, i.status, i.total, i.currency, i.issue_date, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.user_id = ? AND i.deleted_at IS NULL AND (i.invoice_number LIKE ? OR c.name LIKE ?) ORDER BY i.created_at DESC LIMIT ?`
   ).bind(tenantId, `%${q}%`, `%${q}%`, 20).all();
   return c.json({ data: rows.results });
 });

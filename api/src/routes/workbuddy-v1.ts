@@ -51,7 +51,7 @@ wb.get('/invoices', async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
   const status = c.req.query('status') || '';
-  let q = 'SELECT * FROM invoices WHERE user_id = ?';
+  let q = 'SELECT * FROM invoices WHERE user_id = ? AND deleted_at IS NULL';
   const p: any[] = [user.id];
   if (status) { q += ' AND status = ?'; p.push(status); }
   q += ' ORDER BY created_at DESC LIMIT 50';
