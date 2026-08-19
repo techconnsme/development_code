@@ -1,1 +1,2 @@
-/api/* https://opcc-crm-api.ruhan-farhan.workers.dev/api/:splat 200
+# API proxy handled by Pages Function (functions/api/[[path]].ts)
+# /api/* https://opcc-crm-api.ruhan-farhan.workers.dev/api/:splat 200

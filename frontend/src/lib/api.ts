@@ -1,4 +1,4 @@
-const API_BASE = '/api';
+const API_BASE = 'https://oppc-crm-api.ruhan-farhan.workers.dev/api';
 
 // Direct Worker URL for large payloads (bypasses Pages Function body size limits)
 export const WORKER_API_BASE = 'https://opcc-crm-api.ruhan-farhan.workers.dev/api';

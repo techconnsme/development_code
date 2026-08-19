@@ -48,7 +48,7 @@ export default function PrivacyPolicy() {
       <section className="space-y-3">
         <h2 className="text-xl font-semibold">5. Third-Party Services</h2>
         <p className="text-muted-foreground">
-          The AI chat feature may send your prompts to AI API providers (DeepSeek, OpenRouter) for processing.
+          The AI chat feature may send your prompts to AI API providers (Qwen, DeepSeek, OpenRouter) for processing.
           No accounting data is sent to these providers unless you explicitly include it in your prompt.
           File OCR processing uses Cloudflare Workers AI and does not leave the Cloudflare network.
         </p>

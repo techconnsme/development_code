@@ -20,9 +20,18 @@ export async function onRequest(context: any) {
     // Proxy to API Worker
     const apiUrl = `https://opcc-crm-api.ruhan-farhan.workers.dev${url.pathname}${url.search}`;
 
+    // Build explicit headers to ensure Authorization is forwarded
+    const fwdHeaders: Record<string, string> = {
+      'Content-Type': request.headers.get('Content-Type') || 'application/json',
+    };
+    const auth = request.headers.get('Authorization');
+    if (auth) fwdHeaders['Authorization'] = auth;
+    const activeClient = request.headers.get('X-Active-Client');
+    if (activeClient) fwdHeaders['X-Active-Client'] = activeClient;
+
     const response = await fetch(apiUrl, {
       method: request.method,
-      headers: request.headers,
+      headers: fwdHeaders,
       body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined,
     });
 
@@ -45,4 +54,3 @@ export async function onRequest(context: any) {
     });
   }
 }
-

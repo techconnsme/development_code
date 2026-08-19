@@ -166,7 +166,7 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
       <div className="flex items-center justify-between px-4 py-3 border-b bg-primary text-primary-foreground flex-shrink-0">
         <div className="flex items-center gap-2">
           <MessageCircle className="h-4 w-4" />
-          <span className="font-medium text-sm">{tr('AI Assistant (DeepSeek)', 'AI 助理 (DeepSeek)', 'AI 助理 (DeepSeek)')}</span>
+          <span className="font-medium text-sm">{tr('AI Assistant (Qwen)', 'AI 助理 (Qwen)', 'AI 助理 (Qwen)')}</span>
         </div>
         <div className="flex items-center gap-1">
           <button onClick={() => { loadSessions(); setShowHistory(!showHistory); }}
@@ -223,7 +223,7 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
               <div className="text-center text-sm text-muted-foreground mt-8">
                 <MessageCircle className="h-8 w-8 mx-auto mb-2 opacity-30" />
                 <p>{tr('Hello! I am your AI assistant', '你好！我是 AI 助理', '你好！我是 AI 助理')}</p>
-                <p className="text-xs mt-1">{tr('Powered by DeepSeek · Upload Excel/CSV files for analysis', 'Powered by DeepSeek · 可以上傳 Excel/CSV 檔案分析', 'Powered by DeepSeek · 可以上传 Excel/CSV 文件分析')}</p>
+                <p className="text-xs mt-1">{tr('Powered by Qwen · Upload Excel/CSV files for analysis', 'Powered by Qwen · 可以上傳 Excel/CSV 檔案分析', 'Powered by Qwen · 可以上传 Excel/CSV 文件分析')}</p>
               </div>
             )}
             {messages.map((m, i) => (

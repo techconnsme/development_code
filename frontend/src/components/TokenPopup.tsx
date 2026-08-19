@@ -53,9 +53,9 @@ export default function TokenPopup() {
   const label = i18n.language === 'zh-Hant' ? 'AI 令牌用量'
     : i18n.language === 'zh-Hans' ? 'AI 令牌用量'
     : 'AI Token Usage';
-  const subtitle = i18n.language === 'zh-Hant' ? 'DeepSeek AI 已使用的總令牌數'
-    : i18n.language === 'zh-Hans' ? 'DeepSeek AI 已使用的总令牌数'
-    : 'Total tokens used by DeepSeek AI';
+  const subtitle = i18n.language === 'zh-Hant' ? 'Qwen AI 已使用的總令牌數'
+    : i18n.language === 'zh-Hans' ? 'Qwen AI 已使用的总令牌数'
+    : 'Total tokens used by Qwen AI';
 
   return (
     <div className="fixed bottom-4 right-4 bg-card border shadow-lg rounded-lg p-4 z-50 max-w-xs">

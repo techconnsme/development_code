@@ -8,7 +8,7 @@ import { jePosted } from '../lib/journal-filters';
 const chat = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 chat.use('*', authMiddleware);
 
-const SYSTEM_PROMPT = `You are the OPCC CRM AI assistant. You use the DeepSeek LLM.
+const SYSTEM_PROMPT = `You are the OPCC CRM AI assistant. You use the Qwen LLM.
 
 CRITICAL — STRICT TOOL EXECUTION FORMAT:
 - Never print DSML tags or tool invocation code into the final response text. Always execute tools strictly via the defined tool interface.
@@ -1479,7 +1479,7 @@ ${ocrText.slice(0, 8000)}` }],
 }
 
 async function callQwen(apiKey: string, messages: any[], tools?: any[], forceTool?: boolean): Promise<any> {
-  const body: any = { model: 'qwen-plus', messages, max_tokens: 4000, temperature: 0.1 };
+  const body: any = { model: 'qwen3.7-plus', messages, max_tokens: 4000, temperature: 0.1, enable_thinking: false };
   if (tools && tools.length > 0) { body.tools = tools; body.tool_choice = forceTool ? 'required' : 'auto'; }
   const resp = await fetch('https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions', {
     method: 'POST',
