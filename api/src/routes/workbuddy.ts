@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash, randomBytes } from 'crypto';
-import { jePosted } from '../lib/journal-filters';
+import { jePosted, jeNotOrphaned } from '../lib/journal-filters';
 import { Bindings, Variables, AppContext, AppNext } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { hash } from 'bcryptjs';
@@ -645,7 +645,7 @@ workbuddy.get('/bookkeeping', tokenAuth, async (c) => {
   const end = c.req.query('end_date') || '2099-12-31';
   try {
     const rows = await c.env.DB.prepare(
-      `SELECT a.account_code as code, a.account_name as name, a.account_type as type, SUM(COALESCE(jl.debit,0)) as total_debit, SUM(COALESCE(jl.credit,0)) as total_credit FROM journal_lines jl JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id JOIN journal_entries je ON jl.entry_id = je.id WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} GROUP BY a.account_code, a.account_name, a.account_type ORDER BY a.account_code`
+      `SELECT a.account_code as code, a.account_name as name, a.account_type as type, SUM(COALESCE(jl.debit,0)) as total_debit, SUM(COALESCE(jl.credit,0)) as total_credit FROM journal_lines jl JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id JOIN journal_entries je ON jl.entry_id = je.id WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} AND ${jeNotOrphaned()} GROUP BY a.account_code, a.account_name, a.account_type ORDER BY a.account_code`
     ).bind(tenantId, start, end).all();
     if (rows.results.length > 0) return c.json({ data: rows.results });
   } catch {}

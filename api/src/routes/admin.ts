@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { hash } from 'bcryptjs';
 import { Bindings, Variables } from '../types';
 import { authMiddleware } from '../middleware/auth';
-import { jePosted } from '../lib/journal-filters';
+import { jePosted, jeNotOrphaned } from '../lib/journal-filters';
 
 const admin = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 admin.use('*', authMiddleware);
@@ -755,7 +755,7 @@ admin.get('/audit-stats', async (c) => {
      FROM journal_lines jl
      JOIN accounts a ON jl.account_code = a.account_code AND a.user_id = je.user_id
      JOIN journal_entries je ON jl.entry_id = je.id
-     WHERE je.entry_date >= date('now', '-12 months') AND ${jePosted()}`
+     WHERE je.entry_date >= date('now', '-12 months') AND ${jePosted()} AND ${jeNotOrphaned()}`
   ).first<{ total_receipts: number; total_expenses: number }>();
 
   const totalReceipts = receiptExpense?.total_receipts || 0;

@@ -62,3 +62,20 @@ export const jeDeleted = (alias = 'je') => `${alias}.deleted_at IS NOT NULL`;
  */
 export const jeDraft = (alias = 'je') =>
   `${alias}.deleted_at IS NULL AND ${alias}.status = 'draft'`;
+
+/**
+ * Entries whose source record still exists.
+ *
+ * A journal entry generated from a bank transaction is "orphaned" if that
+ * transaction has since been hard-deleted (e.g. its parent bank statement was
+ * purged from the recycle bin) but the entry itself wasn't cleaned up. Exclude
+ * those from financial figures — they'd otherwise double-count money that no
+ * longer exists.
+ *
+ * Applies to any entry type; non-bank_transaction entries (invoice, payment,
+ * card_statement, manual) are always included.
+ */
+export const jeNotOrphaned = (alias = 'je') =>
+  `(${alias}.reference_type != 'bank_transaction' OR EXISTS (
+    SELECT 1 FROM bank_transactions bt2 WHERE bt2.id = ${alias}.reference_id AND bt2.deleted_at IS NULL
+  ))`;

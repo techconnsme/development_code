@@ -5,7 +5,7 @@ import { verify as jwtVerify } from 'jsonwebtoken';
 import { Bindings, Variables } from '../types';
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { postPaymentToGl } from '../lib/post-payment';
-import { jePosted, jeLive, jeDeleted } from '../lib/journal-filters';
+import { jePosted, jeLive, jeDeleted, jeNotOrphaned } from '../lib/journal-filters';
 import { restoreInvoiceJournal, purgeInvoiceJournal } from '../lib/invoice-journal';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -1400,7 +1400,7 @@ bank.post('/:id/reconcile', async (c) => {
   const glBalance = await db.prepare(
     `SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as balance
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND jl.account_code = ? AND ${jePosted()}`
+     WHERE je.user_id = ? AND je.entry_date <= ? AND jl.account_code = ? AND ${jePosted()} AND ${jeNotOrphaned()}`
   ).bind(tenantId, stmt.period_end || new Date().toISOString().split('T')[0], glAccountCode).first<{ balance: number }>();
 
   // Get outstanding (un-reconciled) transactions
