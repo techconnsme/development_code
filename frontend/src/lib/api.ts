@@ -104,7 +104,8 @@ export async function streamChat(
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
-      onError(err.error || 'Request failed');
+      const detail = err?.error_detail || err?.error || res.statusText;
+      onError(`Request failed (HTTP ${res.status}): ${detail}`);
       return;
     }
 

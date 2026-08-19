@@ -154,7 +154,7 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       send();
     }
@@ -272,7 +272,7 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
               <Paperclip className="h-4 w-4" />
             </button>
             <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown}
-              placeholder={tr('Ask anything... (Cmd+Enter to send)', '問任何問題... (Cmd+Enter 發送)', '问任何问题... (Cmd+Enter 发送)')} disabled={busy} rows={1}
+              placeholder={tr('Ask anything... (Enter to send, Shift+Enter for new line)', '問任何問題... (Enter 發送, Shift+Enter 換行)', '问任何问题... (Enter 发送, Shift+Enter 换行)')} disabled={busy} rows={1}
               className="flex-1 px-3 py-2 border rounded-md bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none" />
             <button onClick={send} disabled={busy || (!input.trim() && !attachedFile)}
               className="p-2 bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-40">
