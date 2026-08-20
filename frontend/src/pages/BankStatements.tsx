@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
@@ -46,6 +46,8 @@ export default function BankStatements() {
   const { startDate, endDate } = useDateFilter();
   const [supModal, setSupModal] = useState<{ show: boolean; onConfirm: () => void } | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+  const highlightStmtId = searchParams.get('highlight') || null;
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [edits, setEdits] = useState<Record<string, Partial<Transaction>>>({});
@@ -202,6 +204,25 @@ export default function BankStatements() {
   });
 
   const statements = (data?.data || []) as any[];
+
+  const highlightFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!highlightStmtId || highlightFiredRef.current === highlightStmtId) return;
+    setExpandedId(highlightStmtId);
+    const tryScroll = (retries: number) => {
+      const card = document.getElementById(`stmt-row-${highlightStmtId}`);
+      if (card) {
+        highlightFiredRef.current = highlightStmtId;
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('ring-2', 'ring-blue-400');
+        setTimeout(() => card.classList.remove('ring-2', 'ring-blue-400'), 3000);
+      } else if (retries > 0) {
+        setTimeout(() => tryScroll(retries - 1), 150);
+      }
+    };
+    tryScroll(8);
+  }, [highlightStmtId, statements]);
+
   const detail = detailQuery.data as any;
   const transactions = detail?.transactions || [];
 
@@ -230,7 +251,7 @@ export default function BankStatements() {
          statements.length === 0 ? <p className="text-sm text-muted-foreground">{t('bank.noData')}</p> : (
           <div className="space-y-2">
             {statements.map((s: any) => (
-              <div key={s.id}>
+              <div key={s.id} id={`stmt-row-${s.id}`}>
                 <div
                   className="flex items-center justify-between border rounded-md px-4 py-3 cursor-pointer hover:bg-muted/30 transition-colors"
                   onClick={() => setExpandedId(expandedId === s.id ? null : s.id)}

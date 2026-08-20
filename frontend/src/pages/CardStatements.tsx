@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
 import { Eye, Trash2, AlertTriangle, CheckCircle, ChevronDown, ChevronRight, Pencil, FileText, CreditCard, Building2, Download } from 'lucide-react';
@@ -65,6 +65,27 @@ export default function CardStatements() {
     queryFn: () => api('/card-statements'),
   });
   const statements: CardStatement[] = stmtsResp?.data || [];
+
+  const [searchParams] = useSearchParams();
+  const highlightStmtId = searchParams.get('highlight') || null;
+
+  const highlightFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!highlightStmtId || highlightFiredRef.current === highlightStmtId) return;
+    setExpandedId(highlightStmtId);
+    const tryScroll = (retries: number) => {
+      const card = document.getElementById(`card-row-${highlightStmtId}`);
+      if (card) {
+        highlightFiredRef.current = highlightStmtId;
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('ring-2', 'ring-blue-400');
+        setTimeout(() => card.classList.remove('ring-2', 'ring-blue-400'), 3000);
+      } else if (retries > 0) {
+        setTimeout(() => tryScroll(retries - 1), 150);
+      }
+    };
+    tryScroll(8);
+  }, [highlightStmtId, statements]);
 
   const { data: draftResp } = useQuery({
     queryKey: ['card-statements-drafts'],
@@ -164,7 +185,7 @@ export default function CardStatements() {
             const txs: CardTransaction[] = detail?.transactions || [];
 
             return (
-              <div key={s.id} className="rounded-lg border bg-card overflow-hidden">
+              <div key={s.id} id={`card-row-${s.id}`} className="rounded-lg border bg-card overflow-hidden">
                 <div
                   className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/50 transition-colors"
                   onClick={() => setExpandedId(isExpanded ? null : s.id)}
