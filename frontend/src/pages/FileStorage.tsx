@@ -819,11 +819,13 @@ export default function FileStorage() {
     }
   }, [highlightFileId, files, filterFolder, searchQ]);
 
+  const highlightFiredRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!highlightFileId) return;
+    if (!highlightFileId || highlightFiredRef.current === highlightFileId) return;
     const tryScroll = (retries: number) => {
       const row = document.getElementById(`file-row-${highlightFileId}`);
       if (row) {
+        highlightFiredRef.current = highlightFileId;
         row.scrollIntoView({ behavior: 'smooth', block: 'center' });
         row.classList.add('ring-2', 'ring-blue-400');
         setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
