@@ -499,14 +499,12 @@ export default function FileUpload() {
     setFileStatuses({});
     const isBatch = files.length > 1;
 
-    if (isBatch) {
-      batchRef.current = { total: files.length, done: 0, bank: 0, invoice: 0, card: 0 };
-      setBatchProgress({ done: 0, total: files.length, currentFile: '' });
-      clearTokenUsage();
-      setTokenCardDismissed(false);
-      sessionStorage.removeItem('reviewQueue');
-      sessionStorage.removeItem('reviewQueueTotal');
-    }
+    batchRef.current = { total: files.length, done: 0, bank: 0, invoice: 0, card: 0 };
+    setBatchProgress({ done: 0, total: files.length, currentFile: '' });
+    clearTokenUsage();
+    setTokenCardDismissed(false);
+    sessionStorage.removeItem('reviewQueue');
+    sessionStorage.removeItem('reviewQueueTotal');
 
     let ok = 0;
     let reviewCount = 0;
@@ -519,7 +517,7 @@ export default function FileUpload() {
       setFileStatuses(prev => ({ ...prev, [fileIdx]: 'processing' }));
       try {
         setBatchProgress(prev => ({ ...prev, currentFile: file.name }));
-        const status = await uploadFile(file, isBatch, idx, files.length);
+        const status = await uploadFile(file, true, idx, files.length);
         if (status === 'review') reviewCount++;
         if (status === 'encrypted') {
           encryptedCount++;
@@ -577,47 +575,22 @@ export default function FileUpload() {
         try { await api('/bookkeeping/auto-generate-entries', { method: 'POST' }); } catch {}
       }
 
-      // Route based on channel after upload
+      // Always land on File Storage. Files that need review stay queued in
+      // sessionStorage.reviewQueue and surface via the banner on that page.
       if (reviewCount > 0) {
-        const raw = sessionStorage.getItem('reviewQueue');
-        try {
-          const queue = raw ? JSON.parse(raw) : [];
-          if (queue.length > 0) {
-            const first = queue[0];
-            const reviewUrl = first.docType === 'bank_statement' ? `/bank-statements/review/${first.reviewId}`
-              : first.docType === 'card_statement' ? `/card-statements/review/${first.reviewId}`
-              : `/invoices/review/${first.reviewId}${first.flags || ''}`;
-            toast.success(tr(
-              `${reviewCount} file(s) need review. ${ok - reviewCount} auto-saved.`,
-              `${reviewCount} 個文件需要審核。${ok - reviewCount} 個已自動儲存。`,
-              `${reviewCount} 个文件需要审核。${ok - reviewCount} 个已自动储存。`,
-            ));
-            setTimeout(() => nav(reviewUrl), 800);
-            return;
-          }
-        } catch {}
-        sessionStorage.removeItem('reviewQueue');
-        sessionStorage.removeItem('reviewQueueTotal');
-        // Single-file review: navigation already happened inside uploadFile
-        return;
+        toast.success(tr(
+          `${reviewCount} file(s) need review. ${ok - reviewCount} auto-saved.`,
+          `${reviewCount} 個文件需要審核。${ok - reviewCount} 個已自動儲存。`,
+          `${reviewCount} 个文件需要审核。${ok - reviewCount} 个已自动储存。`,
+        ));
       } else {
-        sessionStorage.removeItem('reviewQueue');
-        sessionStorage.removeItem('reviewQueueTotal');
+        toast.success(tr(
+          `Successfully processed and saved ${ok} file(s)${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}.`,
+          `已成功處理並儲存 ${ok} 個文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。`,
+          `已成功处理并储存 ${ok} 个文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。`,
+        ));
       }
-
-      // Default redirect based on channel
-      const defaultRoute = channel === 'bank_statement' ? '/bank-statements'
-        : channel === 'card_statement' ? '/card-statements'
-        : channel === 'petty_cash' ? '/expense-receipts'
-        : channel === 'others' ? '/file-storage'
-        : '/invoices';
-
-      toast.success(tr(
-        `Successfully processed and saved ${ok} file(s)${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}.`,
-        `已成功處理並儲存 ${ok} 個文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。`,
-        `已成功处理并储存 ${ok} 个文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。`,
-      ));
-      setTimeout(() => nav(defaultRoute), 800);
+      setTimeout(() => nav('/file-storage'), 800);
     }
   };
 
