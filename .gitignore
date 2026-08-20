@@ -46,3 +46,4 @@ api/u-*/
 
 # Local scratch dirs used for throwaway verification scripts
 .tmp-*/
+.worktrees/
