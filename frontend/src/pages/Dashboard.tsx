@@ -43,8 +43,32 @@ export default function Dashboard() {
   const dashParams = [startDate, endDate].filter(Boolean).length > 0
     ? `?start_date=${startDate || ''}&end_date=${endDate || ''}`
     : '';
-  const { data: dashData, isFetching: dashFetching } = useQuery({ queryKey: ['dashboard', startDate, endDate], queryFn: () => api(`/dashboard${dashParams}`), refetchInterval: 30000, placeholderData: (prev: any) => prev });
+  const { data: dashData, isFetching: dashFetching } = useQuery({
+    queryKey: ['dashboard', startDate, endDate],
+    queryFn: async () => {
+      console.debug('[Dashboard] fetching dashboard data', { dashParams });
+      const response = await api(`/dashboard${dashParams}`);
+      console.debug('[Dashboard] dashboard response', {
+        ap_balance: response?.ap_balance,
+        ar_balance: response?.ar_balance,
+        unmatched_transactions: response?.unmatched_transactions,
+      });
+      return response;
+    },
+    refetchInterval: 30000,
+    placeholderData: (prev: any) => prev,
+  });
   const { data: fileData } = useQuery({ queryKey: ['file-storage'], queryFn: () => api('/file-storage?limit=5') });
+
+  React.useEffect(() => {
+    console.debug('[Dashboard] render state', {
+      hasDashData: !!dashData,
+      isFetching: dashFetching,
+      ap_balance: dashData?.ap_balance,
+      ar_balance: dashData?.ar_balance,
+      unmatched_transactions: dashData?.unmatched_transactions,
+    });
+  }, [dashData, dashFetching]);
 
   const d = dashData || {};
   const files = (fileData?.data || []) as any[];
@@ -92,7 +116,7 @@ export default function Dashboard() {
               {tr('Cash on Hand', '手頭現金', '手头现金')}
             </div>
             <div className="text-2xl font-bold">
-              {d.cash_balance != null
+              {d?.cash_balance != null
                 ? `HKD ${(d.cash_balance as number).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
                 : '—'}
             </div>
@@ -107,12 +131,20 @@ export default function Dashboard() {
               <ArrowLeftRight className="h-4 w-4 text-green-600" />
               {tr('Outstanding AP / AR', '未清應付/應收', '未清应付/应收')}
             </div>
-            <div className="text-base font-bold text-orange-600 dark:text-orange-400">
-              {tr('AP', '應付', '应付')}: HKD {(d.ap_balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-            </div>
-            <div className="text-base font-bold text-blue-600 dark:text-blue-400 mt-1">
-              {tr('AR', '應收', '应收')}: HKD {(d.ar_balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-            </div>
+            {dashData ? (
+              <>
+                <div className="text-base font-bold text-orange-600 dark:text-orange-400">
+                  {tr('AP', '應付', '应付')}: HKD {(d.ap_balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </div>
+                <div className="text-base font-bold text-blue-600 dark:text-blue-400 mt-1">
+                  {tr('AR', '應收', '应收')}: HKD {(d.ar_balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </div>
+              </>
+            ) : (
+              <div className="text-base font-bold text-orange-600 dark:text-orange-400">
+                <span className="text-orange-500">{tr('Loading...', '載入中...', '载入中...')}</span>
+              </div>
+            )}
           </div>
 
           {/* Unreconciled */}
@@ -125,12 +157,20 @@ export default function Dashboard() {
               <GitCompare className="h-4 w-4 text-red-600" />
               {tr('Unreconciled', '未對賬', '未对账')}
             </div>
-            <div className="text-2xl font-bold">{d.unmatched_transactions || 0}</div>
-            <div className="text-xs text-muted-foreground mt-1">
-              {(d.unmatched_transactions || 0) > 0
-                ? tr('Click to review bank statements', '點擊查看銀行月結單', '点击查看银行月结单')
-                : tr('All matched!', '全部已匹配！', '全部已匹配！')}
-            </div>
+            {dashData ? (
+              <>
+                <div className="text-2xl font-bold">{d.unmatched_transactions || 0}</div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  {(d.unmatched_transactions || 0) > 0
+                    ? tr('Click to review bank statements', '點擊查看銀行月結單', '点击查看银行月结单')
+                    : tr('All matched!', '全部已匹配！', '全部已匹配！')}
+                </div>
+              </>
+            ) : (
+              <div className="text-base font-bold text-red-600 dark:text-red-400">
+                {tr('Loading...', '載入中...', '载入中...')}
+              </div>
+            )}
           </button>
         </div>
       </div>
