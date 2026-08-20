@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import EncryptedPdfModal from '../components/EncryptedPdfModal';
 import { useToast } from '../components/Toast';
-import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye, Link2 } from 'lucide-react';
+import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye, CornerUpRight } from 'lucide-react';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import { useAuth } from '../contexts/AuthContext';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
@@ -268,7 +268,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                       return (
                         <a href={`/ar?highlight=${f.invoice_id}`}
                           className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to AR record', '前往應收記錄', '前往应收记录')}>
-                          <Link2 className="h-3.5 w-3.5" />
+                          <CornerUpRight className="h-3.5 w-3.5" />
                         </a>
                       );
                     }
@@ -276,7 +276,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                       return (
                         <a href={`/ap?highlight=${f.invoice_id}`}
                           className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to AP record', '前往應付記錄', '前往应付记录')}>
-                          <Link2 className="h-3.5 w-3.5" />
+                          <CornerUpRight className="h-3.5 w-3.5" />
                         </a>
                       );
                     }
@@ -286,7 +286,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                     return (
                       <a href={`/bank-statements?highlight=${f.statement_id}`}
                         className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to bank statement', '前往銀行月結單', '前往银行月结单')}>
-                        <Link2 className="h-3.5 w-3.5" />
+                        <CornerUpRight className="h-3.5 w-3.5" />
                       </a>
                     );
                   }
@@ -294,7 +294,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                     return (
                       <a href={`/card-statements?highlight=${f.card_statement_id}`}
                         className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to card statement', '前往信用卡月結單', '前往信用卡月结单')}>
-                        <Link2 className="h-3.5 w-3.5" />
+                        <CornerUpRight className="h-3.5 w-3.5" />
                       </a>
                     );
                   }

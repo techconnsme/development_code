@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
-import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, Link2, FileText, Zap } from 'lucide-react';
+import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, CornerUpRight, Link2, FileText, Zap } from 'lucide-react';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import { tr } from '../lib/i18nHelpers';
 import { useDateFilter } from '../contexts/DateFilterContext';
@@ -284,7 +284,7 @@ export default function AP() {
                   <td className="p-3 hidden lg:table-cell">{inv.issue_date}</td>
                   <td className="p-3 text-right">
                     {inv.file_id && (
-                      <button onClick={() => navigate(`/file-storage?highlight=${inv.file_id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View file in File Storage', '在文件庫查看檔案', '在文件库查看文件')}><Link2 className="h-4 w-4" /></button>
+                      <button onClick={() => navigate(`/file-storage?highlight=${inv.file_id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View file in File Storage', '在文件庫查看檔案', '在文件库查看文件')}><CornerUpRight className="h-4 w-4" /></button>
                     )}
                     <button onClick={() => setViewId(inv.id)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View', '查看', '查看')}><Eye className="h-4 w-4" /></button>
                     <button onClick={() => navigate(`/invoices/review/${inv.id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Edit', '編輯', '编辑')}><Pencil className="h-4 w-4" /></button>
