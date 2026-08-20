@@ -175,7 +175,7 @@ const TOOLS: any[] = [
   { type: 'function', function: { name: 'delete_product', description: 'Soft-delete a product', parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } } },
 
   // ── Invoices ──
-  { type: 'function', function: { name: 'search_invoices', description: 'Search invoices/receipts by number, customer name, vendor name, or supplier name. Results include direction (incoming = purchase from vendor, outgoing = sale to customer). Returns rows plus an exact summary with incoming_total/outgoing_total/incoming_count/outgoing_count over the full matched set — ALWAYS use the summary totals in your answer instead of summing rows yourself.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search keyword (company name, invoice number)' }, start_date: { type: 'string', description: 'Optional issue date lower bound YYYY-MM-DD' }, end_date: { type: 'string', description: 'Optional issue date upper bound YYYY-MM-DD' }, limit: { type: 'number' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'search_invoices', description: 'Search invoices/receipts by number, customer name, vendor name, or supplier name. Results include direction (incoming = purchase from vendor, outgoing = sale to customer). Returns rows plus an exact summary with incoming_total/outgoing_total/incoming_count/outgoing_count and paid_total/paid_count over the full matched set — ALWAYS use the summary values in your answer (including paid_total/paid_count for any "paid invoices" question) instead of summing or classifying rows yourself.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search keyword (company name, invoice number)' }, start_date: { type: 'string', description: 'Optional issue date lower bound YYYY-MM-DD' }, end_date: { type: 'string', description: 'Optional issue date upper bound YYYY-MM-DD' }, limit: { type: 'number' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'list_invoices', description: 'List recent invoices with optional status filter. Returns rows plus an exact summary with count and total_amount over the full filtered set — ALWAYS use the summary values in your answer instead of summing rows yourself.', parameters: { type: 'object', properties: { status: { type: 'string', description: 'draft, sent, paid, overdue' }, limit: { type: 'number' } }, required: [] } } },
   { type: 'function', function: { name: 'get_invoice', description: 'Get full invoice details by ID including line items', parameters: { type: 'object', properties: { id: { type: 'string', description: 'Invoice ID' } }, required: ['id'] } } },
   { type: 'function', function: { name: 'create_invoice', description: 'Create a new invoice', parameters: { type: 'object', properties: { customer_id: { type: 'string' }, invoice_number: { type: 'string' }, items: { type: 'array', description: 'Array of {description, quantity, unit_price, amount}', items: { type: 'object' } }, due_date: { type: 'string', description: 'YYYY-MM-DD' }, currency: { type: 'string' }, notes: { type: 'string' } }, required: ['customer_id'] } } },
@@ -396,13 +396,15 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
          FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id
          WHERE ${where} ORDER BY i.created_at DESC LIMIT ?`
       ).bind(...params, sLimit).all();
-      // Exact per-direction totals over the FULL matched set (not just the LIMIT rows),
-      // so the LLM never has to sum numbers itself.
+      // Exact per-direction and per-status totals over the FULL matched set (not just
+      // the LIMIT rows), so the LLM never has to sum or classify rows itself.
       const summary = await db.prepare(
         `SELECT COALESCE(SUM(CASE WHEN i.direction = 'incoming' THEN i.total ELSE 0 END),0) as incoming_total,
                 COALESCE(SUM(CASE WHEN i.direction = 'outgoing' THEN i.total ELSE 0 END),0) as outgoing_total,
                 SUM(CASE WHEN i.direction = 'incoming' THEN 1 ELSE 0 END) as incoming_count,
-                SUM(CASE WHEN i.direction = 'outgoing' THEN 1 ELSE 0 END) as outgoing_count
+                SUM(CASE WHEN i.direction = 'outgoing' THEN 1 ELSE 0 END) as outgoing_count,
+                COALESCE(SUM(CASE WHEN i.status = 'paid' THEN i.total ELSE 0 END),0) as paid_total,
+                SUM(CASE WHEN i.status = 'paid' THEN 1 ELSE 0 END) as paid_count
          FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id
          WHERE ${where}`
       ).bind(...params).first();
