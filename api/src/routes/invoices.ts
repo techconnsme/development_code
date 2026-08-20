@@ -358,6 +358,15 @@ invoices.patch('/:id/status', zValidator('json', z.object({ status: z.string() }
   const existing = await db.prepare('SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(id, tenantId).first();
   if (!existing) return c.json({ error: 'Invoice not found' }, 404);
   await db.prepare('UPDATE invoices SET status = ?, updated_at = datetime(\'now\') WHERE id = ? AND deleted_at IS NULL').bind(status, id).run();
+
+  // Auto-post to the GL when the status becomes postable (draft→sent, sent→paid,
+  // etc.). Mirrors the automatic posting on clean OCR import and review-confirm.
+  // Idempotent and non-fatal — the manual "Post to GL" control remains the
+  // recovery path if posting fails.
+  if (['active', 'sent', 'paid', 'overdue'].includes(status)) {
+    await tryPostInvoiceToGl(db, tenantId, id);
+  }
+
   const invoice = await db.prepare('SELECT * FROM invoices WHERE id = ?').bind(id).first();
   return c.json(invoice);
 });
