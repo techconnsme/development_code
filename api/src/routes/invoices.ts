@@ -33,6 +33,7 @@ invoices.get('/', async (c) => {
   const expenseCategory = c.req.query('expense_category') || ''; // 'cash' | 'reimburse' | 'director' | ''
   const startDate = c.req.query('start_date') || '';
   const endDate = c.req.query('end_date') || '';
+  const highlightId = c.req.query('highlight_id') || '';
 
   // Default: exclude pending_review unless explicitly requested
   const showPendingReview = status === 'pending_review';
@@ -49,7 +50,7 @@ invoices.get('/', async (c) => {
   if (expenseCategory) { query += ' AND i.expense_category = ?'; params.push(expenseCategory); }
   if (startDate) { query += ' AND i.issue_date >= ?'; params.push(startDate); }
   if (endDate) { query += ' AND i.issue_date <= ?'; params.push(endDate); }
-  query += ' ORDER BY i.created_at DESC LIMIT ? OFFSET ?';
+  query += ' ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?';
   params.push(limit, offset);
 
   const rows = await db.prepare(query).bind(...params).all();
@@ -65,7 +66,24 @@ invoices.get('/', async (c) => {
     (endDate ? ' AND i.issue_date <= ?' : '');
   const countParams = params.slice(0, -2); // remove LIMIT/OFFSET
   const countRow = await db.prepare(countQuery).bind(...countParams).first<{ count: number }>();
-  return c.json({ data: rows.results, total: countRow?.count || 0, page, limit });
+  let highlight_page: number | null = null;
+  if (highlightId) {
+    const target = await db.prepare(
+      'SELECT id, created_at FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(highlightId, tenantId).first<{ id: string; created_at: string }>();
+    if (target) {
+      let hlQuery = 'SELECT COUNT(*) as cnt FROM invoices i WHERE i.user_id = ? AND i.deleted_at IS NULL' +
+        " AND i.status != 'pending_review'" +
+        (docType === 'receipt' ? ' AND i.receipt_number IS NOT NULL' : docType === 'invoice' ? ' AND i.receipt_number IS NULL' : '') +
+        (direction === 'incoming' ? " AND i.direction = 'incoming'" : direction === 'outgoing' ? " AND i.direction = 'outgoing'" : '') +
+        ' AND (i.created_at > ? OR (i.created_at = ? AND i.id > ?))';
+      const hlParams: unknown[] = [tenantId, target.created_at, target.created_at, target.id];
+      const hlRow = await db.prepare(hlQuery).bind(...hlParams).first<{ cnt: number }>();
+      if (hlRow) highlight_page = Math.floor((hlRow.cnt || 0) / limit) + 1;
+    }
+  }
+
+  return c.json({ data: rows.results, total: countRow?.count || 0, page, limit, highlight_page });
 });
 
 // Review endpoint — returns invoice + items + customer + file_id for the review page PDF
@@ -358,6 +376,15 @@ invoices.patch('/:id/status', zValidator('json', z.object({ status: z.string() }
   const existing = await db.prepare('SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL').bind(id, tenantId).first();
   if (!existing) return c.json({ error: 'Invoice not found' }, 404);
   await db.prepare('UPDATE invoices SET status = ?, updated_at = datetime(\'now\') WHERE id = ? AND deleted_at IS NULL').bind(status, id).run();
+
+  // Auto-post to the GL when the status becomes postable (draft→sent, sent→paid,
+  // etc.). Mirrors the automatic posting on clean OCR import and review-confirm.
+  // Idempotent and non-fatal — the manual "Post to GL" control remains the
+  // recovery path if posting fails.
+  if (['active', 'sent', 'paid', 'overdue'].includes(status)) {
+    await tryPostInvoiceToGl(db, tenantId, id);
+  }
+
   const invoice = await db.prepare('SELECT * FROM invoices WHERE id = ?').bind(id).first();
   return c.json(invoice);
 });

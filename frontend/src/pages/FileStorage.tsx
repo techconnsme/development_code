@@ -1,11 +1,11 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import EncryptedPdfModal from '../components/EncryptedPdfModal';
 import { useToast } from '../components/Toast';
-import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye } from 'lucide-react';
+import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye, Link2 } from 'lucide-react';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import { useAuth } from '../contexts/AuthContext';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
@@ -38,6 +38,43 @@ function fileIcon(type: string) {
   if (type.includes('sheet') || type.includes('excel') || type.includes('xls') || type.includes('csv')) return <FileSpreadsheet className="h-5 w-5 text-green-600" />;
   if (type.includes('image') || type.includes('png') || type.includes('jpg')) return <Image className="h-5 w-5 text-blue-500" />;
   return <File className="h-5 w-5 text-gray-500" />;
+}
+
+// Summary status badge — priority order per spec (see design doc).
+function summaryStatus(f: FileItem): { label: string; labelZh: string; labelCn: string; cls: string } | null {
+  if (f.ocr_status === 'encrypted') return null; // rendered as the existing unlock button
+  if (f.ocr_status === 'processing' || f.ocr_status === 'pending') {
+    return { label: 'Processing', labelZh: '處理中', labelCn: '处理中', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' };
+  }
+  if (f.ocr_status === 'failed' || f.ocr_status === 'unclear') {
+    return { label: 'Could not read', labelZh: '無法讀取', labelCn: '无法读取', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' };
+  }
+  const needsReview =
+    (f.invoice_id && (f.invoice_needs_review || f.invoice_status === 'pending_review')) ||
+    (f.statement_id && (f.stmt_status === 'draft' || f.stmt_status === 'pending_review')) ||
+    (f.card_statement_id && f.card_status === 'draft');
+  if (needsReview) {
+    return { label: 'Needs Review', labelZh: '需審核', labelCn: '需审核', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' };
+  }
+  if (f.invoice_id || f.statement_id || f.card_statement_id) {
+    return { label: 'Processed', labelZh: '已處理', labelCn: '已处理', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' };
+  }
+  return { label: 'Stored', labelZh: '已儲存', labelCn: '已储存', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300' };
+}
+
+const RECORD_STATUS_LABELS: Record<string, { en: string; zhHant: string; zhHans: string }> = {
+  draft: { en: 'Draft', zhHant: '草稿', zhHans: '草稿' },
+  pending_review: { en: 'Pending Review', zhHant: '待審核', zhHans: '待审核' },
+  active: { en: 'Active', zhHant: '有效', zhHans: '有效' },
+  sent: { en: 'Sent', zhHant: '已寄出', zhHans: '已寄出' },
+  paid: { en: 'Paid', zhHant: '已付款', zhHans: '已付款' },
+};
+
+function recordStatus(f: FileItem): { label: string; labelZh: string; labelCn: string } | null {
+  const raw = f.invoice_id ? f.invoice_status : f.statement_id ? f.stmt_status : f.card_statement_id ? f.card_status : null;
+  if (!raw) return null;
+  const m = RECORD_STATUS_LABELS[raw];
+  return m ? { label: m.en, labelZh: m.zhHant, labelCn: m.zhHans } : { label: raw, labelZh: raw, labelCn: raw };
 }
 
 function autoFolder(filename: string, fileType: string): string {
@@ -170,7 +207,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
             <FolderTree key={child.path} node={child} depth={depth + 1} expanded={expanded} toggle={toggle} onFileAction={onFileAction} onSetDirection={onSetDirection} onDelete={onDelete} onUnlockEncrypted={onUnlockEncrypted} />
           ))}
           {node.files.map(f => (
-            <div key={f.id} className="flex items-center justify-between hover:bg-muted/30 rounded-md px-2 py-1.5"
+            <div key={f.id} id={`file-row-${f.id}`} className="flex items-center justify-between hover:bg-muted/30 rounded-md px-2 py-1.5"
               style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}>
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 {fileIcon(f.file_type)}
@@ -179,6 +216,14 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <span>{formatSize(f.file_size || 0)}</span>
                     {f.created_at && <FileTimeLabel createdAt={f.created_at} />}
+                    {f.invoice_number && <span className="font-mono text-[10px] text-blue-600">{f.invoice_number}</span>}
+                    {(() => { const s = summaryStatus(f); return s ? (
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${s.cls}`}>{tr(s.label, s.labelZh, s.labelCn)}</span>
+                    ) : null; })()}
+                    {(() => { const r = recordStatus(f); return r ? (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium border border-border text-muted-foreground"
+                        title={tr('Linked record status', '關聯記錄狀態', '关联记录状态')}>{tr(r.label, r.labelZh, r.labelCn)}</span>
+                    ) : null; })()}
                     {f.category === 'invoice' && f.direction && (
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                         f.direction === 'outgoing' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'
@@ -213,6 +258,46 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                 </div>
               </div>
               <div className="flex gap-1 ml-2 shrink-0">
+                {/* Go-to-record button — cross-link to the AP/AR list or statement list */}
+                {(() => {
+                  if (f.invoice_id) {
+                    const dir = f.invoice_direction || f.direction;
+                    if (dir === 'outgoing') {
+                      return (
+                        <a href={`/ar?highlight=${f.invoice_id}`}
+                          className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to AR record', '前往應收記錄', '前往应收记录')}>
+                          <Link2 className="h-3.5 w-3.5" />
+                        </a>
+                      );
+                    }
+                    if (dir === 'incoming') {
+                      return (
+                        <a href={`/ap?highlight=${f.invoice_id}`}
+                          className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to AP record', '前往應付記錄', '前往应付记录')}>
+                          <Link2 className="h-3.5 w-3.5" />
+                        </a>
+                      );
+                    }
+                    return null; // direction unknown — not in AP/AR lists
+                  }
+                  if (f.statement_id) {
+                    return (
+                      <a href={`/bank-statements?highlight=${f.statement_id}`}
+                        className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to bank statement', '前往銀行月結單', '前往银行月结单')}>
+                        <Link2 className="h-3.5 w-3.5" />
+                      </a>
+                    );
+                  }
+                  if (f.card_statement_id) {
+                    return (
+                      <a href={`/card-statements?highlight=${f.card_statement_id}`}
+                        className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to card statement', '前往信用卡月結單', '前往信用卡月结单')}>
+                        <Link2 className="h-3.5 w-3.5" />
+                      </a>
+                    );
+                  }
+                  return null;
+                })()}
                 {/* Review button — link to the processed document's review page */}
                 {(() => {
                   if (f.invoice_id) {
@@ -276,6 +361,8 @@ export default function FileStorage() {
   const isStaff = user?.role === 'staff' || user?.role === 'viewer';
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const highlightFileId = searchParams.get('highlight') || null;
   const [processingMsg, setProcessingMsg] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const batchRef = useRef({ total: 0, done: 0, errors: 0, bank: 0, invoice: 0, receipt: 0, card: 0, navigated: false, queue: [] as {docType:string, reviewId:string, filename:string, flags:string}[] });
@@ -714,6 +801,44 @@ export default function FileStorage() {
     });
   };
 
+  // Deep-link highlight: expand the target file's folder path, clear filters that would hide it, then scroll + ring it.
+  useEffect(() => {
+    if (!highlightFileId || !files?.data) return;
+    // Filtering is server-side, so clear filters that could hide the target
+    // BEFORE looking for it — the refetch then brings the target in.
+    if (filterFolder) setFilterFolder('');
+    if (searchQ) setSearchQ('');
+    const target = (files.data as any[]).find((f: any) => f.id === highlightFileId);
+    if (target) {
+      const parts = (target.folder || 'Other').split('/');
+      const paths: string[] = [];
+      let acc = '';
+      for (const p of parts) {
+        acc = acc ? `${acc}/${p}` : p;
+        paths.push(acc);
+      }
+      setExpanded(prev => new Set([...prev, ...paths]));
+    }
+  }, [highlightFileId, files, filterFolder, searchQ]);
+
+  const highlightFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!highlightFileId || highlightFiredRef.current === highlightFileId) return;
+    const tryScroll = (retries: number) => {
+      const row = document.getElementById(`file-row-${highlightFileId}`);
+      if (row) {
+        highlightFiredRef.current = highlightFileId;
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row.classList.add('ring-2', 'ring-blue-400');
+        setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
+      } else if (retries > 0) {
+        setTimeout(() => tryScroll(retries - 1), 150);
+      }
+    };
+    tryScroll(8);
+  }, [highlightFileId, files, expanded]);
+  // suppress exhaustive-deps: retry loop handles timing of folder expansion + data load
+
   const handleFileAction = (action: string, f: FileItem) => {
     if (action === 'edit') {
       setEditingId(f.id);
@@ -1100,4 +1225,4 @@ export default function FileStorage() {
   );
 }
 
-// ── File Match Review Modal ──
+// ── File Match Review Modal ──

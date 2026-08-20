@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
@@ -51,13 +51,19 @@ export default function AR() {
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
   const { startDate, endDate } = useDateFilter();
+  const [searchParams] = useSearchParams();
+  const highlightId = searchParams.get('highlight') || null;
+  // Deep-link highlight bypasses the fiscal-year date filter so the invoice is always found.
+  const effStart = highlightId ? '' : startDate;
+  const effEnd = highlightId ? '' : endDate;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['invoices-ar', search, status, page, startDate, endDate],
+    queryKey: ['invoices-ar', search, status, page, effStart, effEnd, highlightId],
     queryFn: () => {
-      const params = new URLSearchParams({ q: search, status, page: String(page), limit: '20', doc_type: 'invoice', direction: 'outgoing' });
-      if (startDate) params.set('start_date', startDate);
-      if (endDate) params.set('end_date', endDate);
+      const params = new URLSearchParams({ q: highlightId ? '' : search, status: highlightId ? '' : status, page: String(page), limit: '20', doc_type: 'invoice', direction: 'outgoing' });
+      if (effStart) params.set('start_date', effStart);
+      if (effEnd) params.set('end_date', effEnd);
+      if (highlightId) params.set('highlight_id', highlightId);
       return api(`/invoices?${params.toString()}`);
     },
   });
@@ -138,6 +144,31 @@ export default function AR() {
   }
 
   const invoices = data?.data || [];
+
+  // Deep-link highlight: jump to the page that holds the invoice, then scroll + ring it.
+  const highlightFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!highlightId || !data || highlightFiredRef.current === highlightId) return;
+    const rows = (data.data || []) as any[];
+    const found = rows.find((r: any) => r.id === highlightId);
+    if (found) {
+      const tryScroll = (retries: number) => {
+        const row = document.getElementById(`inv-row-${highlightId}`);
+        if (row) {
+          highlightFiredRef.current = highlightId;
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          row.classList.add('ring-2', 'ring-blue-400');
+          setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
+        } else if (retries > 0) {
+          setTimeout(() => tryScroll(retries - 1), 150);
+        }
+      };
+      tryScroll(5);
+    } else if (data.highlight_page && data.highlight_page !== page) {
+      setPage(data.highlight_page);
+    }
+  }, [highlightId, data, page]);
+  // suppress exhaustive-deps: only re-run when the highlight param or page changes
 
   const statusLabel = (s: string) => {
     const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '應收', '应收'), paid: tr('Paid', '已收', '已收'), overdue: tr('Overdue', '逾期未收', '逾期未收'), cancelled: tr('Cancelled', '已取消', '已取消') };
@@ -222,7 +253,7 @@ export default function AR() {
             </thead>
             <tbody>
               {invoices.map((inv: any) => (
-                <tr key={inv.id} className="border-b hover:bg-muted/30">
+                <tr key={inv.id} id={`inv-row-${inv.id}`} className="border-b hover:bg-muted/30">
                   <td className="p-3 font-medium">
                     <span className="inline-flex items-center gap-1.5">
                       {inv.invoice_number}
@@ -258,6 +289,9 @@ export default function AR() {
                   <td className="p-3 text-right hidden lg:table-cell">{inv.currency} {inv.total?.toLocaleString()}</td>
                   <td className="p-3 hidden lg:table-cell">{inv.issue_date}</td>
                   <td className="p-3 text-right">
+                    {inv.file_id && (
+                      <button onClick={() => navigate(`/file-storage?highlight=${inv.file_id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View file in File Storage', '在文件庫查看檔案', '在文件库查看文件')}><Link2 className="h-4 w-4" /></button>
+                    )}
                     <button onClick={() => setViewId(inv.id)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View', '查看', '查看')}><Eye className="h-4 w-4" /></button>
                     <button onClick={() => navigate(`/invoices/review/${inv.id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Edit', '編輯', '编辑')}><Pencil className="h-4 w-4" /></button>
                     <button onClick={() => downloadInvoicePDF(inv.id, inv.invoice_number)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Download PDF', '下載 PDF', '下载 PDF')}><Download className="h-4 w-4" /></button>

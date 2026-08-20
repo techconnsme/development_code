@@ -75,9 +75,14 @@ test('VEII "Invoice " PDFs are detected as outgoing sales invoices with correct 
     let total: number | null = null;
     let needsReview = '';
 
-    const onReviewPage = page.url().includes('/invoices/review/');
-    if (onReviewPage) {
-      // Review page: capture the review API payload
+    // Uploads land on File Storage. When the import is flagged, open the
+    // review page directly from the returned invoice id to verify the AR
+    // toggle and captured fields.
+    const needsFlag = importData.needs_direction_review || importData.company_not_detected || importData.needs_review || !!importData.total_mismatch;
+    if (needsFlag && invoiceId) {
+      await page.goto(`/invoices/review/${invoiceId}`);
+      await page.waitForURL(u => u.pathname.includes('/invoices/review/'), { timeout: 60_000 });
+
       const reviewRespPromise = page.waitForResponse(
         r => r.url().includes('/api/invoices/') && r.url().includes('/review'),
         { timeout: 60_000 },

@@ -88,13 +88,15 @@ test.describe('Regression Full Flow — PNR', () => {
     const uploaded = await uploadFile(page, file, 'Bank Statement');
     if (!uploaded) { test.skip(); return; }
 
-    // Statements that need no review are auto-saved and land on the list;
-    // reviewable ones go to the review page. Branch on which route we got.
-    await page.waitForURL(/\/bank-statements(\/review\/[^/]+)?$/, { timeout: 60000 });
-    const url = page.url();
+    // Uploads always land on File Storage. If the statement needs review, the
+    // "queued for review" banner appears there — click Review Now to open it.
+    // Otherwise the statement was auto-saved to the Bank Statements list.
+    await page.waitForURL(/\/file-storage/, { timeout: 60000 });
 
-    if (/\/bank-statements\/review\//.test(url)) {
-      // Review page — the statement was read successfully: extracted fields shown
+    const banner = page.locator('text=/queued for review/');
+    if (await banner.isVisible({ timeout: 15000 }).catch(() => false)) {
+      await page.getByRole('button', { name: /Review Now/ }).click();
+      await page.waitForURL(/\/bank-statements\/review\//, { timeout: 60000 });
       const body = await page.textContent('body');
       expect(body).not.toContain('Could not read this file');
       await expect(page.locator('input').first()).toBeVisible({ timeout: 10000 });
@@ -104,7 +106,8 @@ test.describe('Regression Full Flow — PNR', () => {
       // defaults to the most recent completed fiscal year (25-26), which
       // excludes the Feb-2025 statement; switch to FY 2024-2025 first.
       await page.evaluate(() => localStorage.setItem('globalFiscalYear', '2024-2025'));
-      await page.reload({ waitUntil: 'networkidle' });
+      await page.goto(`${BASE}/bank-statements`, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(2000);
       const body = await page.textContent('body');
       expect(body).not.toContain('Could not read this file');
       await expect(page.getByText(/HSBC|eStatement/).first()).toBeVisible({ timeout: 15000 });
