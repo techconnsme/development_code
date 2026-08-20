@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
+import { X, ChevronDown } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 import { cn } from '../lib/utils';
-import { STAFF, type SampleStaff } from '../data/samplePayroll';
+import { STAFF, MONTHS, STATUSES, COA_ACCOUNTS, buildMonthlyJe, type SampleStaff, type MonthStatus } from '../data/samplePayroll';
+import { computeMpf } from '../lib/mpf';
 
 const fmt = (n: number) => `HKD ${n.toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
 
@@ -16,10 +17,98 @@ const MARITAL_LABEL: Record<SampleStaff['maritalStatus'], [string, string, strin
   married: ['Married', '已婚', '已婚'],
 };
 
-// Minimal detail content for this task — Task 4 replaces this with the full DetailPanel.
-function DetailStub({ staff, onClose }: { staff: SampleStaff; onClose: () => void }) {
+const num = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2 });
+
+const MONTH_LABELS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const STATUS_META: Record<MonthStatus, { cls: string; en: string; zh: string; cn: string }> = {
+  paid: { cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', en: 'Paid', zh: '已支付', cn: '已支付' },
+  pending: { cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400', en: 'Pending', zh: '待支付', cn: '待支付' },
+  scheduled: { cls: 'bg-gray-400/10 text-gray-500 dark:text-gray-400', en: 'Scheduled', zh: '已排程', cn: '已排程' },
+};
+
+function SummaryCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="h-full flex flex-col">
+    <div className="rounded-lg border p-3" style={{ borderColor: 'hsl(var(--border))' }}>
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-sm font-semibold font-mono mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function JeBlocks({ je }: { je: ReturnType<typeof buildMonthlyJe> }) {
+  return (
+    <div className="space-y-2">
+      {[je.salary, je.mpf].map((b) => (
+        <div key={b.id} className="rounded-lg border" style={{ borderColor: 'hsl(var(--border))' }}>
+          <div className="px-3 py-1.5 border-b text-xs font-semibold" style={{ borderColor: 'hsl(var(--border))' }}>
+            {tr(b.title, b.titleZh, b.titleCn)}
+          </div>
+          <div className="px-3 py-2 space-y-1.5">
+            {b.lines
+              .filter((l) => l.amount !== 0)
+              .map((l, i) => {
+                const acc = COA_ACCOUNTS[l.code];
+                return (
+                  <div key={i} className="flex items-center gap-2 text-xs">
+                    <span className="w-7 shrink-0 font-semibold">{l.dr ? 'Dr' : 'Cr'}</span>
+                    <span className="font-mono text-muted-foreground shrink-0">{acc.code}</span>
+                    <span className="flex-1 min-w-0 truncate">{tr(acc.name, acc.nameZh, acc.nameCn)}</span>
+                    <span className="font-mono shrink-0">{num(l.amount)}</span>
+                  </div>
+                );
+              })}
+            <div className="flex items-center gap-2 text-xs font-semibold border-t pt-1.5" style={{ borderColor: 'hsl(var(--border))' }}>
+              <span className="w-7" />
+              <span className="flex-1 text-muted-foreground">{tr('Total (Dr = Cr)', '合計（借 = 貸）', '合计（借 = 贷）')}</span>
+              <span className="font-mono">{num(b.total)}</span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MonthRow({ month, staff, open, onToggle }: { month: string; staff: SampleStaff; open: boolean; onToggle: () => void }) {
+  const idx = MONTHS.indexOf(month);
+  const status: MonthStatus = STATUSES[staff.id]?.[month] ?? 'scheduled';
+  const meta = STATUS_META[status];
+  const { employee, employer, net } = computeMpf(staff.monthlySalary);
+  const je = buildMonthlyJe(staff);
+
+  return (
+    <div className="border-b last:border-b-0" style={{ borderColor: 'hsl(var(--border))' }}>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-1 px-3 py-2 hover:bg-primary/5 transition-colors text-left"
+      >
+        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-300', open && 'rotate-180')} />
+        <span className="text-xs font-medium w-14 shrink-0">{tr(`${MONTH_LABELS_EN[idx]} 2026`, `2026年${idx + 1}月`, `2026年${idx + 1}月`)}</span>
+        <span className={cn('text-[9px] font-semibold px-1.5 py-0.5 rounded-full shrink-0', meta.cls)}>{tr(meta.en, meta.zh, meta.cn)}</span>
+        <span className="flex-1" />
+        <span className="w-16 text-right font-mono text-[11px]">{num(staff.monthlySalary)}</span>
+        <span className="w-16 text-right font-mono text-[11px]">{num(employee)}</span>
+        <span className="w-16 text-right font-mono text-[11px]">{num(employer)}</span>
+        <span className="w-16 text-right font-mono text-[11px] font-medium">{num(net)}</span>
+      </button>
+      {/* Accordion — reveals the COA entries */}
+      <div className={cn('overflow-hidden transition-all duration-300 ease-out', open ? 'max-h-[420px] opacity-100' : 'max-h-0 opacity-0')}>
+        <div className="px-3 pb-3 pt-1">
+          <JeBlocks je={je} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DetailPanel({ staff, onClose }: { staff: SampleStaff; onClose: () => void }) {
+  const [openMonth, setOpenMonth] = useState<string | null>(null);
+  const { employee, employer, net } = computeMpf(staff.monthlySalary);
+
+  return (
+    <div className="h-full flex flex-col animate-[payroll-slide-in_300ms_ease-out]">
+      {/* Header */}
       <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-3 border-b" style={{ borderColor: 'hsl(var(--border))' }}>
         <div className="min-w-0">
           <div className="font-semibold">{tr(staff.name, staff.nameZh, staff.nameCn)}</div>
@@ -28,6 +117,51 @@ function DetailStub({ staff, onClose }: { staff: SampleStaff; onClose: () => voi
         <button onClick={onClose} aria-label="Close" className="p-1 rounded-md hover:bg-muted text-muted-foreground">
           <X className="h-4 w-4" />
         </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        {/* Meta */}
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span>{tr('Gender', '性別', '性别')}: {tr(...GENDER_LABEL[staff.gender])}</span>
+          <span>{tr('Marital Status', '婚姻狀況', '婚姻状况')}: {tr(...MARITAL_LABEL[staff.maritalStatus])}</span>
+          <span>
+            {tr('Monthly Salary', '月薪', '月薪')}:{' '}
+            <span className="text-foreground font-semibold font-mono">{fmt(staff.monthlySalary)}</span>
+          </span>
+        </div>
+
+        {/* Summary cards */}
+        <div className="grid grid-cols-2 gap-2">
+          <SummaryCard label={tr('Gross Salary', '總薪金', '总薪金')} value={fmt(staff.monthlySalary)} />
+          <SummaryCard label={tr('Employee MPF', '僱員強積金', '雇员强积金')} value={fmt(employee)} />
+          <SummaryCard label={tr('Employer MPF', '僱主強積金', '雇主强积金')} value={fmt(employer)} />
+          <SummaryCard label={tr('Net Pay', '實發薪金', '实发薪金')} value={fmt(net)} />
+        </div>
+
+        {/* Monthly table */}
+        <div>
+          <div className="text-sm font-semibold mb-2">{tr('Monthly Payment Status', '每月支付狀態', '每月支付状态')}</div>
+          <div className="border rounded-lg overflow-hidden" style={{ borderColor: 'hsl(var(--border))' }}>
+            <div className="flex items-center gap-1 px-3 py-1.5 border-b text-[9px] uppercase tracking-wide text-muted-foreground" style={{ borderColor: 'hsl(var(--border))' }}>
+              <span className="pl-[18px] w-14 shrink-0">{tr('Month', '月份', '月份')}</span>
+              <span className="w-14 shrink-0">{tr('Status', '狀態', '状态')}</span>
+              <span className="flex-1" />
+              <span className="w-16 text-right">{tr('Gross', '總額', '总额')}</span>
+              <span className="w-16 text-right">{tr('EE MPF', '僱員MPF', '雇员MPF')}</span>
+              <span className="w-16 text-right">{tr('ER MPF', '僱主MPF', '雇主MPF')}</span>
+              <span className="w-16 text-right">{tr('Net', '實發', '实发')}</span>
+            </div>
+            {MONTHS.map((m) => (
+              <MonthRow
+                key={m}
+                month={m}
+                staff={staff}
+                open={openMonth === m}
+                onToggle={() => setOpenMonth((prev) => (prev === m ? null : m))}
+              />
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -73,7 +207,7 @@ export default function Payroll() {
                 className={cn(
                   'w-full grid grid-cols-[minmax(0,1fr)_90px_70px_90px_130px] gap-3 items-center px-5 py-3 text-left transition-colors border-b last:border-b-0',
                   'hover:bg-primary/5',
-                  selectedId === s.id && 'bg-primary/5'
+                  selectedId === s.id && 'bg-primary/10'
                 )}
                 style={{ borderColor: 'hsl(var(--border))' }}
               >
@@ -109,7 +243,7 @@ export default function Payroll() {
             selected ? 'translate-x-0 md:w-[480px]' : 'translate-x-full'
           )}
         >
-          {selected && <DetailStub key={selected.id} staff={selected} onClose={() => setSelectedId(null)} />}
+          {selected && <DetailPanel key={selected.id} staff={selected} onClose={() => setSelectedId(null)} />}
         </div>
       </div>
     </div>
