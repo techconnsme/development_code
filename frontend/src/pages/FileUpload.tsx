@@ -307,15 +307,11 @@ export default function FileUpload() {
     // Duplicate handling
     if (importResp.status === 409) {
       if (result?.type === 'card_statement' && result?.statement_id) {
-        toast.warning(tr('Duplicate card statement. Opening existing.', '重複的信用卡月結單。開啟現有。', '重复的信用卡月结单。开启现有。'));
-        if (skipNavigation) { pushToQueue('card_statement', result.statement_id, file.name, ''); return 'duplicate'; }
-        nav(`/card-statements/review/${result.statement_id}`);
+        toast.warning(tr('Duplicate card statement. Existing record kept in File Storage.', '重複的信用卡月結單。現有記錄保留在檔案儲存庫。', '重复的信用卡月结单。现有记录保留在文件存储库。'));
         return 'duplicate';
       }
       if (result?.type === 'bank_statement' && result?.statement_id) {
-        toast.warning(tr('Duplicate bank statement. Opening existing.', '重複的銀行月結單。開啟現有。', '重复的银行月结单。开启现有。'));
-        if (skipNavigation) { pushToQueue('bank_statement', result.statement_id, file.name, ''); return 'duplicate'; }
-        nav(`/bank-statements/review/${result.statement_id}`);
+        toast.warning(tr('Duplicate bank statement. Existing record kept in File Storage.', '重複的銀行月結單。現有記錄保留在檔案儲存庫。', '重复的银行月结单。现有记录保留在文件存储库。'));
         return 'duplicate';
       }
       toast.warning(result?.error || tr('Duplicate file.', '重複文件。', '重复文件。'));
