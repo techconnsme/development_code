@@ -1,11 +1,11 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import EncryptedPdfModal from '../components/EncryptedPdfModal';
 import { useToast } from '../components/Toast';
-import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye } from 'lucide-react';
+import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye, Link2 } from 'lucide-react';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import { useAuth } from '../contexts/AuthContext';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
@@ -207,7 +207,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
             <FolderTree key={child.path} node={child} depth={depth + 1} expanded={expanded} toggle={toggle} onFileAction={onFileAction} onSetDirection={onSetDirection} onDelete={onDelete} onUnlockEncrypted={onUnlockEncrypted} />
           ))}
           {node.files.map(f => (
-            <div key={f.id} className="flex items-center justify-between hover:bg-muted/30 rounded-md px-2 py-1.5"
+            <div key={f.id} id={`file-row-${f.id}`} className="flex items-center justify-between hover:bg-muted/30 rounded-md px-2 py-1.5"
               style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}>
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 {fileIcon(f.file_type)}
@@ -216,6 +216,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <span>{formatSize(f.file_size || 0)}</span>
                     {f.created_at && <FileTimeLabel createdAt={f.created_at} />}
+                    {f.invoice_number && <span className="font-mono text-[10px] text-blue-600">{f.invoice_number}</span>}
                     {(() => { const s = summaryStatus(f); return s ? (
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${s.cls}`}>{tr(s.label, s.labelZh, s.labelCn)}</span>
                     ) : null; })()}
@@ -257,6 +258,46 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                 </div>
               </div>
               <div className="flex gap-1 ml-2 shrink-0">
+                {/* Go-to-record button — cross-link to the AP/AR list or statement list */}
+                {(() => {
+                  if (f.invoice_id) {
+                    const dir = f.invoice_direction || f.direction;
+                    if (dir === 'outgoing') {
+                      return (
+                        <a href={`/ar?highlight=${f.invoice_id}`}
+                          className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to AR record', '前往應收記錄', '前往应收记录')}>
+                          <Link2 className="h-3.5 w-3.5" />
+                        </a>
+                      );
+                    }
+                    if (dir === 'incoming') {
+                      return (
+                        <a href={`/ap?highlight=${f.invoice_id}`}
+                          className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to AP record', '前往應付記錄', '前往应付记录')}>
+                          <Link2 className="h-3.5 w-3.5" />
+                        </a>
+                      );
+                    }
+                    return null; // direction unknown — not in AP/AR lists
+                  }
+                  if (f.statement_id) {
+                    return (
+                      <a href={`/bank-statements?highlight=${f.statement_id}`}
+                        className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to bank statement', '前往銀行月結單', '前往银行月结单')}>
+                        <Link2 className="h-3.5 w-3.5" />
+                      </a>
+                    );
+                  }
+                  if (f.card_statement_id) {
+                    return (
+                      <a href={`/card-statements?highlight=${f.card_statement_id}`}
+                        className="p-1 hover:bg-green-100 rounded text-green-600 inline-flex" title={tr('Go to card statement', '前往信用卡月結單', '前往信用卡月结单')}>
+                        <Link2 className="h-3.5 w-3.5" />
+                      </a>
+                    );
+                  }
+                  return null;
+                })()}
                 {/* Review button — link to the processed document's review page */}
                 {(() => {
                   if (f.invoice_id) {
@@ -320,6 +361,8 @@ export default function FileStorage() {
   const isStaff = user?.role === 'staff' || user?.role === 'viewer';
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const highlightFileId = searchParams.get('highlight') || null;
   const [processingMsg, setProcessingMsg] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const batchRef = useRef({ total: 0, done: 0, errors: 0, bank: 0, invoice: 0, receipt: 0, card: 0, navigated: false, queue: [] as {docType:string, reviewId:string, filename:string, flags:string}[] });
@@ -758,6 +801,40 @@ export default function FileStorage() {
     });
   };
 
+  // Deep-link highlight: expand the target file's folder path, clear filters that would hide it, then scroll + ring it.
+  useEffect(() => {
+    if (!highlightFileId || !files?.data) return;
+    const target = (files.data as any[]).find((f: any) => f.id === highlightFileId);
+    if (target) {
+      const parts = (target.folder || 'Other').split('/');
+      const paths: string[] = [];
+      let acc = '';
+      for (const p of parts) {
+        acc = acc ? `${acc}/${p}` : p;
+        paths.push(acc);
+      }
+      setExpanded(prev => new Set([...prev, ...paths]));
+      if (filterFolder && filterFolder !== target.folder) setFilterFolder('');
+      if (searchQ) setSearchQ('');
+    }
+  }, [highlightFileId, files, filterFolder, searchQ]);
+
+  useEffect(() => {
+    if (!highlightFileId) return;
+    const tryScroll = (retries: number) => {
+      const row = document.getElementById(`file-row-${highlightFileId}`);
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row.classList.add('ring-2', 'ring-blue-400');
+        setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
+      } else if (retries > 0) {
+        setTimeout(() => tryScroll(retries - 1), 150);
+      }
+    };
+    tryScroll(8);
+  }, [highlightFileId, files, expanded]);
+  // suppress exhaustive-deps: retry loop handles timing of folder expansion + data load
+
   const handleFileAction = (action: string, f: FileItem) => {
     if (action === 'edit') {
       setEditingId(f.id);
@@ -1144,4 +1221,4 @@ export default function FileStorage() {
   );
 }
 
-// ── File Match Review Modal ──
+// ── File Match Review Modal ──
