@@ -282,7 +282,7 @@ export default function AP() {
                   <td className="p-3 hidden lg:table-cell">{inv.issue_date}</td>
                   <td className="p-3 text-right">
                     {inv.file_id && (
-                      <button onClick={() => navigate(`/file-storage?highlight=${inv.file_id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View file in File Storage', '在檔案儲存中查看檔案', '在文件存储中查看文件')}><Link2 className="h-4 w-4" /></button>
+                      <button onClick={() => navigate(`/file-storage?highlight=${inv.file_id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View file in File Storage', '在文件庫查看檔案', '在文件库查看文件')}><Link2 className="h-4 w-4" /></button>
                     )}
                     <button onClick={() => setViewId(inv.id)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View', '查看', '查看')}><Eye className="h-4 w-4" /></button>
                     <button onClick={() => navigate(`/invoices/review/${inv.id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Edit', '編輯', '编辑')}><Pencil className="h-4 w-4" /></button>
