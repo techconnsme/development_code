@@ -35,7 +35,9 @@ test('payroll demo: list, extension, collapse, monthly COA entries', async ({ pa
   // Expand January → both COA blocks with real codes
   await page.getByText(/Jan 2026|2026年1月/).first().click();
   // All 12 months' JE blocks render in the DOM (CSS accordion), so .first() = the
-  // expanded January block; toBeVisible requires every match, not just the first
+  // expanded January block; a multi-match locator in a single-element expect throws
+  // a Playwright strict-mode violation, which is why .first() pins the assertion
+  // to the first (January) match
   await expect(page.getByText(/Salary Payment|薪金支付/).first()).toBeVisible();
   await expect(page.getByText(/MPF Remittance|強積金供款|强积金供款/).first()).toBeVisible();
   await expect(page.getByText('61201', { exact: true }).first()).toBeVisible();
@@ -58,4 +60,26 @@ test('payroll demo: list, extension, collapse, monthly COA entries', async ({ pa
   // Capped staff (45,000) shows the 1,500 MPF cap figures
   await rows.filter({ hasText: 'EMP-0001' }).click();
   await expect(page.getByText('1,500.00').first()).toBeVisible();
+
+  // Below-minimum staff (EMP-0005, 6,000): employee MPF 0, employer still 5% (300),
+  // and the zero-amount Cr 21204 line is filtered out of the salary block
+  await rows.filter({ hasText: 'EMP-0005' }).click();
+  // The detail panel is already open at 480px here, so the staff-row name div is
+  // squeezed to 0 width (minmax(0,1fr) column) and counts as hidden; the visible
+  // match is the detail-panel header, so pin with filter({ visible: true })
+  await expect(page.getByText(/Cheung Mei Ling|張美玲|张美玲/).filter({ visible: true }).first()).toBeVisible();
+  await page.getByText(/Jan 2026|2026年1月/).first().click();
+  await expect(page.getByText('300.00').first()).toBeVisible();
+  await expect(page.getByText('0.00').first()).toBeVisible();
+  await expect(page.getByText('21204', { exact: true }).filter({ visible: true })).toHaveCount(0);
+
+  // Alternate salary debit accounts: director debits 61102, consultant debits 51201
+  await page.locator('button[aria-label="Close"]').click();
+  await rows.filter({ hasText: 'EMP-0006' }).click();
+  await page.getByText(/Jan 2026|2026年1月/).first().click();
+  await expect(page.getByText('61102', { exact: true }).filter({ visible: true }).first()).toBeVisible();
+  await rows.filter({ hasText: 'EMP-0006' }).click(); // collapse via row re-click
+  await rows.filter({ hasText: 'EMP-0007' }).click();
+  await page.getByText(/Jan 2026|2026年1月/).first().click();
+  await expect(page.getByText('51201', { exact: true }).filter({ visible: true }).first()).toBeVisible();
 });

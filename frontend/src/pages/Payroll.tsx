@@ -206,8 +206,7 @@ export default function Payroll() {
                 onClick={() => setSelectedId((prev) => (prev === s.id ? null : s.id))}
                 className={cn(
                   'w-full grid grid-cols-[minmax(0,1fr)_90px_70px_90px_130px] gap-3 items-center px-5 py-3 text-left transition-colors border-b last:border-b-0',
-                  'hover:bg-primary/5',
-                  selectedId === s.id && 'bg-primary/10'
+                  selectedId === s.id ? 'bg-primary/10 hover:bg-primary/15' : 'hover:bg-primary/5'
                 )}
                 style={{ borderColor: 'hsl(var(--border))' }}
               >
