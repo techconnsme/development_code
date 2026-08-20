@@ -43,6 +43,7 @@ import ExpenseReceipts from './pages/ExpenseReceipts';
 import Modules from './pages/Modules';
 import Integrations from './pages/Integrations';
 import PaymentPage from './pages/PaymentPage';
+import Payroll from './pages/Payroll';
 import CommunicationPage from './pages/CommunicationPage';
 import WebsiteGenerator from './pages/WebsiteGenerator';
 import CardGenerator from './pages/CardGenerator';
@@ -190,7 +191,7 @@ function AppRoutes() {
       <Route path="/card-statements/review/:id" element={<ProtectedRoute><FeatureGuard><CardStatementReview /></FeatureGuard></ProtectedRoute>} />
       <Route path="/ap" element={<ProtectedRoute><AP /></ProtectedRoute>} />
       <Route path="/ar" element={<ProtectedRoute><AR /></ProtectedRoute>} />
-      <Route path="/payroll" element={<ProtectedRoute><StubPage title="Payroll" zhHant="薪資" zhHans="薪资" /></ProtectedRoute>} />
+      <Route path="/payroll" element={<ProtectedRoute><Payroll /></ProtectedRoute>} />
       <Route path="/petty-cash" element={<ProtectedRoute><FeatureGuard><PettyCash /></FeatureGuard></ProtectedRoute>} />
       <Route path="/mpf" element={<ProtectedRoute><StubPage title="MPF" zhHant="強積金" zhHans="强积金" /></ProtectedRoute>} />
       <Route path="/financial-statements" element={<Navigate to="/GJE" />} />
