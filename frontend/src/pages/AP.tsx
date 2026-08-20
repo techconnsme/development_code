@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -145,14 +145,16 @@ export default function AP() {
   const invoices = data?.data || [];
 
   // Deep-link highlight: jump to the page that holds the invoice, then scroll + ring it.
+  const highlightFiredRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!highlightId || !data) return;
+    if (!highlightId || !data || highlightFiredRef.current === highlightId) return;
     const rows = (data.data || []) as any[];
     const found = rows.find((r: any) => r.id === highlightId);
     if (found) {
       const tryScroll = (retries: number) => {
         const row = document.getElementById(`inv-row-${highlightId}`);
         if (row) {
+          highlightFiredRef.current = highlightId;
           row.scrollIntoView({ behavior: 'smooth', block: 'center' });
           row.classList.add('ring-2', 'ring-blue-400');
           setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);

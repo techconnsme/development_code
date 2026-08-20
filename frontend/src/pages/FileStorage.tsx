@@ -804,6 +804,10 @@ export default function FileStorage() {
   // Deep-link highlight: expand the target file's folder path, clear filters that would hide it, then scroll + ring it.
   useEffect(() => {
     if (!highlightFileId || !files?.data) return;
+    // Filtering is server-side, so clear filters that could hide the target
+    // BEFORE looking for it — the refetch then brings the target in.
+    if (filterFolder) setFilterFolder('');
+    if (searchQ) setSearchQ('');
     const target = (files.data as any[]).find((f: any) => f.id === highlightFileId);
     if (target) {
       const parts = (target.folder || 'Other').split('/');
@@ -814,8 +818,6 @@ export default function FileStorage() {
         paths.push(acc);
       }
       setExpanded(prev => new Set([...prev, ...paths]));
-      if (filterFolder && filterFolder !== target.folder) setFilterFolder('');
-      if (searchQ) setSearchQ('');
     }
   }, [highlightFileId, files, filterFolder, searchQ]);
 
