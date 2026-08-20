@@ -41,40 +41,42 @@ function fileIcon(type: string) {
 }
 
 // Summary status badge — priority order per spec (see design doc).
-function summaryStatus(f: FileItem): { label: string; labelZh: string; labelCn: string; cls: string } | null {
+function summaryStatus(f: FileItem): { label: string; labelZh: string; labelCn: string; cls: string; tip: string; tipZh: string; tipCn: string } | null {
   if (f.ocr_status === 'encrypted') return null; // rendered as the existing unlock button
   if (f.ocr_status === 'processing' || f.ocr_status === 'pending') {
-    return { label: 'Processing', labelZh: '處理中', labelCn: '处理中', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' };
+    return { label: 'Processing', labelZh: '處理中', labelCn: '处理中', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300', tip: 'OCR is still reading this document — the result will appear shortly.', tipZh: 'OCR 正在讀取此文件，結果將於稍後顯示。', tipCn: 'OCR 正在读取此文件，结果将于稍后显示。' };
   }
   if (f.ocr_status === 'failed' || f.ocr_status === 'unclear') {
-    return { label: 'Could not read', labelZh: '無法讀取', labelCn: '无法读取', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' };
+    return { label: 'Could not read', labelZh: '無法讀取', labelCn: '无法读取', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300', tip: 'The document could not be read (unclear scan or unsupported format). Upload a clearer copy.', tipZh: '無法讀取此文件（掃描不清或格式不支援）。請上傳較清晰的版本。', tipCn: '无法读取此文件（扫描不清或格式不支持）。请上传较清晰的版本。' };
   }
   const needsReview =
     (f.invoice_id && (f.invoice_needs_review || f.invoice_status === 'pending_review')) ||
     (f.statement_id && (f.stmt_status === 'draft' || f.stmt_status === 'pending_review')) ||
     (f.card_statement_id && f.card_status === 'draft');
   if (needsReview) {
-    return { label: 'Needs Review', labelZh: '需審核', labelCn: '需审核', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' };
+    return { label: 'Needs Review', labelZh: '需審核', labelCn: '需审核', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300', tip: 'A record was created, but some fields need confirmation before it is posted.', tipZh: '已建立記錄，但部分欄位需確認後才會入帳。', tipCn: '已建立记录，但部分字段需确认后才会入账。' };
   }
   if (f.invoice_id || f.statement_id || f.card_statement_id) {
-    return { label: 'Processed', labelZh: '已處理', labelCn: '已处理', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' };
+    return { label: 'Processed', labelZh: '已處理', labelCn: '已处理', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300', tip: 'Auto-saved and linked to a record.', tipZh: '已自動儲存並連結至記錄。', tipCn: '已自动储存并连结至记录。' };
   }
-  return { label: 'Stored', labelZh: '已儲存', labelCn: '已储存', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300' };
+  return { label: 'Stored', labelZh: '已儲存', labelCn: '已储存', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300', tip: 'Saved to File Storage only — not linked to a record yet.', tipZh: '僅儲存於文件庫，尚未連結任何記錄。', tipCn: '仅储存于文件库，尚未连结任何记录。' };
 }
 
-const RECORD_STATUS_LABELS: Record<string, { en: string; zhHant: string; zhHans: string }> = {
-  draft: { en: 'Draft', zhHant: '草稿', zhHans: '草稿' },
-  pending_review: { en: 'Pending Review', zhHant: '待審核', zhHans: '待审核' },
-  active: { en: 'Active', zhHant: '有效', zhHans: '有效' },
-  sent: { en: 'Sent', zhHant: '已寄出', zhHans: '已寄出' },
-  paid: { en: 'Paid', zhHant: '已付款', zhHans: '已付款' },
+const RECORD_STATUS_LABELS: Record<string, { en: string; zhHant: string; zhHans: string; tip: { en: string; zhHant: string; zhHans: string } }> = {
+  draft: { en: 'Draft', zhHant: '草稿', zhHans: '草稿', tip: { en: 'Saved as a draft — not posted to the ledger yet.', zhHant: '已存為草稿——尚未入帳。', zhHans: '已存为草稿——尚未入账。' } },
+  pending_review: { en: 'Pending Review', zhHant: '待審核', zhHans: '待审核', tip: { en: 'Waiting for review before it can be posted.', zhHant: '待審核後方可入帳。', zhHans: '待审核后方可入账。' } },
+  active: { en: 'Active', zhHant: '有效', zhHans: '有效', tip: { en: 'Active record — current.', zhHant: '有效記錄——現行有效。', zhHans: '有效记录——现行有效。' } },
+  sent: { en: 'Sent', zhHant: '已寄出', zhHans: '已寄出', tip: { en: 'The invoice has been sent to the customer.', zhHant: '發票已寄出給客戶。', zhHans: '发票已寄出给客户。' } },
+  paid: { en: 'Paid', zhHant: '已付款', zhHans: '已付款', tip: { en: 'Payment received and recorded.', zhHant: '款項已收妥並記錄。', zhHans: '款项已收妥并记录。' } },
 };
 
-function recordStatus(f: FileItem): { label: string; labelZh: string; labelCn: string } | null {
+function recordStatus(f: FileItem): { label: string; labelZh: string; labelCn: string; tip: string; tipZh: string; tipCn: string } | null {
   const raw = f.invoice_id ? f.invoice_status : f.statement_id ? f.stmt_status : f.card_statement_id ? f.card_status : null;
   if (!raw) return null;
   const m = RECORD_STATUS_LABELS[raw];
-  return m ? { label: m.en, labelZh: m.zhHant, labelCn: m.zhHans } : { label: raw, labelZh: raw, labelCn: raw };
+  return m
+    ? { label: m.en, labelZh: m.zhHant, labelCn: m.zhHans, tip: m.tip.en, tipZh: m.tip.zhHant, tipCn: m.tip.zhHans }
+    : { label: raw, labelZh: raw, labelCn: raw, tip: '', tipZh: '', tipCn: '' };
 }
 
 function autoFolder(filename: string, fileType: string): string {
@@ -218,19 +220,19 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                     {f.created_at && <FileTimeLabel createdAt={f.created_at} />}
                     {f.invoice_number && <span className="font-mono text-[10px] text-blue-600">{f.invoice_number}</span>}
                     {(() => { const s = summaryStatus(f); return s ? (
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${s.cls}`}>{tr(s.label, s.labelZh, s.labelCn)}</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${s.cls}`} title={tr(s.tip, s.tipZh, s.tipCn)}>{tr(s.label, s.labelZh, s.labelCn)}</span>
                     ) : null; })()}
                     {(() => { const r = recordStatus(f); return r ? (
                       <span className="px-1.5 py-0.5 rounded text-[10px] font-medium border border-border text-muted-foreground"
-                        title={tr('Linked record status', '關聯記錄狀態', '关联记录状态')}>{tr(r.label, r.labelZh, r.labelCn)}</span>
+                        title={r.tip ? `${tr('Linked record status', '關聯記錄狀態', '关联记录状态')} — ${tr(r.tip, r.tipZh, r.tipCn)}` : tr('Linked record status', '關聯記錄狀態', '关联记录状态')}>{tr(r.label, r.labelZh, r.labelCn)}</span>
                     ) : null; })()}
                     {f.category === 'invoice' && f.direction && (
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      <span title={f.direction === 'outgoing' ? tr('Outgoing invoice issued by your company (Accounts Receivable).', '貴公司開出的銷貨發票（應收帳款）。', '贵公司开出的销货发票（应收账款）。') : tr('Incoming invoice billed to your company (Accounts Payable).', '供應商開給貴公司的進貨發票（應付帳款）。', '供应商开给贵公司的进货发票（应付账款）。')} className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                         f.direction === 'outgoing' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'
                       }`}>{f.direction === 'outgoing' ? tr('Sales', '銷售', '销售') : tr('Purchase', '採購', '采购')}</span>
                     )}
                     {f.category === 'invoice' && f.payment_status && f.payment_status !== 'unmatched' && (
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      <span title={f.payment_status === 'received' ? tr('Payment marked as received.', '款項已標記為已收。', '款项已标记为已收。') : f.payment_status === 'paid' ? tr('Payment marked as paid.', '款項已標記為已付。', '款项已标记为已付。') : undefined} className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                         f.payment_status === 'received' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
                         : f.payment_status === 'paid' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
                         : 'bg-gray-100 text-gray-700'
