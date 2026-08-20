@@ -40,6 +40,43 @@ function fileIcon(type: string) {
   return <File className="h-5 w-5 text-gray-500" />;
 }
 
+// Summary status badge — priority order per spec (see design doc).
+function summaryStatus(f: FileItem): { label: string; labelZh: string; labelCn: string; cls: string } | null {
+  if (f.ocr_status === 'encrypted') return null; // rendered as the existing unlock button
+  if (f.ocr_status === 'processing' || f.ocr_status === 'pending') {
+    return { label: 'Processing', labelZh: '處理中', labelCn: '处理中', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' };
+  }
+  if (f.ocr_status === 'failed' || f.ocr_status === 'unclear') {
+    return { label: 'Could not read', labelZh: '無法讀取', labelCn: '无法读取', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' };
+  }
+  const needsReview =
+    (f.invoice_id && (f.invoice_needs_review || f.invoice_status === 'pending_review')) ||
+    (f.statement_id && (f.stmt_status === 'draft' || f.stmt_status === 'pending_review')) ||
+    (f.card_statement_id && f.card_status === 'draft');
+  if (needsReview) {
+    return { label: 'Needs Review', labelZh: '需審核', labelCn: '需审核', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' };
+  }
+  if (f.invoice_id || f.statement_id || f.card_statement_id) {
+    return { label: 'Processed', labelZh: '已處理', labelCn: '已处理', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' };
+  }
+  return { label: 'Stored', labelZh: '已儲存', labelCn: '已储存', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300' };
+}
+
+const RECORD_STATUS_LABELS: Record<string, { en: string; zhHant: string; zhHans: string }> = {
+  draft: { en: 'Draft', zhHant: '草稿', zhHans: '草稿' },
+  pending_review: { en: 'Pending Review', zhHant: '待審核', zhHans: '待审核' },
+  active: { en: 'Active', zhHant: '有效', zhHans: '有效' },
+  sent: { en: 'Sent', zhHant: '已寄出', zhHans: '已寄出' },
+  paid: { en: 'Paid', zhHant: '已付款', zhHans: '已付款' },
+};
+
+function recordStatus(f: FileItem): { label: string; labelZh: string; labelCn: string } | null {
+  const raw = f.invoice_id ? f.invoice_status : f.statement_id ? f.stmt_status : f.card_statement_id ? f.card_status : null;
+  if (!raw) return null;
+  const m = RECORD_STATUS_LABELS[raw];
+  return m ? { label: m.en, labelZh: m.zhHant, labelCn: m.zhHans } : { label: raw, labelZh: raw, labelCn: raw };
+}
+
 function autoFolder(filename: string, fileType: string): string {
   // Backend classifyFile handles specific types (Bank Statements, Card Statements, Invoices, Receipts).
   // Frontend fallback: everything else goes to Others.
@@ -179,6 +216,13 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <span>{formatSize(f.file_size || 0)}</span>
                     {f.created_at && <FileTimeLabel createdAt={f.created_at} />}
+                    {(() => { const s = summaryStatus(f); return s ? (
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${s.cls}`}>{tr(s.label, s.labelZh, s.labelCn)}</span>
+                    ) : null; })()}
+                    {(() => { const r = recordStatus(f); return r ? (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium border border-border text-muted-foreground"
+                        title={tr('Linked record status', '關聯記錄狀態', '关联记录状态')}>{tr(r.label, r.labelZh, r.labelCn)}</span>
+                    ) : null; })()}
                     {f.category === 'invoice' && f.direction && (
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                         f.direction === 'outgoing' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'
