@@ -28,10 +28,18 @@ test('Review page has Review Later, Save, Discard, Change Type', async ({ page }
   await page.waitForTimeout(1000);
   await page.locator('button').filter({ hasText: /Upload|上傳|上传/ }).first().click();
 
-  // Wait for review page
+  // Uploads land on File Storage. If the invoice needs review, the queue
+  // banner appears there — click Review Now to reach the review page.
+  await page.waitForURL(/\/file-storage/, { timeout: 240000 });
   try {
-    await page.waitForURL('**/invoices/review/**', { timeout: 240000 });
-    console.log('✅ Navigated to review page');
+    const banner = page.locator('text=/queued for review/');
+    if (await banner.isVisible({ timeout: 15000 }).catch(() => false)) {
+      await page.getByRole('button', { name: /Review Now/ }).click();
+      await page.waitForURL('**/invoices/review/**', { timeout: 60000 });
+      console.log('✅ Navigated to review page');
+    } else {
+      throw new Error('no banner');
+    }
   } catch {
     console.log('⚠️ No review page (may have auto-saved) — checking invoices list');
     await page.goto(`${BASE}/invoices`, { waitUntil: 'networkidle' });
