@@ -13,7 +13,7 @@ import { DateFilterProvider, useDateFilter } from '../contexts/DateFilterContext
 import { tr } from '../lib/i18nHelpers';
 import {
   LayoutDashboard, Users, Truck, Package, FileText, FileSpreadsheet, Mail,
-  Calculator, Upload, Settings, LogOut, Menu, X, MessageCircle, Calendar, Briefcase, FolderOpen, Plug, SlidersHorizontal, Landmark, Receipt, CheckSquare, Globe, CreditCard, Smartphone, HardDrive, ShoppingCart, ClipboardList, AlertCircle, BookOpen, ChevronLeft, ChevronRight, ChevronDown, Building2, Shield, Tag, Bot, Link2, Trash2, ClipboardCheck, UserCog, List, Dot,
+  Calculator, Upload, Settings, LogOut, Menu, X, MessageCircle, Calendar, Briefcase, FolderOpen, Plug, Landmark, Receipt, CheckSquare, Globe, CreditCard, Smartphone, HardDrive, ShoppingCart, ClipboardList, AlertCircle, BookOpen, ChevronLeft, ChevronRight, ChevronDown, Building2, Shield, Tag, Bot, Link2, Trash2, ClipboardCheck, UserCog, List, Dot,
 } from 'lucide-react';
 
 // Subtitle translations map
@@ -45,7 +45,6 @@ const navGroups = [
     { key: 'ar', label: 'Accounts Receivable (AR)', to: '/ar' },
     { key: 'payroll', label: 'Payroll', to: '/payroll' },
     { key: 'pettyCash', label: 'Petty Cash', to: '/petty-cash' },
-    { key: 'mpf', label: 'MPF', to: '/mpf' },
     { key: 'gje', label: 'General Journal Entries (GJE)', to: '/GJE' },
     { key: 'reviewQueue', label: 'Pending Review', to: '/review-queue' },
   ]},
@@ -58,17 +57,6 @@ const navGroups = [
     { key: 'trialBalance', label: 'Trial Balance', to: '/trial-balance' },
     { key: 'glReport', label: 'General Ledger Report', to: '/gl-report' },
     { key: 'export', label: 'Export', to: '/bookkeeping?tab=export' },
-  ]},
-  { key: 'companyInfo', label: 'Company Information', icon: Briefcase, expandable: true, children: [
-    { key: 'br', label: 'Business Registration (BR)', to: '/company/br' },
-    { key: 'ci', label: 'Certificate of Incorporation', to: '/company/ci' },
-    { key: 'ei', label: 'Employer Information (EI)', to: '/company/ei' },
-    { key: 'contracts', label: 'Contracts', to: '/contracts' },
-  ]},
-  { key: 'companyAcct', label: 'Company Accounting Info', icon: SlidersHorizontal, expandable: true, children: [
-    { key: 'financialYear', label: 'Financial Year', to: '/company/financial-year' },
-    { key: 'openingYear', label: 'Opening Year', to: '/company/opening-year' },
-    { key: 'accountingInfo', label: 'Accounting Information', to: '/company/accounting-info' },
   ]},
   { key: 'settings', label: 'Settings', icon: Settings, to: '/settings' },
 ];
