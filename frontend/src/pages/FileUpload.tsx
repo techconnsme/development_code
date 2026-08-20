@@ -584,6 +584,8 @@ export default function FileUpload() {
           `${reviewCount} 个文件需要审核。${ok - reviewCount} 个已自动储存。`,
         ));
       } else {
+        sessionStorage.removeItem('reviewQueue');
+        sessionStorage.removeItem('reviewQueueTotal');
         toast.success(tr(
           `Successfully processed and saved ${ok} file(s)${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}.`,
           `已成功處理並儲存 ${ok} 個文件${storedTokens?.total > 0 ? ` · Tokens: ~${storedTokens.total.toLocaleString()}` : ''}。`,
