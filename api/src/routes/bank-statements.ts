@@ -154,9 +154,12 @@ bank.get('/', async (c) => {
     q += " AND (status IS NULL OR status != 'draft')";
   }
   if (year) { q += ' AND statement_year = ?'; p.push(parseInt(year)); }
-  // Filter by period_end within fiscal year range (handles cross-year FY like Apr-Mar)
-  if (startDate) { q += ' AND bs.period_end >= ?'; p.push(startDate); }
-  if (endDate) { q += ' AND bs.period_end <= ?'; p.push(endDate); }
+  // Filter by period_end within fiscal year range (handles cross-year FY like Apr-Mar).
+  // Fall back to the statement's month end when period_end is missing, so records with
+  // NULL period_end never silently disappear from date-filtered lists.
+  const periodEndExpr = "COALESCE(bs.period_end, date(printf('%04d-%02d-01', bs.statement_year, bs.statement_month), '+1 month', '-1 day'))";
+  if (startDate) { q += ` AND ${periodEndExpr} >= ?`; p.push(startDate); }
+  if (endDate) { q += ` AND ${periodEndExpr} <= ?`; p.push(endDate); }
   q += ' ORDER BY statement_year DESC, statement_month DESC';
   const rows = await c.env.DB.prepare(q).bind(...p).all();
   return c.json({ data: rows.results });

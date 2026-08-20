@@ -67,6 +67,12 @@ BANK STATEMENT RULES:
 - Use ocr_bank_statement ONLY when the user explicitly asks to re-OCR the original PDF.
 - When the user asks to "list transactions" or "show statement", use get_bank_statement_raw — NEVER get_bank_statement or ocr_bank_statement.
 
+BUSINESS-WITH-A-COMPANY RULES:
+- When the user asks about business/dealings/activity with a specific company (e.g. "how much business did I do with X"), search invoices for BOTH sides: outgoing (your sales to X) AND incoming (your purchases from X).
+- Use search_invoices with the company name; each result row has a "counterparty" field showing which company that row relates to (vendor for incoming, customer for outgoing).
+- Report the two directions separately with their totals, and do NOT drop rows just because their customer_name differs — the counterparty/vendor_name fields identify them.
+- Classify each invoice by its direction field ONLY: incoming → purchases from them; outgoing → sales to them. Never put the same invoice in both lists.
+
 FIRM TOOLS: Use list_firms for firm info, list_staff for staff, add_staff_member to add employees. NEVER use query_database for these.
 CODE TOOLS: Use read_code/write_code/list_project_files/git_log/deploy_frontend to edit code. Always read_code first, then write COMPLETE file content.
 For counts/numbers: if user asks "多少/幾個/數量/how many/count", call get_counts.
@@ -169,8 +175,8 @@ const TOOLS: any[] = [
   { type: 'function', function: { name: 'delete_product', description: 'Soft-delete a product', parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } } },
 
   // ── Invoices ──
-  { type: 'function', function: { name: 'search_invoices', description: 'Search invoices by number or customer name', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search keyword' }, limit: { type: 'number' } }, required: ['query'] } } },
-  { type: 'function', function: { name: 'list_invoices', description: 'List recent invoices with optional status filter', parameters: { type: 'object', properties: { status: { type: 'string', description: 'draft, sent, paid, overdue' }, limit: { type: 'number' } }, required: [] } } },
+  { type: 'function', function: { name: 'search_invoices', description: 'Search invoices/receipts by number, customer name, vendor name, or supplier name. Results include direction (incoming = purchase from vendor, outgoing = sale to customer). Returns rows plus an exact summary with incoming_total/outgoing_total/incoming_count/outgoing_count over the full matched set — ALWAYS use the summary totals in your answer instead of summing rows yourself.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search keyword (company name, invoice number)' }, start_date: { type: 'string', description: 'Optional issue date lower bound YYYY-MM-DD' }, end_date: { type: 'string', description: 'Optional issue date upper bound YYYY-MM-DD' }, limit: { type: 'number' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'list_invoices', description: 'List recent invoices with optional status filter. Returns rows plus an exact summary with count and total_amount over the full filtered set — ALWAYS use the summary values in your answer instead of summing rows yourself.', parameters: { type: 'object', properties: { status: { type: 'string', description: 'draft, sent, paid, overdue' }, limit: { type: 'number' } }, required: [] } } },
   { type: 'function', function: { name: 'get_invoice', description: 'Get full invoice details by ID including line items', parameters: { type: 'object', properties: { id: { type: 'string', description: 'Invoice ID' } }, required: ['id'] } } },
   { type: 'function', function: { name: 'create_invoice', description: 'Create a new invoice', parameters: { type: 'object', properties: { customer_id: { type: 'string' }, invoice_number: { type: 'string' }, items: { type: 'array', description: 'Array of {description, quantity, unit_price, amount}', items: { type: 'object' } }, due_date: { type: 'string', description: 'YYYY-MM-DD' }, currency: { type: 'string' }, notes: { type: 'string' } }, required: ['customer_id'] } } },
   { type: 'function', function: { name: 'update_invoice_status', description: 'Update invoice status (e.g. mark as sent/paid)', parameters: { type: 'object', properties: { id: { type: 'string' }, status: { type: 'string', description: 'draft, sent, paid, overdue, cancelled' } }, required: ['id', 'status'] } } },
@@ -333,8 +339,8 @@ async function computeClientPnl(db: D1Database, userId: string, startDate: strin
   if (!rows.results.length) return null;
   let revenue = 0, expenses = 0;
   for (const r of rows.results as any[]) {
-    if (r.type === 'revenue') revenue += Number(r.total_credit) || 0;
-    else if (r.type === 'expense' || r.type === 'cost') expenses += Number(r.total_debit) || 0;
+    if (r.type === 'revenue') revenue += (Number(r.total_credit) || 0) - (Number(r.total_debit) || 0);
+    else if (r.type === 'expense' || r.type === 'cost') expenses += (Number(r.total_debit) || 0) - (Number(r.total_credit) || 0);
   }
   return { revenue, expenses, net: revenue - expenses };
 }
@@ -373,18 +379,45 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
     }
     case 'search_invoices': {
       const q = args?.query || '';
+      const startDate = args?.start_date || '';
+      const endDate = args?.end_date || '';
+      const where = 'i.user_id = ? AND i.deleted_at IS NULL AND (i.invoice_number LIKE ? OR c.name LIKE ? OR i.vendor_name LIKE ? OR s.name LIKE ?)' +
+        (startDate ? ' AND i.issue_date >= ?' : '') + (endDate ? ' AND i.issue_date <= ?' : '');
+      const params: any[] = [userId, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`];
+      if (startDate) params.push(startDate);
+      if (endDate) params.push(endDate);
       const rows = await db.prepare(
-        `SELECT i.id, i.invoice_number, i.status, i.total, i.currency, i.issue_date, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.user_id = ? AND i.deleted_at IS NULL AND (i.invoice_number LIKE ? OR c.name LIKE ?) ORDER BY i.created_at DESC LIMIT ?`
-      ).bind(userId, `%${q}%`, `%${q}%`, limit).all();
-      return JSON.stringify(rows.results);
+        `SELECT i.id, i.invoice_number, i.status, i.total, i.currency, i.issue_date, i.direction,
+          CASE WHEN i.direction = 'incoming' THEN COALESCE(NULLIF(i.vendor_name,''), NULLIF(s.name,''), c.name)
+               ELSE COALESCE(NULLIF(c.name,''), NULLIF(i.vendor_name,''), s.name) END as counterparty,
+          i.vendor_name, c.name as customer_name, s.name as supplier_name
+         FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id
+         WHERE ${where} ORDER BY i.created_at DESC LIMIT ?`
+      ).bind(...params, limit).all();
+      // Exact per-direction totals over the FULL matched set (not just the LIMIT rows),
+      // so the LLM never has to sum numbers itself.
+      const summary = await db.prepare(
+        `SELECT COALESCE(SUM(CASE WHEN i.direction = 'incoming' THEN i.total ELSE 0 END),0) as incoming_total,
+                COALESCE(SUM(CASE WHEN i.direction = 'outgoing' THEN i.total ELSE 0 END),0) as outgoing_total,
+                SUM(CASE WHEN i.direction = 'incoming' THEN 1 ELSE 0 END) as incoming_count,
+                SUM(CASE WHEN i.direction = 'outgoing' THEN 1 ELSE 0 END) as outgoing_count
+         FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id
+         WHERE ${where}`
+      ).bind(...params).first();
+      return JSON.stringify({ rows: rows.results, summary });
     }
     case 'list_invoices': {
       let q = `SELECT i.id, i.invoice_number, i.status, i.total, i.currency, i.issue_date, i.due_date, i.paid_date, c.name as customer_name FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.user_id = ? AND i.deleted_at IS NULL`;
       const params: any[] = [userId];
       if (args?.status) { q += ' AND i.status = ?'; params.push(args.status); }
-      q += ' ORDER BY i.created_at DESC LIMIT ?'; params.push(limit);
-      const rows = await db.prepare(q).bind(...params).all();
-      return JSON.stringify(rows.results);
+      const rows = await db.prepare(q + ' ORDER BY i.created_at DESC LIMIT ?').bind(...params, limit).all();
+      // Exact totals over the FULL filtered set (not just the LIMIT rows),
+      // so the LLM never has to sum rows itself.
+      const summary = await db.prepare(
+        `SELECT COUNT(*) as count, COALESCE(SUM(i.total),0) as total_amount FROM invoices i WHERE i.user_id = ? AND i.deleted_at IS NULL` +
+        (args?.status ? ' AND i.status = ?' : '')
+      ).bind(...params).first();
+      return JSON.stringify({ rows: rows.results, summary });
     }
     case 'get_invoice': {
       const inv = await db.prepare(
@@ -462,7 +495,19 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
         const jlRows = await db.prepare(
           `SELECT a.account_code as code, a.account_name as name, a.account_type as type, SUM(COALESCE(jl.debit,0)) as total_debit, SUM(COALESCE(jl.credit,0)) as total_credit FROM journal_lines jl JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id JOIN journal_entries je ON jl.entry_id = je.id WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} AND ${jeNotOrphaned()} GROUP BY a.account_code, a.account_name, a.account_type ORDER BY a.account_code`
         ).bind(userId, startDate, endDate).all();
-        if (jlRows.results.length > 0) return JSON.stringify(jlRows.results);
+        const rows = jlRows.results as any[];
+        if (rows.length > 0) {
+          // Net per account so the LLM presents true P&L figures:
+          // revenue = credit - debit (nets out debit-interest charges etc.),
+          // expense/cost = debit - credit. Replace the field the LLM sums.
+          for (const r of rows) {
+            const dr = Number(r.total_debit) || 0;
+            const cr = Number(r.total_credit) || 0;
+            if (r.type === 'revenue') { r.total_credit = cr - dr; r.total_debit = 0; }
+            else if (r.type === 'expense' || r.type === 'cost') { r.total_debit = dr - cr; r.total_credit = 0; }
+          }
+          return JSON.stringify(rows);
+        }
       } catch {}
       // Fallback: bank transactions
       try {
@@ -990,10 +1035,12 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
 
     // ── Bank Statements ──
     case 'list_bank_statements': {
+      // Default to a high cap so complete lists (e.g. all uploaded statements) are never truncated
+      const bsLimit = args?.limit || 100;
       let q = 'SELECT id, bank_name, account_number, statement_year, statement_month, opening_balance, closing_balance, file_name, created_at FROM bank_statements WHERE user_id = ? AND deleted_at IS NULL';
       const params: any[] = [userId];
       if (args?.year) { q += ' AND statement_year = ?'; params.push(args.year); }
-      q += ' ORDER BY statement_year DESC, statement_month DESC LIMIT ?'; params.push(limit);
+      q += ' ORDER BY statement_year DESC, statement_month DESC LIMIT ?'; params.push(bsLimit);
       const rows = await db.prepare(q).bind(...params).all();
       return JSON.stringify(rows.results);
     }
@@ -1787,12 +1834,31 @@ chat.post('/', async (c) => {
       const companyName = client?.display_name || client?.company_name || client?.name || activeClientId;
       companyContext = `\n\nCURRENT CLIENT COMPANY: ${companyName}\nYou are assisting with ${companyName}'s data. All tools are scoped to this client company. Report ONLY ${companyName}'s data unless the user explicitly asks about ALL their clients.`;
     } else if (user.firm_id) {
-      companyContext = `\n\nCURRENT CLIENT COMPANY: none selected.\nYou are in the firm staff user's own context. For client company data, remind the user to select a client company first. Do not fabricate or guess client data.`;
+      companyContext = `\n\nCURRENT CLIENT COMPANY: none selected.\nYou are in the staff user's OWN company context. All tools are scoped to the staff user's own data (their own customers, invoices, transactions) — answer questions about this own-company data directly; no client selection is needed.\nIf the user asks about a different client company's data, remind them to select that client company first. Do not fabricate or guess client data.`;
     } else {
       companyContext = `\n\nCURRENT CLIENT COMPANY: your own company.\nAll tools are scoped to your own data. Report only your own company's data unless the user explicitly asks about ALL their companies/clients.`;
     }
 
-    const systemPrompt = SYSTEM_PROMPT + `\n\nCurrent date: ${today}\n\nLANGUAGE: The user's latest message is written in ${t.langName}. ALWAYS reply in that language (English, 繁體中文, or 简体中文). If the user switches language, switch with them.` + companyContext;
+    // Pin the company's fiscal year convention so FY questions are filtered correctly
+    let fyNote = '';
+    try {
+      const fy = await db.prepare('SELECT fiscal_year_start, fiscal_year_end FROM company_settings WHERE user_id = ?').bind(tenantId).first<{ fiscal_year_start: string | null; fiscal_year_end: string | null }>();
+      const end = (fy?.fiscal_year_end || '03-31').trim();
+      const m = end.match(/^(\d{2})-(\d{2})$/);
+      if (m) {
+        const mm = parseInt(m[1], 10), dd = parseInt(m[2], 10);
+        if (mm === 12 && dd === 31) {
+          fyNote = `\n\nFISCAL YEAR: The company's fiscal year is the calendar year (Jan 1 – Dec 31). "FY 2025" means 2025-01-01 to 2025-12-31.`;
+        } else if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+          // Day after the fiscal year end in an example year = first day of the next FY
+          const ex = new Date(2025, mm - 1, dd + 1);
+          const startIso = ex.toISOString().split('T')[0];
+          fyNote = `\n\nFISCAL YEAR: The company's fiscal year ends on ${end} (MM-DD). A fiscal year labeled "FY YYYY-YY" runs from the day after ${end} in YYYY until ${end} in YYYY+1. Example: FY 2025-26 = ${startIso} to 2026-${end}. When a user asks about a fiscal year, filter dates to that exact range — do not assume a July–June or any other convention.`;
+        }
+      }
+    } catch {}
+
+    const systemPrompt = SYSTEM_PROMPT + fyNote + `\n\nCurrent date: ${today}\n\nLANGUAGE: The user's latest message is written in ${t.langName}. ALWAYS reply in that language (English, 繁體中文, or 简体中文). If the user switches language, switch with them.` + companyContext;
     const messages: any[] = [{ role: 'system', content: systemPrompt }];
     if (Array.isArray(history)) {
       for (const msg of history.slice(-8)) {
@@ -1805,7 +1871,7 @@ chat.post('/', async (c) => {
     const choice = response1.choices?.[0];
     const toolCalls = choice?.message?.tool_calls;
 
-    let reply: string;
+    let reply: string = '';
 
     if (toolCalls && toolCalls.length > 0) {
       messages.push(choice.message);
@@ -1831,8 +1897,31 @@ chat.post('/', async (c) => {
         const parsed = JSON.parse(rawDisplay.content);
         reply = parsed.display;
       } else {
-        const response2 = await callLLM(messages);
-        reply = response2.choices?.[0]?.message?.content || t.cannotProcess;
+        // Allow follow-up tool calls (e.g. search_customers → search_invoices) before the final answer
+        let response2 = await callLLM(messages, TOOLS);
+        let rounds = 0;
+        while (response2?.choices?.[0]?.message?.tool_calls?.length && rounds < 4) {
+          const toolMsg = response2.choices[0].message;
+          messages.push(toolMsg);
+          for (const tc of toolMsg.tool_calls) {
+            const fnName = tc.function?.name;
+            let fnArgs: any = {};
+            try { fnArgs = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+            const startTime = Date.now();
+            const result = fnName ? await executeTool(fnName, db, tenantId, fnArgs, c.env, user.id) : '{}';
+            const elapsed = Date.now() - startTime;
+            toolLog.push(`[${fnName}] ${elapsed}ms args=${JSON.stringify(fnArgs).slice(0, 200)} result=${String(result).slice(0, 100)}`);
+            messages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+          }
+          const raw2 = messages.find((m: any) => {
+            if (m.role !== 'tool') return false;
+            try { const p = JSON.parse(m.content); return !!p.display; } catch { return false; }
+          });
+          if (raw2) { reply = JSON.parse(raw2.content).display; break; }
+          response2 = await callLLM(messages, TOOLS);
+          rounds++;
+        }
+        if (!reply) reply = response2?.choices?.[0]?.message?.content || t.cannotProcess;
       }
 
       // Log tool operations to database
