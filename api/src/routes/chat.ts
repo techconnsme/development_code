@@ -231,7 +231,7 @@ const TOOLS: any[] = [
   { type: 'function', function: { name: 'get_bookkeeping', description: 'Get P&L (income statement) for a date range', parameters: { type: 'object', properties: { start_date: { type: 'string', description: 'YYYY-MM-DD' }, end_date: { type: 'string', description: 'YYYY-MM-DD' } }, required: [] } } },
   { type: 'function', function: { name: 'list_accounts', description: 'List all chart of accounts with code, name, and type', parameters: { type: 'object', properties: {}, required: [] } } },
   { type: 'function', function: { name: 'add_account', description: 'Add a new account to the chart of accounts', parameters: { type: 'object', properties: { account_code: { type: 'string', description: 'Account code (e.g. 5105)' }, account_name: { type: 'string', description: 'Account name (e.g. 差旅費用)' }, account_type: { type: 'string', description: 'Type: asset, liability, equity, revenue, expense' }, parent_code: { type: 'string', description: 'Optional parent account code' } }, required: ['account_code', 'account_name', 'account_type'] } } },
-  { type: 'function', function: { name: 'get_bookkeeping_transactions', description: 'Get detailed transactions. If account_code is provided, returns transactions for that account with running balance. If account_code is omitted, returns ALL journal entries for the date range with their line items.', parameters: { type: 'object', properties: { account_code: { type: 'string', description: 'Optional account code (e.g. 2102, 1101). Omit to get all entries.' }, start_date: { type: 'string', description: 'YYYY-MM-DD' }, end_date: { type: 'string', description: 'YYYY-MM-DD' } }, required: [] } } },
+  { type: 'function', function: { name: 'get_bookkeeping_transactions', description: 'Get detailed transactions. If account_code is provided, returns transactions for that account with running balance. If account_code is omitted, returns ALL journal entries for the date range with their line items, plus an exact summary (total_debits, total_credits, entry_count over the full range) and account_totals (per account_code totals using the official chart-of-accounts names). ALWAYS use summary/account_totals for totals, largest-account, or per-account questions instead of summing rows yourself.', parameters: { type: 'object', properties: { account_code: { type: 'string', description: 'Optional account code (e.g. 2102, 1101). Omit to get all entries.' }, start_date: { type: 'string', description: 'YYYY-MM-DD' }, end_date: { type: 'string', description: 'YYYY-MM-DD' } }, required: [] } } },
   { type: 'function', function: { name: 'create_bookkeeping_transaction', description: 'Create a double-entry journal entry. Debits must equal credits. Use this to record transactions like Director Loans, repayments, revenue, expenses, etc.', parameters: { type: 'object', properties: { date: { type: 'string', description: 'Entry date YYYY-MM-DD' }, description: { type: 'string', description: 'Description of the journal entry' }, entries: { type: 'array', description: 'Array of line items. Each line has account_code, debit (number, default 0), credit (number, default 0), description (optional)', items: { type: 'object', properties: { account_code: { type: 'string', description: 'Account code (e.g. 1101, 2102, 4100)' }, debit: { type: 'number' }, credit: { type: 'number' }, description: { type: 'string' } }, required: ['account_code'] } } }, required: ['date', 'description', 'entries'] } } },
   { type: 'function', function: { name: 'update_journal_entry', description: 'Update an existing journal entry. Can change date, description, and line items. Debits must equal credits. Pass ALL lines (existing lines not included will be deleted). Accepts entry_number (e.g. JE-7db3) or entry id (e.g. je-xxxxxxxx).', parameters: { type: 'object', properties: { id: { type: 'string', description: 'Journal entry ID or entry_number (e.g. je-xxxxxxxx or JE-7db3)' }, date: { type: 'string', description: 'New entry date YYYY-MM-DD' }, description: { type: 'string', description: 'New description' }, entries: { type: 'array', description: 'New array of line items (replaces all existing lines)', items: { type: 'object', properties: { account_code: { type: 'string' }, debit: { type: 'number' }, credit: { type: 'number' }, description: { type: 'string' } }, required: ['account_code'] } } }, required: ['id'] } } },
   { type: 'function', function: { name: 'delete_journal_entry', description: 'Delete a journal entry and all its line items', parameters: { type: 'object', properties: { id: { type: 'string', description: 'Journal entry ID (e.g. je-xxxxxxxx)' } }, required: ['id'] } } },
@@ -381,6 +381,8 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       const q = args?.query || '';
       const startDate = args?.start_date || '';
       const endDate = args?.end_date || '';
+      // High default cap so status-filtered answers never lose rows to truncation
+      const sLimit = args?.limit || 100;
       const where = 'i.user_id = ? AND i.deleted_at IS NULL AND (i.invoice_number LIKE ? OR c.name LIKE ? OR i.vendor_name LIKE ? OR s.name LIKE ?)' +
         (startDate ? ' AND i.issue_date >= ?' : '') + (endDate ? ' AND i.issue_date <= ?' : '');
       const params: any[] = [userId, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`];
@@ -393,7 +395,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
           i.vendor_name, c.name as customer_name, s.name as supplier_name
          FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id LEFT JOIN suppliers s ON i.supplier_id = s.id
          WHERE ${where} ORDER BY i.created_at DESC LIMIT ?`
-      ).bind(...params, limit).all();
+      ).bind(...params, sLimit).all();
       // Exact per-direction totals over the FULL matched set (not just the LIMIT rows),
       // so the LLM never has to sum numbers itself.
       const summary = await db.prepare(
@@ -592,7 +594,23 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
           const lines = await db.prepare('SELECT account_code, account_name, description, debit, credit FROM journal_lines WHERE entry_id = ? ORDER BY sort_order').bind(e.id).all();
           result.push({ id: e.id, entry_number: e.entry_number, date: e.entry_date, description: e.description, status: e.status, lines: lines.results });
         }
-        return JSON.stringify({ entries: result });
+        // Server-side totals so the LLM never has to sum entries or lines itself:
+        // - overall debits/credits over the FULL date range (not just the LIMIT rows)
+        // - per-account-code totals using COA names (line-level names can be stale/wrong)
+        const totals = await db.prepare(
+          `SELECT COALESCE(SUM(jl.debit),0) as total_debits, COALESCE(SUM(jl.credit),0) as total_credits, COUNT(DISTINCT jl.entry_id) as entry_count
+           FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
+           WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} AND ${jeNotOrphaned()}`
+        ).bind(userId, startDate, endDate).first();
+        const acctTotals = await db.prepare(
+          `SELECT jl.account_code, COALESCE(a.account_name, MAX(jl.account_name)) as account_name, COALESCE(a.account_type, '') as account_type,
+                  SUM(COALESCE(jl.debit,0)) as total_debit, SUM(COALESCE(jl.credit,0)) as total_credit
+           FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
+           LEFT JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+           WHERE je.user_id = ? AND je.entry_date BETWEEN ? AND ? AND ${jePosted()} AND ${jeNotOrphaned()}
+           GROUP BY jl.account_code ORDER BY total_debit DESC`
+        ).bind(userId, startDate, endDate).all();
+        return JSON.stringify({ entries: result, summary: { total_debits: totals?.total_debits || 0, total_credits: totals?.total_credits || 0, entry_count: totals?.entry_count || 0 }, account_totals: acctTotals.results });
       }
       // Get account info
       const acct = await db.prepare('SELECT account_code, account_name, account_type FROM accounts WHERE user_id = ? AND account_code = ?').bind(userId, accountCode).first();
