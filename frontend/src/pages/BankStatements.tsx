@@ -48,6 +48,7 @@ export default function BankStatements() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
   const highlightStmtId = searchParams.get('highlight') || null;
+  const activeFilter = searchParams.get('filter') || null;
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [edits, setEdits] = useState<Record<string, Partial<Transaction>>>({});
@@ -223,6 +224,20 @@ export default function BankStatements() {
     tryScroll(8);
   }, [highlightStmtId, statements]);
 
+  const filterFiredRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (activeFilter !== 'unmatched' || filterFiredRef.current || !statements.length) return;
+    filterFiredRef.current = true;
+    const stmtsWithUnreconciled = statements.filter((s: any) => s.unlinked_count > 0);
+    if (stmtsWithUnreconciled.length > 0) {
+      setExpandedId(stmtsWithUnreconciled[0].id);
+      setTimeout(() => {
+        const card = document.getElementById(`stmt-row-${stmtsWithUnreconciled[0].id}`);
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 200);
+    }
+  }, [activeFilter, statements]);
+
   const detail = detailQuery.data as any;
   const transactions = detail?.transactions || [];
 
@@ -291,7 +306,7 @@ export default function BankStatements() {
                   <div className="flex gap-2 flex-shrink-0 ml-2 items-center" onClick={e => e.stopPropagation()}>
                     {s.balance_status === 'mismatch' && <span className="text-xs text-red-600 font-medium" title="Balance mismatch — confirmed with unresolved difference">⚠</span>}
                     {s.balance_status === 'corrected' && <span className="text-xs text-blue-600 font-medium" title="AI data corrected manually">✏</span>}
-                    <a href={`/api/bank-statements/${s.id}/file`} target="_blank" className="p-1.5 hover:bg-muted rounded" title="View original file">
+                    <a href={`/api/bank-statements/${s.id}/file?token=${localStorage.getItem('token') || ''}`} target="_blank" className="p-1.5 hover:bg-muted rounded" title="View original file">
                       <Eye className="h-4 w-4" />
                     </a>
                     <button
@@ -343,7 +358,7 @@ export default function BankStatements() {
                             <span>Closing: <span className="font-mono font-medium text-green-600">{detail?.closing_balance?.toLocaleString(undefined, { minimumFractionDigits: 2 }) || '-'}</span></span>
                             <div className="flex items-center gap-1">
                               {!isStaff && (
-                              <a href={`/api/bank-statements/${detail?.id}/export-csv`}
+                              <a href={`/api/bank-statements/${detail?.id}/export-csv?token=${localStorage.getItem('token') || ''}`}
                                 className="px-2 py-1 text-xs rounded border hover:bg-muted flex items-center gap-1"
                                 title="Export CSV">
                                 <Download className="h-3 w-3" /> CSV
