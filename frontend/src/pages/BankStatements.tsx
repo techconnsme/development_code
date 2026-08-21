@@ -321,12 +321,17 @@ export default function BankStatements() {
                           {s.closing_balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </span>
                       )}
-                      {s.tx_count > 0 && s.unlinked_count > 0 && (
+                      {activeFilter === 'unmatched' && s.unlinked_count > 0 && (
+                        <span className="text-xs bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 font-medium px-2 py-0.5 rounded-full">
+                          {s.unlinked_count} {tr('unreconciled', '未對賬', '未对账')}
+                        </span>
+                      )}
+                      {activeFilter !== 'unmatched' && s.tx_count > 0 && s.unlinked_count > 0 && (
                         <span className="text-xs text-amber-600 font-medium">
                           ⚠ {s.unlinked_count}/{s.tx_count} unlinked ({Math.round(s.unlinked_count / s.tx_count * 100)}%)
                         </span>
                       )}
-                      {s.tx_count > 0 && s.unlinked_count === 0 && (
+                      {activeFilter !== 'unmatched' && s.tx_count > 0 && s.unlinked_count === 0 && (
                         <span className="text-xs text-green-600 font-medium">✓ All linked</span>
                       )}
                     </div>
