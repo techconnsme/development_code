@@ -291,7 +291,21 @@ export default function BankStatements() {
           <Landmark className="h-4 w-4" /> {t('bank.list')} ({statements.length})
         </h3>
         {isLoading ? <p className="text-sm text-muted-foreground">{t('common.loading')}</p> :
-         statements.length === 0 ? <p className="text-sm text-muted-foreground">{t('bank.noData')}</p> : (
+         statements.length === 0 ? <p className="text-sm text-muted-foreground">{t('bank.noData')}</p> :
+         !isLoading && activeFilter === 'unmatched' && statements.every((s: any) => s.unlinked_count === 0) ? (
+          <div className="text-center py-8">
+            <CheckCircle2 className="h-8 w-8 text-green-500 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">
+              {tr('No unreconciled transactions found', '沒有未對賬交易', '没有未对账交易')}
+            </p>
+            <button
+              onClick={() => navigate('/dashboard')}
+              className="text-xs text-primary hover:underline mt-2"
+            >
+              {tr('Back to dashboard', '返回主頁', '返回主页')}
+            </button>
+          </div>
+         ) : (
           <div className="space-y-2">
             {statements.map((s: any) => (
               <div key={s.id} id={`stmt-row-${s.id}`}>
