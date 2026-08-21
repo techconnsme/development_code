@@ -261,6 +261,25 @@ export default function BankStatements() {
         <p className="text-muted-foreground mt-1">{t('bank.desc')}</p>
       </div>
 
+      {activeFilter === 'unmatched' && (
+        <div className="flex items-center justify-between bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-4 py-2.5">
+          <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="h-4 w-4" />
+            <span>{tr('Showing only unreconciled transactions', '僅顯示未對賬交易', '仅显示未对账交易')}</span>
+          </div>
+          <button
+            onClick={() => {
+              const params = new URLSearchParams(searchParams);
+              params.delete('filter');
+              navigate(`/bank-statements${params.toString() ? '?' + params.toString() : ''}`, { replace: true });
+            }}
+            className="text-xs font-medium text-amber-700 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-100 underline"
+          >
+            {tr('Clear filter', '清除篩選', '清除筛选')}
+          </button>
+        </div>
+      )}
+
       <PendingReviewBanner />
 
       {/* Continuity Chain */}
