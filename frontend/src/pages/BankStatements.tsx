@@ -292,7 +292,7 @@ export default function BankStatements() {
         </h3>
         {isLoading ? <p className="text-sm text-muted-foreground">{t('common.loading')}</p> :
          statements.length === 0 ? <p className="text-sm text-muted-foreground">{t('bank.noData')}</p> :
-         !isLoading && activeFilter === 'unmatched' && statements.every((s: any) => s.unlinked_count === 0) ? (
+         activeFilter === 'unmatched' && statements.every((s: any) => s.unlinked_count === 0) ? (
           <div className="text-center py-8">
             <CheckCircle2 className="h-8 w-8 text-green-500 mx-auto mb-2" />
             <p className="text-sm text-muted-foreground">
