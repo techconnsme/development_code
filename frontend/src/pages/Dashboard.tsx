@@ -149,7 +149,7 @@ export default function Dashboard() {
 
           {/* Unreconciled */}
           <button
-            onClick={() => navigate('/bank-statements')}
+            onClick={() => navigate('/bank-statements?filter=unmatched')}
             className="bg-card border rounded-xl p-4 text-left hover:shadow-md transition-shadow cursor-pointer"
             style={{ borderTop: '3px solid #ef4444' }}
           >
