@@ -241,9 +241,18 @@ export default function BankStatements() {
   const detail = detailQuery.data as any;
   const transactions = detail?.transactions || [];
 
-  const totalDeposits = transactions.reduce((s: number, tx: Transaction) => s + tx.deposit_amount, 0);
-  const totalWithdrawals = transactions.reduce((s: number, tx: Transaction) => s + tx.withdrawal_amount, 0);
-  const suggestedCount = transactions.filter((tx: Transaction) => tx.match_status === 'suggested').length;
+  const filteredTransactions = activeFilter === 'unmatched'
+    ? transactions.filter((tx: Transaction) =>
+        !tx.invoice_id && !tx.card_statement_id &&
+        tx.match_status !== 'confirmed' && tx.match_status !== 'skipped' &&
+        tx.match_status !== 'suggested'
+      )
+    : transactions;
+  const displayTransactions = activeFilter === 'unmatched' ? filteredTransactions : transactions;
+
+  const totalDeposits = displayTransactions.reduce((s: number, tx: Transaction) => s + tx.deposit_amount, 0);
+  const totalWithdrawals = displayTransactions.reduce((s: number, tx: Transaction) => s + tx.withdrawal_amount, 0);
+  const suggestedCount = displayTransactions.filter((tx: Transaction) => tx.match_status === 'suggested').length;
 
   return (
     <div className="space-y-6">
@@ -341,7 +350,7 @@ export default function BankStatements() {
                       <p className="text-sm text-muted-foreground py-4 text-center">
                         {tr('Loading transactions...', '載入交易中...', '载入交易中...')}
                       </p>
-                    ) : transactions.length === 0 ? (
+                    ) : filteredTransactions.length === 0 ? (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground py-4 justify-center">
                         <FileText className="h-4 w-4" />
                         {tr('No transactions found', '沒有找到交易', '沒有找到交易')}
@@ -445,7 +454,7 @@ export default function BankStatements() {
                               </tr>
                             </thead>
                             <tbody>
-                              {transactions.map((tx: Transaction) => {
+                              {filteredTransactions.map((tx: Transaction) => {
                                 const e = edits[tx.id] || {};
                                 const date = e.transaction_date !== undefined ? e.transaction_date : tx.transaction_date;
                                 const desc = e.description !== undefined ? e.description : tx.description;
@@ -693,7 +702,7 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                             <tfoot>
                               <tr className="border-t font-medium text-xs">
                                 <td colSpan={detail?.accounts?.length > 1 ? 3 : 2} className="py-2 text-muted-foreground">
-                                  {transactions.length} transactions
+                                  {filteredTransactions.length} transactions
                                   {suggestedCount > 0 && <span className="ml-2 text-yellow-600">({suggestedCount} suggested)</span>}
                                 </td>
                                 <td className="py-2 pr-3 text-right font-mono text-green-600">
@@ -722,7 +731,7 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
       {acctModalTx && (
         <AccountModal
           tx={acctModalTx}
-          allTx={transactions}
+          allTx={filteredTransactions}
           accounts={accounts}
           onClose={() => setAcctModalTx(null)}
           onApply={(code, _applySimilar, similarIds) => {
