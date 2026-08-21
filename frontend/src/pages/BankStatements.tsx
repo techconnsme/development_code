@@ -467,6 +467,10 @@ export default function BankStatements() {
                                 <tr key={tx.id} className={`border-b border-muted/50 hover:bg-muted/20 ${dirty ? 'bg-blue-50 dark:bg-blue-950/20' : ''} ${
                                   tx.match_status === 'suggested' ? 'bg-yellow-50 dark:bg-yellow-950/20' :
                                   tx.match_status === 'confirmed' ? 'bg-green-50 dark:bg-green-950/20' : ''
+                                } ${
+                                  activeFilter === 'unmatched' && !tx.invoice_id && !tx.card_statement_id &&
+                                  tx.match_status !== 'confirmed' && tx.match_status !== 'skipped'
+                                    ? 'border-l-4 border-l-amber-400' : ''
                                 }`}>
                                   <td className="py-1.5 pr-3 whitespace-nowrap">
                                     {/* Flag: unlinked + not skipped → needs attention */}
