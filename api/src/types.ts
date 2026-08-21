@@ -15,6 +15,8 @@ export type Bindings = {
   DEEPSEEK_API_KEY: string;
   GLM_API_KEY?: string;
   QWEN_API_KEY?: string;
+  // QwenCloud Token Plan key (sk-sp-...), primary LLM — https://token-plan.ap-southeast-1.maas.aliyuncs.com
+  QWEN_TOKEN_PLAN_API_KEY?: string;
 };
 
 export type Variables = {

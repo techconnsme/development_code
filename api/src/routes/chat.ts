@@ -1645,7 +1645,25 @@ async function callQwen(apiKey: string, messages: any[], tools?: any[], forceToo
     body: JSON.stringify(body),
   });
   if (!resp.ok) { const err = await resp.text(); throw new Error(`Qwen API error: ${resp.status} ${err}`); }
-  return resp.json();
+  const json = await resp.json();
+  if (!json?.choices?.[0]?.message) throw new Error('Qwen API error: empty response');
+  return json;
+}
+
+// Primary LLM — QwenCloud Token Plan (套餐专属 API Key sk-sp-...). Throws on empty/invalid
+// responses so the caller can fall back to DashScope International.
+async function callQwenTokenPlan(apiKey: string, messages: any[], tools?: any[], forceTool?: boolean): Promise<any> {
+  const body: any = { model: 'qwen3.7-plus', messages, max_tokens: 4000, temperature: 0.1, enable_thinking: false };
+  if (tools && tools.length > 0) { body.tools = tools; body.tool_choice = forceTool ? 'required' : 'auto'; }
+  const resp = await fetch('https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) { const err = await resp.text(); throw new Error(`Qwen TokenPlan API error: ${resp.status} ${err}`); }
+  const json = await resp.json();
+  if (!json?.choices?.[0]?.message) throw new Error('Qwen TokenPlan API error: empty response');
+  return json;
 }
 
 async function callDeepSeek(apiKey: string, messages: any[], tools?: any[], forceTool?: boolean): Promise<any> {
@@ -1764,19 +1782,45 @@ chat.post('/', async (c) => {
 
   if (!message && !file) return c.json({ reply: 'Message required' });
 
+  const tpKey = c.env.QWEN_TOKEN_PLAN_API_KEY as string | undefined;
   const qwenKey = c.env.QWEN_API_KEY as string | undefined;
   const dsKey = c.env.DEEPSEEK_API_KEY;
-  if (!qwenKey && !dsKey) return c.json({ reply: 'No LLM API key configured' });
+  if (!tpKey && !qwenKey && !dsKey) return c.json({ reply: 'No LLM API key configured' });
+  // Chain: DashScope International Qwen (primary) → Token Plan Qwen → DeepSeek
   const callLLM = async (msgs: any[], tools?: any[], force?: boolean) => {
     if (qwenKey) {
       try {
-        return await callQwen(qwenKey, msgs, tools, force);
+        const res = await callQwen(qwenKey, msgs, tools, force);
+        console.log('Qwen (DashScope International) is answered');
+        return res;
       } catch (err: any) {
-        // Qwen may be unavailable (free quota exhausted, throttled, etc.) — fall
-        // back to DeepSeek rather than failing the whole request.
-        if (dsKey && /Qwen API error: (403|429)/.test(err?.message || '')) {
+        // Primary failed (quota exhausted, throttled, empty answer, etc.) — fall
+        // back to Qwen Token Plan rather than failing the request.
+        console.error('Qwen (DashScope) error:', err?.message);
+        if (tpKey) {
+          try {
+            const res = await callQwenTokenPlan(tpKey, msgs, tools, force);
+            console.log('Qwen Token Plan is answered');
+            return res;
+          } catch (err2: any) {
+            console.error('Qwen TokenPlan error:', err2?.message);
+            if (dsKey) return await callDeepSeek(dsKey, msgs, tools, force);
+            throw err2;
+          }
+        } else if (dsKey) {
           return await callDeepSeek(dsKey, msgs, tools, force);
         }
+        throw err;
+      }
+    }
+    if (tpKey) {
+      try {
+        const res = await callQwenTokenPlan(tpKey, msgs, tools, force);
+        console.log('Qwen Token Plan is answered');
+        return res;
+      } catch (err: any) {
+        console.error('Qwen TokenPlan error:', err?.message);
+        if (dsKey) return await callDeepSeek(dsKey, msgs, tools, force);
         throw err;
       }
     }
