@@ -9,6 +9,7 @@ import { postPaymentToGl } from '../lib/post-payment';
 import { postInvoiceToGl } from '../lib/post-invoice';
 import { jePosted, jeLive, jeDeleted, jeNotOrphaned } from '../lib/journal-filters';
 import { HK_COA_NAMES, getCodeType, ensureMissingAccounts } from '../lib/ensure-accounts';
+import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
 
 // Re-exported for backward compatibility with anything importing them from here.
 export { HK_COA_NAMES, getCodeType };
@@ -61,8 +62,8 @@ async function collectTransactionCodes(db: any, tenantId: string): Promise<strin
     }
   }
 
-  // Add the 6 essential accounts if not already present
-  const essentials = ['11101', '21201', '41101', '42101', '51101', '62303'];
+  // Add the essential accounts if not already present
+  const essentials = ['11101', '11102', '11103', '21201', '21301', '41101', '42101', '51101', '62303', '65101', '65102'];
   for (const e of essentials) fullSet.add(e);
 
   return Array.from(fullSet).filter(Boolean).sort();
@@ -1157,22 +1158,14 @@ bookkeeping.get('/balance-sheet', async (c) => {
   ).bind(tenantId, asOf).first<{ cnt: number }>();
 
   if ((jeCount?.cnt || 0) > 0 && (rows.results || []).length > 0) {
-    // Calculate balances: Assets/Expenses = debit - credit, Liabilities/Equity/Revenue = credit - debit
-    const isContraAsset = (row: any) => {
-      const code = row.account_code || '';
-      const name = (row.account_name || '').toLowerCase();
-      return code.startsWith('123') || name.includes('accumulated depreciation')
-        || name.includes('累計折舊') || name.includes('allowance')
-        || name.includes('減值') || name.includes('呆帳');
-    };
-
+    // Calculate balances: Assets/Expenses = debit - credit, Liabilities/Equity/Revenue = credit - debit.
+    // Contra-asset accounts (accumulated depreciation etc.) intentionally use the SAME debit - credit
+    // formula so they come out negative and net against assets. Flipping them to credit - debit breaks
+    // the accounting identity: every journal line must contribute (debit - credit) to Assets - (Liab + Equity),
+    // otherwise the check is off by exactly -2 x (debit - credit) of the contra lines.
     const calcBalance = (row: any) => {
       const type = (row.account_type || '').toLowerCase();
       const code = (row.account_code || '');
-      // Contra-asset accounts (accumulated depreciation, allowances): credit balance
-      if (isContraAsset(row)) {
-        return row.total_credit - row.total_debit;
-      }
       // Assets (1xxx) and Expenses (5xxx/6xxx/8xxx): debit balance
       if (type === 'asset' || type === 'cost' || type === 'expense' || code.startsWith('1') || code.startsWith('5') || code.startsWith('6') || code.startsWith('8')) {
         return row.total_debit - row.total_credit;
@@ -1471,59 +1464,49 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
 
     const desc = tx.description || '';
     const invInfo = tx.invoice_number ? ` (${tx.invoice_number})` : '';
+    const dir = (tx.deposit_amount > 0 ? 'deposit' : 'withdrawal') as 'deposit' | 'withdrawal';
+    // Shared engine first; legacy heuristics below remain as fallback
+    const cat = categorizeTransaction(desc, dir);
+    const stmtBankCode = resolveBankAccountCode(tx.bank_name);
+    // Engine-tagged noise/internal transfers: never post unless user assigned a code
+    if (cat && cat.code === '' && !tx.account_code) continue;
+
     const entryId = `je-${uuidv4().slice(0, 8)}`;
     // Generate standardized voucher: B-{BANK}-{YYYYMM}-{SEQ}
     const bankCode = (tx.bank_name || 'BANK').replace(/[^A-Z0-9]/gi, '').slice(0, 6).toUpperCase() || 'BANK';
     const txDate = tx.transaction_date || new Date().toISOString().split('T')[0];
     const entryNum = await generateVoucher(`B-${bankCode}`, txDate, db, tenantId);
+    const nameOf = (code: string) => accountMap.get(code)?.name || HK_COA_NAMES[code]?.name || code;
     const lines: { code: string; name: string; debit: number; credit: number }[] = [];
 
     if (tx.deposit_amount > 0) {
       // OUTCLEARING/RETURN: deposit was reversed — contra entry
       if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
-        lines.push({ code: '21201', name: 'Director Loan', debit: tx.deposit_amount, credit: 0 });
-        lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: tx.deposit_amount });
+        lines.push({ code: '21201', name: nameOf('21201'), debit: tx.deposit_amount, credit: 0 });
       } else {
-        lines.push({ code: '11101', name: 'Cash on Hand', debit: tx.deposit_amount, credit: 0 });
-
-        // Use pre-assigned account_code if available
-        const assigned = tx.account_code ? accountMap.get(tx.account_code) : null;
-        if (assigned && tx.account_code !== '11101' && tx.account_code !== '21201') {
-          lines.push({ code: tx.account_code, name: assigned.name, debit: 0, credit: tx.deposit_amount });
-        } else if (isDirector(desc)) {
-          lines.push({ code: '21201', name: 'Director Loan', debit: 0, credit: tx.deposit_amount });
-        } else if (/VISA DEBIT.*- *CR|CREDIT.*VISA/i.test(desc)) {
-          lines.push({ code: '62303', name: 'Software Subscriptions', debit: 0, credit: tx.deposit_amount });
-        } else if (desc.includes('INTEREST PAYMENT') || desc.includes('利息收入')) {
-          lines.push({ code: '42101', name: 'Bank Interest', debit: 0, credit: tx.deposit_amount });
-        } else if (tx.deposit_amount >= 5000 && /DIRECT CREDIT|FPS|TRANSFER|CHEQUE/i.test(desc)) {
-          lines.push({ code: '21201', name: 'Director Loan', debit: 0, credit: tx.deposit_amount });
-        } else {
-          lines.push({ code: '41101', name: 'Professional Services', debit: 0, credit: tx.deposit_amount });
-        }
+        let contraCode: string | null = null;
+        if (tx.account_code && tx.account_code !== stmtBankCode) contraCode = tx.account_code;
+        else if (cat?.code && cat.code !== stmtBankCode) contraCode = cat.code;
+        else if (isDirector(desc)) contraCode = '21201';
+        else if (/VISA DEBIT.*- *CR|CREDIT.*VISA/i.test(desc)) contraCode = '62303';
+        else if (desc.includes('INTEREST PAYMENT') || desc.includes('利息收入')) contraCode = '42101';
+        else if (tx.deposit_amount >= 5000 && /DIRECT CREDIT|FPS|TRANSFER|CHEQUE/i.test(desc)) contraCode = '21201';
+        else contraCode = '41101';
+        lines.push({ code: contraCode, name: nameOf(contraCode), debit: 0, credit: tx.deposit_amount });
       }
+      lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: tx.deposit_amount, credit: 0 });
     }
     if (tx.withdrawal_amount > 0) {
       if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
-        lines.push({ code: '21201', name: 'Director Loan', debit: tx.withdrawal_amount, credit: 0 });
-        lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: tx.withdrawal_amount });
-      } else if (isDirector(desc) && /TRANSFER-DEBIT|FPS/i.test(desc)) {
-        lines.push({ code: '21201', name: 'Director Loan', debit: tx.withdrawal_amount, credit: 0 });
-        lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: tx.withdrawal_amount });
+        lines.push({ code: '21201', name: nameOf('21201'), debit: tx.withdrawal_amount, credit: 0 });
       } else {
-        // Use pre-assigned account_code if available
-        const assigned = tx.account_code ? accountMap.get(tx.account_code) : null;
-        let expCode: string, expName: string;
-        if (assigned && tx.account_code !== '11101' && tx.account_code !== '21201') {
-          expCode = tx.account_code;
-          expName = assigned.name;
-        } else {
-          expCode = tx.supplier_id ? '51101' : '62303';
-          expName = tx.supplier_id ? 'Subcontractor Fees' : 'Software Subscriptions';
-        }
-        lines.push({ code: expCode, name: expName, debit: tx.withdrawal_amount, credit: 0 });
-        lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: tx.withdrawal_amount });
+        let expCode: string | null = null;
+        if (tx.account_code && tx.account_code !== stmtBankCode) expCode = tx.account_code;
+        else if (cat?.code && cat.code !== stmtBankCode) expCode = cat.code;
+        else expCode = tx.supplier_id ? '51101' : '62303';
+        lines.push({ code: expCode, name: nameOf(expCode), debit: tx.withdrawal_amount, credit: 0 });
       }
+      lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: 0, credit: tx.withdrawal_amount });
     }
 
     if (lines.length === 0) continue;
@@ -1535,8 +1518,8 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
       await db.prepare(
-        'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, project, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      ).bind(`jl-${uuidv4().slice(0, 8)}`, entryId, l.code, l.name, desc + invInfo, l.debit, l.credit, l.project || null, i).run();
+        'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(`jl-${uuidv4().slice(0, 8)}`, entryId, l.code, l.name, desc + invInfo, l.debit, l.credit, i).run();
     }
     created++;
   }
