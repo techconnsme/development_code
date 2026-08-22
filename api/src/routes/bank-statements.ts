@@ -319,10 +319,13 @@ bank.post('/auto-match', async (c) => {
      ORDER BY bt.transaction_date`
   ).bind(tenantId).all() : { results: [] as any[] };
 
-  // Fetch unpaid invoices with direction + counterparty name for the name tier
+  // Fetch unpaid invoices with direction + counterparty name for the name tier.
+  // Party depends on direction: incoming(AP) → supplier, outgoing(AR) → customer.
+  // (customer_id is NOT NULL on all invoices and often holds our own company as
+  // a placeholder on AP bills, so blind COALESCE picks the wrong name.)
   const allInvoices = await db.prepare(
-    `SELECT i.id, i.invoice_number, i.total, i.currency, i.issue_date, i.due_date, i.direction, i.file_id,
-            COALESCE(cust.name, supp.name) AS counterparty_name
+    `SELECT i.id, i.invoice_number, i.total, i.currency, i.issue_date, i.direction, i.file_id, i.due_date,
+            cust.name AS customer_name, supp.name AS supplier_name
      FROM invoices i
      LEFT JOIN customers cust ON i.customer_id = cust.id
      LEFT JOIN suppliers supp ON i.supplier_id = supp.id
@@ -338,7 +341,8 @@ bank.post('/auto-match', async (c) => {
   const toMatchable = (i: any) => ({
     id: i.id, invoice_number: i.invoice_number, total: i.total, currency: i.currency,
     issue_date: i.issue_date, due_date: i.due_date,
-    counterparty_name: i.counterparty_name || null, file_id: i.file_id || null,
+    counterparty_name: i.direction === 'incoming' ? (i.supplier_name || i.customer_name) : (i.customer_name || i.supplier_name),
+    file_id: i.file_id || null,
   });
 
   // Helper: run shared matcher (graduated tiers; see lib/bank-matcher.ts)
@@ -355,7 +359,7 @@ bank.post('/auto-match', async (c) => {
   for (const tx of deposits.results as any[]) {
     const result = findBestMatch(tx, arInvoices, 'deposit_amount');
     if (result) {
-      const { bestMatch, reason } = result;
+      const { bestMatch, bestConfidence, reason } = result;
 
       const stmt = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
       const stmtFile = stmt?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt.r2_key, tenantId).first() as any : null;
@@ -372,7 +376,7 @@ bank.post('/auto-match', async (c) => {
   for (const tx of withdrawals.results as any[]) {
     const result = findBestMatch(tx, apInvoices, 'withdrawal_amount');
     if (result) {
-      const { bestMatch, reason } = result;
+      const { bestMatch, bestConfidence, reason } = result;
 
       const stmt2 = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
       const stmtFile2 = stmt2?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt2.r2_key, tenantId).first() as any : null;
