@@ -5,6 +5,7 @@ import { Bindings, Variables } from '../types';
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { getJwtSecret } from '../middleware/auth';
 import { jeLive } from '../lib/journal-filters';
+import { categorizeTransaction } from '../lib/transaction-categorizer';
 const card = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 // Audit log helper
 async function auditLog(db: any, userId: string, action: string, entityType: string, entityId: string | null, changes?: object) {
@@ -395,45 +396,19 @@ card.post('/:id/auto-categorize', async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const stmtId = c.req.param('id');
   const db = c.env.DB;
+  // Categorize via the shared engine — card transactions are purchases (withdrawals)
   const txs = await db.prepare(
     `SELECT id, description, amount FROM card_transactions
      WHERE card_statement_id = ? AND user_id = ? AND expense_account_code IS NULL AND deleted_at IS NULL`
   ).bind(stmtId, tenantId).all();
-  const rules: { pattern: RegExp; code: string; name: string }[] = [
-    { pattern: /RENT|租金|租/, code: '62101', name: 'Rent' },
-    { pattern: /SALARY|PAYROLL|WAGE|薪金|工資|工资/, code: '61201', name: 'Salaries' },
-    { pattern: /OFFICE|OFFICE SUPPLIES|文具|辦公|办公/, code: '62301', name: 'Office Supplies' },
-    { pattern: /ELECTRICITY|CLP|HK ELECTRIC|電費|电费/, code: '62201', name: 'Electricity' },
-    { pattern: /WATER|水費|水费/, code: '62202', name: 'Water' },
-    { pattern: /TELECOM|PHONE|MOBILE|BROADBAND|電訊|電信|通讯/, code: '62302', name: 'Telecom' },
-    { pattern: /SOFTWARE|SUBSCRIPTION|CLOUD|AWS|GOOGLE|MICROSOFT|ADOBE/, code: '62303', name: 'Software Subscriptions' },
-    { pattern: /PASTEL\s*TECH|SUBCONTRACT|SUB-CONTRACT|OUTSOURC|外判|顧問費/, code: '51101', name: 'Subcontractor Fees' },
-    { pattern: /INSURANCE|保險|保险/, code: '63101', name: 'Insurance' },
-    { pattern: /TRANSPORT|TAXI|UBER|MTR|BUS|交通/, code: '64101', name: 'Transport' },
-    { pattern: /MEAL|RESTAURANT|DINING|餐飲|餐饮|餐廳|餐厅/, code: '64201', name: 'Meals & Entertainment' },
-    { pattern: /TRAVEL|HOTEL|機票|机票|FLIGHT/, code: '64202', name: 'Travel' },
-    { pattern: /ADVERTISING|MARKETING|廣告|广告|推廣|推广/, code: '65101', name: 'Advertising' },
-    { pattern: /BANK.*CHARGE|BANK.*FEE|SERVICE CHARGE|手續費|手续费/, code: '65102', name: 'Bank Charges' },
-    { pattern: /INTEREST|利息/, code: '66101', name: 'Interest Expense' },
-    { pattern: /PARKNSHOP|WELLCOME|AEON|SUPERMARKET|超市|百佳|惠康/, code: '62401', name: 'Sundry Purchases' },
-    { pattern: /PETROL|SHELL|CALTEX|汽油/, code: '64102', name: 'Motor Expenses' },
-    { pattern: /COURIER|POSTAGE|郵費|邮费|SF EXPRESS|順豐|顺丰/, code: '64103', name: 'Postage & Courier' },
-    { pattern: /PRINTING|印刷/, code: '62304', name: 'Printing & Stationery' },
-    { pattern: /REPAIR|MAINTENANCE|維修|维修/, code: '62203', name: 'Repairs & Maintenance' },
-    { pattern: /PROFESSIONAL.*FEE|CONSULTING|LEGAL|AUDIT|顧問|顧問費/, code: '65201', name: 'Professional Fees' },
-  ];
   let categorized = 0;
   for (const tx of txs.results as any[]) {
-    const desc = (tx.description || '').toUpperCase();
-    for (const rule of rules) {
-      if (rule.pattern.test(desc)) {
-        await db.prepare(
-          "UPDATE card_transactions SET expense_account_code = ?, match_status = 'categorized' WHERE id = ? AND deleted_at IS NULL"
-        ).bind(rule.code, tx.id).run();
-        categorized++;
-        break;
-      }
-    }
+    const r = categorizeTransaction(tx.description || '', 'withdrawal');
+    if (!r || r.code === '') continue;
+    await db.prepare(
+      "UPDATE card_transactions SET expense_account_code = ?, match_status = 'categorized' WHERE id = ? AND deleted_at IS NULL"
+    ).bind(r.code, tx.id).run();
+    categorized++;
   }
   return c.json({ success: true, categorized, total: txs.results.length });
 });
