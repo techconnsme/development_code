@@ -11,6 +11,8 @@ import * as pdfjsWorkerModule from 'pdfjs-dist/build/pdf.worker.mjs';
 (globalThis as any).pdfjsWorker = pdfjsWorkerModule;
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { jeLive } from '../lib/journal-filters';
+import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
+import { ensureMissingAccounts, HK_COA_NAMES } from '../lib/ensure-accounts';
 import { tryPostInvoiceToGl } from '../lib/post-invoice';
 import { wsBroadcast } from './ws';
 import { generateReceiptNumber, detectOwnNumber } from '../lib/numbering';
@@ -424,59 +426,33 @@ ${inputOcrText.slice(0, 8000)}` }],
     "UPDATE file_records SET category = 'bank_statement', folder = 'Bank Statements', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
   ).bind(fileId).run();
 
-  // Auto-categorize transactions
+  // Resolve + persist this statement's COA bank account (11102 HSBC / 11103 other)
+  let stmtBankCode = '11103';
   try {
-    const rules: [RegExp, string][] = [
-      [/B\/F\s+BALANCE|承上結餘/i, ''],
-      [/INTEREST|SAVINGS?\s+INTEREST|利息/i, '42101'],                       // Bank interest income (Lily #10: also matches "INTEREST-SAVINGS ACCOUNT")
-      [/VISA\s+DEBIT|扣賬卡交易/i, '62303'],                                 // Software subscriptions (best default for card charges)
-      [/TRANSFER-DEBIT|轉賬支出/i, '66203'],                                 // Miscellaneous
-      [/FPS\s+FEE|FPSPAYMENT/i, '65101'],                                   // Bank service fee
-      [/OUTCLEARING|RETURN|退票/i, '66203'],                                // Miscellaneous
-      [/SALARY|薪金|薪資|工資|PAYROLL/i, '61201'],                          // Staff salaries
-      [/RENT|租金/i, '62101'],                                              // Office rent
-      [/ELECTRIC(ITY)?|CLP|HKELECTRIC|中電|港燈|電費/i, '62201'],           // Electricity
-      [/WATER|水費/i, '62202'],                                             // Water
-      [/UTILITIES|水電/i, '62200'],                                         // Utilities (parent)
-      [/INSURANCE|保險/i, '63300'],                                         // Insurance (parent)
-      [/PROFITS?\s+TAX|IRD|稅/i, '21301'],                                  // Profits tax payable
-      [/SOFTWARE|SUBSCRIPTION|CLOUD|API/i, '62303'],                        // Software subscriptions
-      [/HOSTING|DOMAIN|寄存|域名/i, '62302'],                               // Web hosting
-      [/PHONE|MOBILE|BROADBAND|INTERNET|CHINA MOBILE|PCCW|SMARTONE|電話|上網/i, '62301'], // Phone & internet
-      [/MPF|強積金|MANULIFE/i, '61202'],                                    // MPF employer contribution
-      [/AUDIT|審計/i, '63101'],                                             // Audit fee
-      [/SECRETARY|秘書/i, '63102'],                                         // Company secretary fee
-      [/LEGAL|律師|法律/i, '63103'],                                        // Legal fee
-      [/TRAVEL|機票|HOTEL|海外/i, '64302'],                                 // Overseas travel
-      [/TAXI|MTR|BUS|OCTOPUS|SHELL|CALTEX|油費|加油|交通/i, '64301'],       // Local transport
-      [/DINING|MCDONALD|STARBUCKS|CAFE|RESTAURANT|餐飲|飯|茶餐廳/i, '64200'],  // Meals & entertainment
-      [/PARKNSHOP|WELLCOME|SUPERMARKET|GROCERY|超市/i, '62402'],            // Pantry
-      [/BANK\s+CHARGE|SERVICE FEE|手續費|銀行費/i, '65101'],                // Bank service fee
-      [/WIRE\s+TRANSFER|TT\s+CHARGE|OUTGOING\s+TRANSFER/i, '65101'],        // Wire transfer fee
-      [/CHEQUE\s+PAYMENT|支票/i, '51101'],                                  // Subcontractor fees (default for cheque payments)
-      [/LOAN\s+REPAYMENT|DIRECTOR|LAI\s*KIN|SZETO/i, '31201'],              // Director current account
-      [/INWARD\s+REMITTANCE|CREDIT\s+TRANSFER.*IN|收款|入賬/i, '41101'],    // Professional services income
-      [/CLIENT\s+PAYMENT|CUSTOMER\s+PAYMENT|客戶付款/i, '41200'],           // Sales revenue (Lily #7: CLIENT PAYMENT-ACME)
-      [/CHEQUE\s+DEPOSIT/i, '41200'],                                       // Sales revenue
-    ];
-    const directorPattern = /JOSEPH|LIN\s*PUI|LAI\s*KIN|RAYMOND|SZETO/i;
+    const stmtRow = await db.prepare(
+      'SELECT bank_name, account_code FROM bank_statements WHERE id = ? AND user_id = ?'
+    ).bind(stmtId, userId).first<{ bank_name: string | null; account_code: string | null }>();
+    stmtBankCode = stmtRow?.account_code || resolveBankAccountCode(stmtRow?.bank_name);
+    if (!stmtRow?.account_code) {
+      await db.prepare(
+        "UPDATE bank_statements SET account_code = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?"
+      ).bind(stmtBankCode, stmtId, userId).run();
+    }
+  } catch { /* non-critical */ }
 
+  // Auto-categorize transactions via the shared engine
+  let autoCategorized = 0;
+  try {
     const txs = await db.prepare(
       'SELECT id, description, deposit_amount FROM bank_transactions WHERE bank_statement_id = ? AND account_code IS NULL AND deleted_at IS NULL'
     ).bind(stmtId).all();
 
     for (const tx of txs.results as any[]) {
-      const desc = tx.description || '';
-      const isDirector = directorPattern.test(desc);
-      let code = '';
-      for (const [pattern, acctCode] of rules) {
-        if (pattern.test(desc)) { code = acctCode; break; }
-      }
-      if (isDirector && /DIRECT\s+CREDIT|TRANSFER-DEBIT|FPS|自動轉賬|轉賬/.test(desc)) code = '22020';
-      if (!code && tx.deposit_amount > 0 && /DIRECT\s+CREDIT|自動轉賬存入/i.test(desc)) code = isDirector ? '22020' : '41020';
-      if (code) {
-        await db.prepare('UPDATE bank_transactions SET account_code = ? WHERE id = ? AND deleted_at IS NULL').bind(code, tx.id).run();
-      }
+      const dir = (tx.deposit_amount > 0 ? 'deposit' : 'withdrawal') as 'deposit' | 'withdrawal';
+      const r = categorizeTransaction(tx.description || '', dir);
+      if (!r || r.code === '') continue;
+      await db.prepare('UPDATE bank_transactions SET account_code = ? WHERE id = ? AND deleted_at IS NULL').bind(r.code, tx.id).run();
+      autoCategorized++;
     }
   } catch { /* non-critical */ }
 
@@ -523,33 +499,31 @@ ${inputOcrText.slice(0, 8000)}` }],
     }
   } catch { /* non-critical */ }
 
-  // Auto-generate journal entries from categorized bank transactions
+  // Auto-generate journal entries from categorized bank transactions.
+  // Contra side = the statement's real bank account (stmtBankCode), not Cash on Hand.
+  // Skips: already-posted (refSet), invoice-matched (payment leg owns them),
+  // and engine-tagged ignore/internal_transfer rows.
+  let skippedTransfers = 0;
   try {
     const usedCodes = await db.prepare(
       'SELECT DISTINCT account_code FROM bank_transactions WHERE bank_statement_id = ? AND account_code IS NOT NULL AND deleted_at IS NULL'
     ).bind(stmtId).all();
-    const codeList = (usedCodes.results as any[]).map(r => r.account_code).filter(Boolean);
+    const codeList = Array.from(new Set([
+      ...((usedCodes.results as any[]).map(r => r.account_code).filter(Boolean) as string[]),
+      stmtBankCode,
+    ]));
     if (codeList.length > 0) {
-      // Ensure accounts exist
-      const existingAccts = await db.prepare(
-        `SELECT account_code FROM accounts WHERE user_id = ? AND account_code IN (${codeList.map(() => '?').join(',')})`
-      ).bind(userId, ...codeList).all();
-      const existSet = new Set((existingAccts.results as any[]).map(r => r.account_code));
-      for (const code of codeList) {
-        if (!existSet.has(code)) {
-          const type = code.startsWith('1') ? 'asset' : code.startsWith('2') ? 'liability' : code.startsWith('3') ? 'equity' : code.startsWith('4') ? 'revenue' : 'expense';
-          await db.prepare(
-            'INSERT INTO accounts (id, user_id, account_code, account_name, account_type) VALUES (?, ?, ?, ?, ?)'
-          ).bind(`acc-${uuidv4().slice(0, 8)}`, userId, code, code, type).run();
-        }
-      }
+      // Ensure accounts exist with proper template names (never code-as-name placeholders)
+      const createdCount: number[] = [0];
+      await ensureMissingAccounts(db, userId, codeList, createdCount);
 
-      // Load account map
+      // Load account map for line names
       const allAccts = await db.prepare(
         'SELECT account_code, account_name FROM accounts WHERE user_id = ? AND is_active = 1'
       ).bind(userId).all();
       const acctMap = new Map<string, string>();
       for (const r of allAccts.results as any[]) acctMap.set(r.account_code, r.account_name);
+      const nameOf = (code: string) => acctMap.get(code) || HK_COA_NAMES[code]?.name || code;
 
       // Get unprocessed transactions
       const existingRefs = await db.prepare(
@@ -564,24 +538,28 @@ ${inputOcrText.slice(0, 8000)}` }],
       let created = 0;
       for (const tx of txs.results as any[]) {
         if (refSet.has(tx.id)) continue;
+        // Invoice-matched transactions are posted by the payment leg on match-confirm
+        if (tx.invoice_id) continue;
         const desc = tx.description || '';
+        const dir = (tx.deposit_amount > 0 ? 'deposit' : 'withdrawal') as 'deposit' | 'withdrawal';
+        const cat = categorizeTransaction(desc, dir);
+        if (cat && cat.code === '') {
+          // Engine says never post (B/F noise, internal transfers between own accounts)
+          if (cat.tag === 'internal_transfer') skippedTransfers++;
+          continue;
+        }
+        const contraCode = tx.account_code || cat?.code || (dir === 'deposit' ? '41101' : '62303');
+        if (contraCode === stmtBankCode) { skippedTransfers++; continue; }
         const entryId = `je-${uuidv4().slice(0, 8)}`;
         const entryNum = `JE-AUTO-${String(Date.now()).slice(-6)}-${uuidv4().slice(0, 4)}`;
         const lines: { code: string; name: string; debit: number; credit: number }[] = [];
 
         if (tx.deposit_amount > 0) {
-          lines.push({ code: '11101', name: acctMap.get('11101') || 'Cash on Hand', debit: tx.deposit_amount, credit: 0 });
-          const assignedCode = tx.account_code || '41101';
-          if (assignedCode !== '11101') {
-            lines.push({ code: assignedCode, name: acctMap.get(assignedCode) || assignedCode, debit: 0, credit: tx.deposit_amount });
-          }
-        }
-        if (tx.withdrawal_amount > 0) {
-          const assignedCode = tx.account_code || '62303';
-          if (assignedCode !== '11101') {
-            lines.push({ code: assignedCode, name: acctMap.get(assignedCode) || assignedCode, debit: tx.withdrawal_amount, credit: 0 });
-          }
-          lines.push({ code: '11101', name: acctMap.get('11101') || 'Cash on Hand', debit: 0, credit: tx.withdrawal_amount });
+          lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: tx.deposit_amount, credit: 0 });
+          lines.push({ code: contraCode, name: nameOf(contraCode), debit: 0, credit: tx.deposit_amount });
+        } else if (tx.withdrawal_amount > 0) {
+          lines.push({ code: contraCode, name: nameOf(contraCode), debit: tx.withdrawal_amount, credit: 0 });
+          lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: 0, credit: tx.withdrawal_amount });
         }
 
         if (lines.length > 0) {
@@ -604,6 +582,9 @@ ${inputOcrText.slice(0, 8000)}` }],
     success: true,
     statement_id: stmtId,
     transactions_count: txCount,
+    auto_categorized: autoCategorized,
+    bank_account_code: stmtBankCode,
+    skipped_transfers: skippedTransfers,
     parsed_via_ai: !!parsed,
     usage,
     glm_usage: glmUsage,
