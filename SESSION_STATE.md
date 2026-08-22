@@ -1,8 +1,20 @@
-# Session State — 2026-08-22 (bank charge → COA auto-linking)
+# Session State — 2026-08-22 (bank charge → COA auto-linking + auto-match fix)
 
-## What was done this session (2026-08-22)
+## Auto-match "no suggestions" root cause (fixed, deployed 2ed538e2)
 
-### Bank charge auto-linking to COA (spec: docs/superpowers/specs/2026-08-22-bank-charge-auto-linking-design.md)
+Symptom: POST /bank-statements/auto-match returned 0 suggestions everywhere (PNR bank-link rate 4.5%, chain 0%).
+
+Stacked root causes:
+1. **Exact-amount-only gate** (`|Δ|<0.01`): real HSBC narrations never carry invoice numbers or exact totals → nothing ever matched. Replaced with graduated tiers in NEW lib `api/src/lib/bank-matcher.ts`: high=narration contains inv#; medium=exact amt in issue→due+7; low=near-amt ≤max(HK$10, 0.5%) ±window; low=counterparty fuzzy ≥80 (company-matcher) within issue−15→due+45 AND amount within ⅓–3× of total. Tests: tests/bank-matcher.test.ts (13 cases).
+2. **NULL match_status excluded** by strict `='unmatched'` → now `(IS NULL OR ='unmatched')`; 'skipped' still respected (response adds excluded_skipped). PNR had 61/67 mass-skipped via skip-link toggle — reset to 'unmatched' (data op on u-83161e0c).
+3. **Wrong counterparty for AP**: route used COALESCE(cust.name, supp.name); AP invoices carry placeholder customer (=own company) so name tier scored against ourselves. Now direction-aware: incoming→supplier, outgoing→customer.
+4. Debug journey gotcha: leftover `bestConfidence` ref after destructure refactor → runtime 500 only visible live (esbuild doesn't catch undefined vars).
+
+Verified live (v `2ed538e2`): PNR now suggests 2 low-confidence Pastel Tech links ($5,100→INV-MT1MAIS6, $27,544→INV-MT2DDQ93). EHSIA=0 is correct-empty (zero open invoices). Deploy propagation takes ~5s — first post-deploy probe can hit the old version.
+
+Link-rate context: global bank↔invoice 30/474 (6.3%), inv↔receipt 3/105, full chain 0/474 structurally (no invoice has both links anywhere).
+
+## Bank charge auto-linking to COA (spec: docs/superpowers/specs/2026-08-22-bank-charge-auto-linking-design.md)
 
 **New shared engine** `api/src/lib/transaction-categorizer.ts` — replaces 4 divergent inline rule copies:
 - `normalizeDescription()` — uppercase/collapse; strips HSBC cheque refs (`HC…`), transfer refs (`NA…`), `REF:xxxx xxxx`, dates `(03NOV25)`/`19MAR`, amounts
