@@ -1,6 +1,31 @@
-# Session State — 2026-08-18 (invoice direction + pdf-text OCR session)
+# Session State — 2026-08-22 (bank charge → COA auto-linking)
 
-## Deployed URLs (latest)
+## What was done this session (2026-08-22)
+
+### Bank charge auto-linking to COA (spec: docs/superpowers/specs/2026-08-22-bank-charge-auto-linking-design.md)
+
+**New shared engine** `api/src/lib/transaction-categorizer.ts` — replaces 4 divergent inline rule copies:
+- `normalizeDescription()` — uppercase/collapse; strips HSBC cheque refs (`HC…`), transfer refs (`NA…`), `REF:xxxx xxxx`, dates `(03NOV25)`/`19MAR`, amounts
+- Tier-1 ordered rules (~45) grounded in REAL HSBC Business Direct descriptors: bare `CHARGES`→65101, `MONTHLY SERVICE FEE`/`PAPER STATEMENT FEE`/`ACCOUNT APPLICATION FEE`/`BLG CQBK FEE`→65101, `DEBIT INTEREST`/`INTEREST CHARGE`→65102 vs `CREDIT INTEREST`(dep)→42101, `REFUND …FEE`(dep)→65101 fee_refund, `INLAND REVENUE`→21301, `SWEEP`/bare `CR TO`→internal_transfer(no JE), masked director `LIN P** K**** J*****`→21201
+- Tier-2 fuzzy: reused `levenshtein` from company-matcher; prefix-relation=0.9, edit-ratio ≥0.85 else null (no silent guesses)
+- `resolveBankAccountCode()`: HSBC/滙豐/Shanghai Banking→11102 else 11103
+
+**Wired into:**
+1. `file-storage.ts` import — persists `bank_statements.account_code`; JEs contra = real bank acct (was always 11101); skips invoice-matched txs (C1 double-post shrink) + internal transfers; missing accounts via `ensureMissingAccounts` (proper names, no code-as-name placeholders); response adds `auto_categorized/bank_account_code/skipped_transfers`
+2. `bank-statements.ts /:id/auto-categorize` — engine + dup-guard kept; compliance block now reads in-loop matched codes (was reading stale rows = dead code)
+3. `card-statements.ts /:id/auto-categorize` — WRONG codes fixed (BANK CHARGE was 65102 Loan Interest, ADVERTISING was 65101 Bank Fee, nonexistent 62304 etc.)
+4. `bank-statements.ts PATCH transactions/:id` regen — engine-first, user override wins, contra = stmt bank code, draft status kept
+5. `bookkeeping.ts /auto-generate-entries` — engine-first w/ legacy fallbacks, bank contra, essentials += 11102/11103/21301/65101/65102; **removed phantom `journal_lines.project` column ref** (never applied to live D1 — was crashing this endpoint)
+
+**UI:** statement review rows show COA select (fetch `/bookkeeping/accounts`) → PATCH account_code regenerates JE server-side.
+
+**Tests:** `npx --yes tsx tests/categorizer.test.ts` — 46 cases from real corpora. NOTE: root `.gitignore` ignores `tests/` — file force-added (`git add -f`).
+
+**Verified:** wrangler --dry-run bundles OK after each change; frontend `npm run build` OK.
+
+**NOT done:** deploy to worker; post-deploy QA (upload `test-sample-real/EHSIA/eStatement/eStatement 202504.pdf` as joseph.lin@pnr.hk — richest fee month: monthly service/paper statement/CQBK/application fees → expect 65101 with 11102 contra). Historical misposted data untouched.
+
+## Deployed URLs (latest — PRE-this-feature)
 
 | | URL |
 |---|---|
