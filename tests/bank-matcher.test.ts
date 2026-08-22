@@ -77,6 +77,22 @@ t('tier low: counterparty name ≥80 + date in ±window', () => {
   assert.match(r?.reason || '', /scores \d+/);
 });
 
+t('name tier runs even when amount differs (5100 vs 4150, real PNR shape)', () => {
+  const r = findBestInvoiceMatch(
+    { id: 'txN1', transaction_date: '2025-11-07', description: 'PASTEL TECH LIMITED HC125B0730030988   07NOV', amount: 5100 },
+    [{ ...INV, issue_date: '2025-11-04', due_date: '2025-12-03', total: 4150 }]
+  );
+  assert.equal(r?.confidence, 'low');
+});
+
+t('name tier rejects wild amount ratios (55000 vs 4150)', () => {
+  const r = findBestInvoiceMatch(
+    { id: 'txN2', transaction_date: '2025-11-05', description: 'PASTEL TECH LIMITED HC125B0521391053   05NOV', amount: 55000 },
+    [{ ...INV, issue_date: '2025-11-04', due_date: '2025-12-03', total: 4150 }]
+  );
+  assert.equal(r, null);
+});
+
 t('name below threshold -> null', () => {
   const r = findBestInvoiceMatch(
     { id: 'tx8', transaction_date: '2025-06-20', description: 'TOTALLY UNRELATED COMPANY LTD', amount: 12345 },

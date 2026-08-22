@@ -90,11 +90,15 @@ function evaluateInvoice(tx: MatchableTx, inv: MatchableInvoice): InvoiceMatch |
         reason: `Amount within ${(delta).toFixed(2)} of invoice total (${Math.abs(delta / (inv.total || 1) * 100).toFixed(1)}% — fees/partial?)`,
       };
     }
-    return null;
+    // fall through to name tier — do not discard a good counterparty signal
   }
 
-  // Tier 4 — counterparty name similarity + generous date window
-  if (inv.counterparty_name) {
+  // Tier 4 — counterparty name similarity + generous date window.
+  // Amount must be same order of magnitude (≤3× / ≥⅓) so a huge unrelated
+  // payment never latches onto a small bill by name alone.
+  if (inv.counterparty_name
+      && tx.amount > 0 && inv.total > 0
+      && tx.amount <= inv.total * 3 && tx.amount >= inv.total / 3) {
     const score = fuzzyMatchCompany(tx.description || '', [inv.counterparty_name]);
     if (score.best && score.best.score >= 80) {
       const duePlus45 = new Date(dueBase.getTime() + 45 * DAY);
