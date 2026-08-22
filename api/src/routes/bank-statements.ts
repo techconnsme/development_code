@@ -6,6 +6,7 @@ import { Bindings, Variables } from '../types';
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { postPaymentToGl } from '../lib/post-payment';
 import { jePosted, jeLive, jeDeleted, jeNotOrphaned } from '../lib/journal-filters';
+import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
 import { restoreInvoiceJournal, purgeInvoiceJournal } from '../lib/invoice-journal';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -1222,9 +1223,19 @@ bank.post('/:id/auto-categorize', async (c) => {
   const stmtId = c.req.param('id');
 
   const stmt = await db.prepare(
-    'SELECT id, bank_name, account_number, statement_year, statement_month FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(stmtId, tenantId).first<{ id: string; bank_name: string | null; account_number: string | null; statement_year: number | null; statement_month: number | null }>();
+    'SELECT id, bank_name, account_number, account_code, statement_year, statement_month FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(stmtId, tenantId).first<{ id: string; bank_name: string | null; account_number: string | null; account_code: string | null; statement_year: number | null; statement_month: number | null }>();
   if (!stmt) return c.json({ error: 'Statement not found' }, 404);
+
+  // Persist this statement's COA bank account if not yet resolved
+  try {
+    const stmtBankCode = stmt.account_code || resolveBankAccountCode(stmt.bank_name);
+    if (!stmt.account_code) {
+      await db.prepare(
+        "UPDATE bank_statements SET account_code = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?"
+      ).bind(stmtBankCode, stmtId, tenantId).run();
+    }
+  } catch { /* non-critical */ }
 
   // Duplicate guard: if another active statement for the same bank+account+period
   // already has journal entries, skip auto-categorize to prevent double-counting
@@ -1242,38 +1253,7 @@ bank.post('/:id/auto-categorize', async (c) => {
     }
   }
 
-  // Categorization rules: [pattern, account_code]
-  const rules: [RegExp, string][] = [
-    [/B\/F\s+BALANCE|承上結餘/i, ''],
-    [/INTEREST\s*(PAYMENT|收入)|利息/i, '42101'],
-    [/PASTEL\s*TECH|SUBCONTRACT|SUB-CONTRACT|OUTSOURC|外判|顧問費/i, '51101'],
-    [/VISA\s+DEBIT.*-.*CR|CREDIT.*VISA/i, '62303'],
-    [/VISA\s+DEBIT|扣賬卡交易/i, '62303'],
-    [/TRANSFER-DEBIT|轉賬支出/i, '62303'],
-    [/DIRECT\s+CREDIT|自動轉賬存入/i, ''],
-    [/FPS\s+FEE|FPSPAYMENT/i, '65101'],
-    [/OUTCLEARING|RETURN|退票/i, '21201'],
-    [/CHEQUE|支票/i, '11101'],
-    [/SALARY|薪金|薪資|工資|PAYROLL/i, '61201'],
-    [/RENT|租金/i, '62101'],
-    [/UTILITIES|水電|電費|水費/i, '62201'],
-    [/INSURANCE|保險/i, '63301'],
-    [/TAX|稅|IRD/i, '81101'],
-    [/SOFTWARE|SUBSCRIPTION|CLOUD|API|\.AI\b|\.COM/i, '62303'],
-    [/MPF|強積金|公積金/i, '61202'],
-    [/AUDIT|審計/i, '63101'],
-    [/SECRETARY|秘書/i, '63102'],
-    [/TRAVEL|交通|機票|HOTEL/i, '64301'],
-    [/ADVERTISING|廣告|MARKETING/i, '64101'],
-    [/COMMISSION|佣金/i, '64201'],
-    [/ENTERTAINMENT|交際|應酬/i, '64202'],
-    [/BANK\s+CHARGE|手續費/i, '65101'],
-    [/DONATION|捐款|慈善/i, '66202'],
-  ];
-
-  // Director names for Director Loan classification
-  const directorPattern = /JOSEPH|LIN\s*PUI|LAI\s*KIN|RAYMOND|SZETO/i;
-
+  // Categorize via the shared engine (single source of truth)
   const txs = await db.prepare(
     'SELECT id, description, deposit_amount, withdrawal_amount FROM bank_transactions WHERE bank_statement_id = ? AND deleted_at IS NULL AND account_code IS NULL ORDER BY sort_order'
   ).bind(stmtId).all();
@@ -1281,44 +1261,27 @@ bank.post('/:id/auto-categorize', async (c) => {
   let categorized = 0;
   let skipped = 0;
   const results: string[] = [];
+  const matchedCodes = new Set<string>();
 
   for (const tx of txs.results as any[]) {
     const desc = tx.description || '';
-    let code = '';
-
-    // Check if director-related
-    const isDirector = directorPattern.test(desc);
-
-    for (const [pattern, acctCode] of rules) {
-      if (pattern.test(desc)) {
-        code = acctCode;
-        break;
-      }
-    }
-
-    // Override: director-related deposits/withdrawals → Director Loan
-    if (isDirector && /DIRECT\s+CREDIT|TRANSFER-DEBIT|FPS|自動轉賬|轉賬/.test(desc)) {
-      code = '21201';
-    }
-
-    // Override: DIRECT CREDIT that's not matched → check for director
-    if (!code && tx.deposit_amount > 0 && /DIRECT\s+CREDIT|自動轉賬存入/i.test(desc)) {
-      code = isDirector ? '21201' : '41101';
-    }
-
-    if (!code) { skipped++; continue; }
+    const dir = (tx.deposit_amount > 0 ? 'deposit' : 'withdrawal') as 'deposit' | 'withdrawal';
+    const r = categorizeTransaction(desc, dir);
+    if (!r || r.code === '') { skipped++; continue; }
 
     await db.prepare('UPDATE bank_transactions SET account_code = ? WHERE id = ? AND deleted_at IS NULL')
-      .bind(code, tx.id).run();
-    results.push(`${tx.transaction_date?.slice(0,10)} | ${code} | ${desc.slice(0,50)}`);
+      .bind(r.code, tx.id).run();
+    matchedCodes.add(r.code);
+    results.push(`${tx.transaction_date?.slice(0,10)} | ${r.code} | ${desc.slice(0,50)}`);
     categorized++;
   }
 
   // Auto-complete compliance items for government fees
   const complianceMap: Record<string, string> = { '63201': 'BR', '63202': 'NAR1' };
-  const categorizedCodes = new Set((txs.results as any[]).filter((t: any) => t.account_code && complianceMap[t.account_code]).map((t: any) => complianceMap[t.account_code]));
   let complianceUpdated = 0;
-  for (const tag of categorizedCodes) {
+  for (const code of matchedCodes) {
+    const tag = complianceMap[code];
+    if (!tag) continue;
     const updated = await db.prepare(
       `UPDATE member_compliance SET status = 'completed', completed_at = datetime('now'), updated_at = datetime('now')
        WHERE user_id = ? AND status = 'pending' AND template_id IN
