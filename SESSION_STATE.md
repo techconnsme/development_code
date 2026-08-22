@@ -23,7 +23,16 @@
 
 **Verified:** wrangler --dry-run bundles OK after each change; frontend `npm run build` OK.
 
-**NOT done:** deploy to worker; post-deploy QA (upload `test-sample-real/EHSIA/eStatement/eStatement 202504.pdf` as joseph.lin@pnr.hk — richest fee month: monthly service/paper statement/CQBK/application fees → expect 65101 with 11102 contra). Historical misposted data untouched.
+**DEPLOYED 2026-08-22:** API version `8d8e1c10` (https://opcc-crm-api.ruhan-farhan.workers.dev); Frontend https://41405f75.opcc-crm-testing.pages.dev
+
+**Live QA (EHSIA tenant u-8e3759d7 via joseph.lin@pnr.hk / X-Active-Client fc-769f1c52):**
+- Upload of real `eStatement 202504.pdf` resolved bank_code=**11102** ✓
+- ⚠️ Pre-existing upstream issue: tomarkdown OCR text was PERFECT but tx parser returned **0 transactions** (unrelated to this feature; DeepSeek extraction step — investigate separately)
+- Engine verified live by inserting the OCR rows then `POST /bank-statements/:id/auto-categorize`: CREDIT INTEREST→42101, SZETO CHI MAN ATM→21201, PAPER STATEMENT FEE/BLG CQBK FEE/MONTHLY SERVICE FEE/ACCOUNT APPLICATION FEE(all two-line)→**65101**, B/F skipped
+- `POST /bookkeeping/auto-generate-entries` posted balanced JEs: Dr 65101/Cr **11102** ×4 fees, Dr 11102/Cr 42101, Dr 11102/Cr 21201, voucher `B-HSBC-2025MM-NNN` ✓
+- QA data fully cleaned (JEs/lines, transactions, statement, file_record, R2 object) — verified zero rows remain
+
+**NOT done:** historical misposted data untouched.
 
 ## Deployed URLs (latest — PRE-this-feature)
 
