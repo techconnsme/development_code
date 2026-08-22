@@ -7,6 +7,7 @@ import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { postPaymentToGl } from '../lib/post-payment';
 import { jePosted, jeLive, jeDeleted, jeNotOrphaned } from '../lib/journal-filters';
 import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
+import { findBestInvoiceMatch } from '../lib/bank-matcher';
 import { restoreInvoiceJournal, purgeInvoiceJournal } from '../lib/invoice-journal';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -288,13 +289,23 @@ bank.post('/auto-match', async (c) => {
   const wantAR = direction !== 'incoming';
   const wantAP = direction !== 'outgoing';
 
+  // Candidates: unmatched OR legacy NULL status ('skipped' is an explicit user
+  // decision and stays excluded; 'confirmed'/'suggested' already handled).
+  const statusFilter = "(bt.match_status IS NULL OR bt.match_status = 'unmatched')";
+  const skippedRow = await db.prepare(
+    `SELECT COUNT(*) AS n FROM bank_transactions bt LEFT JOIN bank_statements bs ON bt.bank_statement_id=bs.id
+     WHERE bt.user_id=? AND bt.deleted_at IS NULL AND bs.deleted_at IS NULL
+     AND (bt.deposit_amount>0 OR bt.withdrawal_amount>0) AND bt.match_status='skipped'`
+  ).bind(tenantId).first<{ n: number }>();
+  const excluded_skipped = skippedRow?.n || 0;
+
   // Fetch unmatched deposits and withdrawals (statement currency included for matching)
   const deposits = wantAR ? await db.prepare(
     `SELECT bt.id, bt.transaction_date, bt.description, bt.deposit_amount, bt.reference,
             COALESCE(bs.currency, 'HKD') as currency
      FROM bank_transactions bt LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
      WHERE bt.user_id = ? AND bt.deleted_at IS NULL AND bs.deleted_at IS NULL
-     AND bt.deposit_amount > 0 AND bt.match_status = 'unmatched'
+     AND bt.deposit_amount > 0 AND ${statusFilter}
      ORDER BY bt.transaction_date`
   ).bind(tenantId).all() : { results: [] as any[] };
 
@@ -303,16 +314,19 @@ bank.post('/auto-match', async (c) => {
             COALESCE(bs.currency, 'HKD') as currency
      FROM bank_transactions bt LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
      WHERE bt.user_id = ? AND bt.deleted_at IS NULL AND bs.deleted_at IS NULL
-     AND bt.withdrawal_amount > 0 AND bt.match_status = 'unmatched'
+     AND bt.withdrawal_amount > 0 AND ${statusFilter}
      AND bt.card_statement_id IS NULL
      ORDER BY bt.transaction_date`
   ).bind(tenantId).all() : { results: [] as any[] };
 
-  // Fetch unpaid invoices with direction
+  // Fetch unpaid invoices with direction + counterparty name for the name tier
   const allInvoices = await db.prepare(
-    `SELECT id, invoice_number, total, currency, issue_date, due_date, direction, file_id
-     FROM invoices
-     WHERE user_id = ? AND status NOT IN ('paid', 'cancelled') AND deleted_at IS NULL`
+    `SELECT i.id, i.invoice_number, i.total, i.currency, i.issue_date, i.due_date, i.direction, i.file_id,
+            COALESCE(cust.name, supp.name) AS counterparty_name
+     FROM invoices i
+     LEFT JOIN customers cust ON i.customer_id = cust.id
+     LEFT JOIN suppliers supp ON i.supplier_id = supp.id
+     WHERE i.user_id = ? AND i.status NOT IN ('paid', 'cancelled') AND i.deleted_at IS NULL`
   ).bind(tenantId).all();
 
   // Split by direction
@@ -321,48 +335,27 @@ bank.post('/auto-match', async (c) => {
 
   const matched: any[] = [];
   const usedInvoiceIds = new Set<string>();
+  const toMatchable = (i: any) => ({
+    id: i.id, invoice_number: i.invoice_number, total: i.total, currency: i.currency,
+    issue_date: i.issue_date, due_date: i.due_date,
+    counterparty_name: i.counterparty_name || null, file_id: i.file_id || null,
+  });
 
-  // Helper: match transactions to invoices (currency must agree — HKD default for legacy rows)
-  function findBestMatch(tx: any, invoices: any[], amountKey: string): { bestMatch: any; bestConfidence: string } | null {
-    let bestMatch: any = null;
-    let bestConfidence = '';
-    const txAmount = tx[amountKey];
-    const txCurrency = tx.currency || 'HKD';
-
-    for (const inv of invoices.filter(i => !usedInvoiceIds.has(i.id))) {
-      if ((inv.currency || 'HKD') !== txCurrency) continue;
-      const amountMatch = Math.abs(txAmount - inv.total) < 0.01;
-      if (!amountMatch) continue;
-
-      const descHasInv = (tx.description || '').toUpperCase().includes((inv.invoice_number || '').toUpperCase())
-        || ((tx.reference || '').toUpperCase().includes((inv.invoice_number || '').toUpperCase()));
-
-      if (descHasInv) { bestMatch = inv; bestConfidence = 'high'; break; }
-
-      const txDate = new Date(tx.transaction_date);
-      const issueDate = new Date(inv.issue_date);
-      const dueDate = new Date(inv.due_date || inv.issue_date);
-      dueDate.setDate(dueDate.getDate() + 7);
-
-      if (txDate >= issueDate && txDate <= dueDate) {
-        if (!bestMatch || bestConfidence !== 'high') { bestMatch = inv; bestConfidence = 'medium'; }
-      } else if (!bestMatch) {
-        bestMatch = inv; bestConfidence = 'low';
-      }
-    }
-    return bestMatch ? { bestMatch, bestConfidence } : null;
+  // Helper: run shared matcher (graduated tiers; see lib/bank-matcher.ts)
+  function findBestMatch(tx: any, invoices: any[], amountKey: string): { bestMatch: any; bestConfidence: string; reason: string } | null {
+    const r = findBestInvoiceMatch(
+      { id: tx.id, transaction_date: tx.transaction_date, description: tx.description, reference: tx.reference, amount: tx[amountKey], currency: tx.currency },
+      invoices.map(toMatchable),
+      usedInvoiceIds
+    );
+    return r ? { bestMatch: r.invoice, bestConfidence: r.confidence, reason: r.reason } : null;
   }
 
   // Match deposits → AR invoices
   for (const tx of deposits.results as any[]) {
     const result = findBestMatch(tx, arInvoices, 'deposit_amount');
     if (result) {
-      const { bestMatch, bestConfidence } = result;
-      const reason = bestConfidence === 'high'
-        ? `Deposit $${tx.deposit_amount} matches invoice ${bestMatch.invoice_number} in description`
-        : bestConfidence === 'medium'
-        ? `Deposit $${tx.deposit_amount} matches invoice amount + date range`
-        : `Deposit $${tx.deposit_amount} matches invoice amount`;
+      const { bestMatch, reason } = result;
 
       const stmt = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
       const stmtFile = stmt?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt.r2_key, tenantId).first() as any : null;
@@ -379,12 +372,7 @@ bank.post('/auto-match', async (c) => {
   for (const tx of withdrawals.results as any[]) {
     const result = findBestMatch(tx, apInvoices, 'withdrawal_amount');
     if (result) {
-      const { bestMatch, bestConfidence } = result;
-      const reason = bestConfidence === 'high'
-        ? `Withdrawal $${tx.withdrawal_amount} matches invoice ${bestMatch.invoice_number} in description`
-        : bestConfidence === 'medium'
-        ? `Withdrawal $${tx.withdrawal_amount} matches invoice amount + date range`
-        : `Withdrawal $${tx.withdrawal_amount} matches invoice amount`;
+      const { bestMatch, reason } = result;
 
       const stmt2 = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
       const stmtFile2 = stmt2?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt2.r2_key, tenantId).first() as any : null;
@@ -399,7 +387,7 @@ bank.post('/auto-match', async (c) => {
 
   const totalUnmatched = (deposits.results as any[]).length + (withdrawals.results as any[]).length;
   const unmatchedCount = totalUnmatched - matched.length;
-  return c.json({ matched, unmatched_count: unmatchedCount });
+  return c.json({ matched, unmatched_count: unmatchedCount, excluded_skipped });
 });
 
 // ── Auto-match bank withdrawals to card statements ──
