@@ -66,6 +66,7 @@ interface Transaction {
   balance: number | null;
   reference?: string | null;
   account_type?: string | null;
+  account_code?: string | null;
 }
 
 interface StatementWithTx {
@@ -99,6 +100,14 @@ export default function BankStatementReview() {
     queryFn: () => api(`/bank-statements/${id}`),
     enabled: !!id,
   });
+
+  // COA options for per-transaction account assignment/override
+  interface CoaOption { account_code: string; account_name: string }
+  const { data: coaResp } = useQuery<{ data: CoaOption[] }>({
+    queryKey: ['coa-options'],
+    queryFn: () => api('/bookkeeping/accounts'),
+  });
+  const coaOptions = useMemo(() => (coaResp?.data || []).slice().sort((a, b) => a.account_code.localeCompare(b.account_code)), [coaResp]);
 
   // Local edit state
   const [headerEdits, setHeaderEdits] = useState<Partial<StatementWithTx>>({});
@@ -697,6 +706,7 @@ export default function BankStatementReview() {
                       <th className="py-1 pr-1 font-medium text-right w-20">{tr('Deposit', '存入', '存入')}</th>
                       <th className="py-1 pr-1 font-medium text-right w-20">{tr('Withdrawal', '提取', '提取')}</th>
                       <th className="py-1 pr-1 font-medium text-right w-20">{tr('Balance', '餘額', '余额')}</th>
+                      <th className="py-1 pr-1 font-medium w-36">{tr('COA Account', '會計科目', '会计科目')}</th>
                       <th className="py-1 font-medium w-8"></th>
                     </tr>
                   </thead>
@@ -761,6 +771,21 @@ export default function BankStatementReview() {
                               </div>
                             )}
                           </td>
+                          <td className="py-1 pr-1">
+                            <select
+                              value={(e.account_code ?? tx.account_code) || ''}
+                              onChange={ev => upTx('account_code', ev.target.value || null)}
+                              title={tr('Chart of Accounts account for auto-posting', '自動過賬的會計科目', '自动过账的会计科目')}
+                              className="w-full px-1 py-0.5 bg-transparent border border-input rounded text-xs"
+                            >
+                              <option value="">—</option>
+                              {coaOptions.map(a => (
+                                <option key={a.account_code} value={a.account_code}>
+                                  {a.account_code} {a.account_name.length > 18 ? a.account_name.slice(0, 18) + '…' : a.account_name}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
                           <td className="py-1 text-center">
                             <button
                               onClick={() => {
@@ -794,6 +819,7 @@ export default function BankStatementReview() {
                         <div>Opening: {money(totals.opening)}</div>
                         <div>Closing: {money(totals.computedClosing)}</div>
                       </td>
+                      <td className="py-2"></td>
                       <td className="py-2"></td>
                     </tr>
                   </tfoot>
