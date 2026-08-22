@@ -600,7 +600,7 @@ bank.patch('/transactions/:id', async (c) => {
 
     // Regenerate fresh journal entry from updated transaction
     const fullTx = await db.prepare(
-      `SELECT bt.*, bs.bank_name, bs.account_number
+      `SELECT bt.*, bs.bank_name, bs.account_number, bs.account_code AS stmt_account_code
        FROM bank_transactions bt
        LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
        WHERE bt.id = ? AND bt.user_id = ? AND bt.deleted_at IS NULL`
@@ -638,48 +638,36 @@ bank.patch('/transactions/:id', async (c) => {
 
       const lines: { code: string; name: string; debit: number; credit: number }[] = [];
 
+      // Real bank account as contra (falls back HSBC→11102 / other→11103)
+      const stmtBankCode: string = fullTx.stmt_account_code || resolveBankAccountCode(fullTx.bank_name);
+      // Engine-first categorization; explicit user assignment (account_code) wins
+      const cat = categorizeTransaction(desc, fullTx.deposit_amount > 0 ? 'deposit' : 'withdrawal');
+      const nameOf = (code: string) => accountMap.get(code)?.name || code;
+
       if (fullTx.deposit_amount > 0) {
         if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
           lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.deposit_amount, credit: 0 });
-          lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: fullTx.deposit_amount });
         } else {
-          lines.push({ code: '11101', name: 'Cash on Hand', debit: fullTx.deposit_amount, credit: 0 });
-          const assigned = fullTx.account_code ? accountMap.get(fullTx.account_code) : null;
-          if (assigned && fullTx.account_code !== '11101' && fullTx.account_code !== '21201') {
-            lines.push({ code: fullTx.account_code, name: assigned.name, debit: 0, credit: fullTx.deposit_amount });
-          } else if (isDirector(desc)) {
-            lines.push({ code: '21201', name: 'Director Loan', debit: 0, credit: fullTx.deposit_amount });
-          } else if (/VISA DEBIT.*- *CR|CREDIT.*VISA/i.test(desc)) {
-            lines.push({ code: '62303', name: 'Software Subscriptions', debit: 0, credit: fullTx.deposit_amount });
-          } else if (desc.includes('INTEREST PAYMENT') || desc.includes('利息收入')) {
-            lines.push({ code: '42101', name: 'Bank Interest', debit: 0, credit: fullTx.deposit_amount });
-          } else if (fullTx.deposit_amount >= 5000 && /DIRECT CREDIT|FPS|TRANSFER|CHEQUE/i.test(desc)) {
-            lines.push({ code: '21201', name: 'Director Loan', debit: 0, credit: fullTx.deposit_amount });
-          } else {
-            lines.push({ code: '41101', name: 'Professional Services', debit: 0, credit: fullTx.deposit_amount });
-          }
+          let contraCode: string | null = null;
+          if (fullTx.account_code && fullTx.account_code !== stmtBankCode) contraCode = fullTx.account_code;
+          else if (cat?.code && cat.code !== stmtBankCode) contraCode = cat.code;
+          else if (isDirector(desc)) contraCode = '21201';
+          else contraCode = '41101';
+          lines.push({ code: contraCode, name: nameOf(contraCode), debit: 0, credit: fullTx.deposit_amount });
         }
+        lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: fullTx.deposit_amount, credit: 0 });
       }
       if (fullTx.withdrawal_amount > 0) {
         if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
           lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.withdrawal_amount, credit: 0 });
-          lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: fullTx.withdrawal_amount });
-        } else if (isDirector(desc) && /TRANSFER-DEBIT|FPS/i.test(desc)) {
-          lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.withdrawal_amount, credit: 0 });
-          lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: fullTx.withdrawal_amount });
         } else {
-          const assigned = fullTx.account_code ? accountMap.get(fullTx.account_code) : null;
-          let expCode: string, expName: string;
-          if (assigned && fullTx.account_code !== '11101' && fullTx.account_code !== '21201') {
-            expCode = fullTx.account_code;
-            expName = assigned.name;
-          } else {
-            expCode = '62303';
-            expName = 'Software Subscriptions';
-          }
-          lines.push({ code: expCode, name: expName, debit: fullTx.withdrawal_amount, credit: 0 });
-          lines.push({ code: '11101', name: 'Cash on Hand', debit: 0, credit: fullTx.withdrawal_amount });
+          let expCode: string;
+          if (fullTx.account_code && fullTx.account_code !== stmtBankCode) expCode = fullTx.account_code;
+          else if (cat?.code && cat.code !== stmtBankCode) expCode = cat.code;
+          else expCode = '62303';
+          lines.push({ code: expCode, name: nameOf(expCode), debit: fullTx.withdrawal_amount, credit: 0 });
         }
+        lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: 0, credit: fullTx.withdrawal_amount });
       }
 
       if (lines.length > 0) {
