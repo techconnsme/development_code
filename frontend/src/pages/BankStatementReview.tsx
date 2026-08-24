@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
@@ -94,6 +94,10 @@ export default function BankStatementReview() {
   const { i18n } = useTranslation();
   const toast = useToast();
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const isDuplicate = searchParams.get('is_duplicate') === '1';
+  const dupStatus = searchParams.get('dup_status');
+  const dupBlocked = searchParams.get('dup_blocked') === '1';
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -516,6 +520,28 @@ export default function BankStatementReview() {
 
   return (
     <div className="p-4 space-y-4 max-w-[1800px] mx-auto" key={id}>
+      {/* Duplicate notice — import refused to create a second copy of this file */}
+      {isDuplicate && (
+        <div className="rounded-lg border-2 border-orange-400 bg-orange-50 dark:bg-orange-950/40 p-4">
+          <div className="flex items-start gap-3">
+            <div className="text-2xl">🔁</div>
+            <div>
+              <h2 className="font-bold text-orange-800 dark:text-orange-200">
+                {dupBlocked
+                  ? tr('Already imported — showing the existing copy', '已導入過——正在顯示現有記錄', '已导入过——正在显示现有记录')
+                  : tr('This statement has already been imported', '此月結單已導入過', '此月结单已导入过')}
+              </h2>
+              <p className="text-sm text-orange-700 dark:text-orange-300 mt-0.5">
+                {dupBlocked
+                  ? tr('This exact file was imported before, so nothing new was created. Review the existing records below, or discard the duplicate from the Bank Statements list.', '系統偵測到此文件之前已導入，未建立任何新數據。請在下方審核現有記錄，或於銀行月結單列表放棄重複項。', '系统侦测到此文件之前已导入，未创建任何新数据。请在下方审核现有记录，或于银行月结单列表放弃重复项。')
+                  : dupStatus === 'deleted'
+                  ? tr('This file was previously imported and later deleted. Saving will create a new record — journal entries will not be duplicated.', '此文件曾導入後被刪除。儲存將建立新記錄——不會重複記賬。', '此文件曾导入后被删除。储存将创建新记录——不会重复记账。')
+                  : tr('A duplicate was detected. Please review before saving.', '檢測到重複。儲存前請先審核。', '检测到重复。储存前请先审核。')}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Banner */}
       {isDraft ? (
         <div className="rounded-lg border-2 border-yellow-400 bg-yellow-50 dark:bg-yellow-950 p-4">

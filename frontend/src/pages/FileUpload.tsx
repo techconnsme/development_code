@@ -71,6 +71,7 @@ function reviewPageFlags(result: any): string {
   if (result?.needs_direction_review) params.set('review_direction', '1');
   if (result?.company_not_detected) params.set('company_not_detected', '1');
   if (result?.is_duplicate) params.set('is_duplicate', '1');
+  if (result?.duplicate_blocked) params.set('dup_blocked', '1');
   if (result?.new_counterparty) params.set('new_company', '1');
   if (result?.direction) params.set('direction', result.direction);
   const qs = params.toString();
