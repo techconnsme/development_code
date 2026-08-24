@@ -16,14 +16,15 @@ function MiniCard({ icon: Icon, label, value, color, onClick }: {
   return (
     <div
       onClick={onClick}
-      className={`bg-card border rounded-lg px-3 py-2 min-w-[120px] flex-1 ${onClick ? 'cursor-pointer hover:shadow-sm hover:border-primary/30 transition-shadow' : ''}`}
-      style={{ borderTop: `2px solid ${color}` }}
+      // min-h matches the Current Position tiles (~116px: 3px top border + p-4 + label + value + hint + borders)
+      className={`bg-card border rounded-xl p-4 min-w-[120px] flex-1 flex flex-col min-h-[7.25rem] ${onClick ? 'cursor-pointer hover:shadow-sm hover:border-primary/30 transition-shadow' : ''}`}
+      style={{ borderTop: `3px solid ${color}` }}
     >
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-1">
-        <Icon className="h-3 w-3" style={{ color }} />
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-2">
+        <Icon className="h-3.5 w-3.5" style={{ color }} />
         {label}
       </div>
-      <div className="text-sm font-bold">{value}</div>
+      <div className="text-base font-bold">{value}</div>
     </div>
   );
 }
