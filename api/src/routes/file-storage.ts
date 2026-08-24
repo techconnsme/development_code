@@ -13,6 +13,7 @@ import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { jeLive } from '../lib/journal-filters';
 import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
 import { ensureMissingAccounts, HK_COA_NAMES } from '../lib/ensure-accounts';
+import { getTemporaryAccount } from '../lib/coa-temporary';
 import { tryPostInvoiceToGl } from '../lib/post-invoice';
 import { wsBroadcast } from './ws';
 import { generateReceiptNumber, detectOwnNumber } from '../lib/numbering';
@@ -450,7 +451,14 @@ ${inputOcrText.slice(0, 8000)}` }],
     for (const tx of txs.results as any[]) {
       const dir = (tx.deposit_amount > 0 ? 'deposit' : 'withdrawal') as 'deposit' | 'withdrawal';
       const r = categorizeTransaction(tx.description || '', dir);
-      if (!r || r.code === '') continue;
+      if (!r) continue;
+      if (r.code === '') {
+        // Opening balances / internal transfers: never require an invoice link
+        if (r.tag === 'ignore') {
+          await db.prepare("UPDATE bank_transactions SET match_status = 'not_required', is_edited = 1 WHERE id = ? AND deleted_at IS NULL").bind(tx.id).run();
+        }
+        continue;
+      }
       await db.prepare('UPDATE bank_transactions SET account_code = ? WHERE id = ? AND deleted_at IS NULL').bind(r.code, tx.id).run();
       autoCategorized++;
     }
@@ -548,7 +556,12 @@ ${inputOcrText.slice(0, 8000)}` }],
           if (cat.tag === 'internal_transfer') skippedTransfers++;
           continue;
         }
-        const contraCode = tx.account_code || cat?.code || (dir === 'deposit' ? '41101' : '62303');
+        let contraCode: string | null = tx.account_code || cat?.code || null;
+        if (!contraCode) {
+          // Unmapped by user + engine: park in Temporary Revenue/Expenses per direction
+          const temp = await getTemporaryAccount(db, userId, dir === 'deposit' ? 'revenue' : 'expense');
+          contraCode = temp?.code ?? (dir === 'deposit' ? '41101' : '62303');
+        }
         if (contraCode === stmtBankCode) { skippedTransfers++; continue; }
         const entryId = `je-${uuidv4().slice(0, 8)}`;
         const entryNum = `JE-AUTO-${String(Date.now()).slice(-6)}-${uuidv4().slice(0, 4)}`;

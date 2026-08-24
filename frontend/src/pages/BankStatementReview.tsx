@@ -67,6 +67,7 @@ interface Transaction {
   reference?: string | null;
   account_type?: string | null;
   account_code?: string | null;
+  match_status?: string | null;
 }
 
 interface StatementWithTx {
@@ -107,7 +108,18 @@ export default function BankStatementReview() {
     queryKey: ['coa-options'],
     queryFn: () => api('/bookkeeping/accounts'),
   });
-  const coaOptions = useMemo(() => (coaResp?.data || []).slice().sort((a, b) => a.account_code.localeCompare(b.account_code)), [coaResp]);
+  const coaOptions = useMemo(() => {
+    const all = (coaResp?.data || []);
+    const codes = new Set(all.map(a => a.account_code));
+    // Parents with children are not postable — hide them from the picker
+    const hasChildren = (c: string) => {
+      for (const x of codes) if (x !== c && x.startsWith(c)) return true;
+      return false;
+    };
+    return all.filter(a => !hasChildren(a.account_code))
+      .slice()
+      .sort((a, b) => a.account_code.localeCompare(b.account_code));
+  }, [coaResp]);
 
   // Local edit state
   const [headerEdits, setHeaderEdits] = useState<Partial<StatementWithTx>>({});
@@ -772,19 +784,35 @@ export default function BankStatementReview() {
                             )}
                           </td>
                           <td className="py-1 pr-1">
-                            <select
-                              value={(e.account_code ?? tx.account_code) || ''}
-                              onChange={ev => upTx('account_code', ev.target.value || null)}
-                              title={tr('Chart of Accounts account for auto-posting', '自動過賬的會計科目', '自动过账的会计科目')}
-                              className="w-full px-1 py-0.5 bg-transparent border border-input rounded text-xs"
-                            >
-                              <option value="">—</option>
-                              {coaOptions.map(a => (
-                                <option key={a.account_code} value={a.account_code}>
-                                  {a.account_code} {a.account_name.length > 18 ? a.account_name.slice(0, 18) + '…' : a.account_name}
-                                </option>
-                              ))}
-                            </select>
+                            {(() => {
+                              const selected = (e.account_code ?? tx.account_code) || '';
+                              const selAcct = coaOptions.find(o => o.account_code === selected);
+                              const isTemp = !!selAcct && /temporary/i.test(selAcct.account_name);
+                              const isNA = tx.match_status === 'not_required';
+                              return (
+                                <select
+                                  value={selected}
+                                  onChange={ev => upTx('account_code', ev.target.value || null)}
+                                  title={
+                                    isNA
+                                      ? tr('Opening balance — no invoice link or COA posting required', '期初結餘——無需發票連結或會計分錄', '期初结余——无需发票连结或会计分录')
+                                      : isTemp
+                                      ? tr('Temporary account — reclassify to a specific COA account later', '暫記科目——稍後重新分類至具體會計科目', '暂记科目——稍后重新分类至具体会计科目')
+                                      : tr('Chart of Accounts account for auto-posting', '自動過賬的會計科目', '自动过账的会计科目')
+                                  }
+                                  className={`w-full px-1 py-0.5 bg-transparent border rounded text-xs ${
+                                    isTemp ? 'border-red-300 bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300' : 'border-input'
+                                  }`}
+                                >
+                                  <option value="">{isNA ? tr('N/A · opening balance', 'N/A · 期初結餘', 'N/A · 期初结余') : tr('N/A 不適用', 'N/A 不適用', 'N/A 不适用')}</option>
+                                  {coaOptions.map(a => (
+                                    <option key={a.account_code} value={a.account_code}>
+                                      {a.account_code} {a.account_name.length > 18 ? a.account_name.slice(0, 18) + '…' : a.account_name}
+                                    </option>
+                                  ))}
+                                </select>
+                              );
+                            })()}
                           </td>
                           <td className="py-1 text-center">
                             <button

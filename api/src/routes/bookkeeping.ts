@@ -10,6 +10,7 @@ import { postInvoiceToGl } from '../lib/post-invoice';
 import { jePosted, jeLive, jeDeleted, jeNotOrphaned } from '../lib/journal-filters';
 import { HK_COA_NAMES, getCodeType, ensureMissingAccounts } from '../lib/ensure-accounts';
 import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
+import { getTemporaryAccount } from '../lib/coa-temporary';
 
 // Re-exported for backward compatibility with anything importing them from here.
 export { HK_COA_NAMES, getCodeType };
@@ -1491,7 +1492,11 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
         else if (/VISA DEBIT.*- *CR|CREDIT.*VISA/i.test(desc)) contraCode = '62303';
         else if (desc.includes('INTEREST PAYMENT') || desc.includes('利息收入')) contraCode = '42101';
         else if (tx.deposit_amount >= 5000 && /DIRECT CREDIT|FPS|TRANSFER|CHEQUE/i.test(desc)) contraCode = '21201';
-        else contraCode = '41101';
+        else {
+          // Unmapped deposit: Temporary Revenue (client-COA derived)
+          const temp = await getTemporaryAccount(db, tenantId, 'revenue');
+          contraCode = temp?.code ?? '41101';
+        }
         lines.push({ code: contraCode, name: nameOf(contraCode), debit: 0, credit: tx.deposit_amount });
       }
       lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: tx.deposit_amount, credit: 0 });
@@ -1503,7 +1508,12 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
         let expCode: string | null = null;
         if (tx.account_code && tx.account_code !== stmtBankCode) expCode = tx.account_code;
         else if (cat?.code && cat.code !== stmtBankCode) expCode = cat.code;
-        else expCode = tx.supplier_id ? '51101' : '62303';
+        else if (tx.supplier_id) expCode = '51101';
+        else {
+          // Unmapped withdrawal: Temporary Expenses (client-COA derived)
+          const temp = await getTemporaryAccount(db, tenantId, 'expense');
+          expCode = temp?.code ?? '62303';
+        }
         lines.push({ code: expCode, name: nameOf(expCode), debit: tx.withdrawal_amount, credit: 0 });
       }
       lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: 0, credit: tx.withdrawal_amount });

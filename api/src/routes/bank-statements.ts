@@ -8,6 +8,7 @@ import { postPaymentToGl } from '../lib/post-payment';
 import { jePosted, jeLive, jeDeleted, jeNotOrphaned } from '../lib/journal-filters';
 import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
 import { findBestInvoiceMatch } from '../lib/bank-matcher';
+import { getTemporaryAccount } from '../lib/coa-temporary';
 import { restoreInvoiceJournal, purgeInvoiceJournal } from '../lib/invoice-journal';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -143,9 +144,10 @@ bank.get('/', async (c) => {
            bs.opening_balance, bs.closing_balance, bs.page_count, bs.ocr_text, bs.status,
            bs.balance_status, bs.balance_check, bs.created_at,
            (SELECT COUNT(*) FROM bank_transactions bt
-            WHERE bt.bank_statement_id = bs.id AND bt.deleted_at IS NULL
-            AND bt.invoice_id IS NULL AND bt.card_statement_id IS NULL
-            AND (bt.match_status IS NULL OR bt.match_status NOT IN ('skipped','suggested'))) as unlinked_count,
+             WHERE bt.bank_statement_id = bs.id AND bt.deleted_at IS NULL
+             AND bt.invoice_id IS NULL AND bt.card_statement_id IS NULL
+             AND COALESCE(bt.match_status,'') != 'not_required'
+             AND (bt.match_status IS NULL OR bt.match_status NOT IN ('skipped','suggested'))) as unlinked_count,
            (SELECT COUNT(*) FROM bank_transactions bt
             WHERE bt.bank_statement_id = bs.id AND bt.deleted_at IS NULL) as tx_count
            FROM bank_statements bs WHERE bs.user_id = ? AND bs.deleted_at IS NULL`;
@@ -565,6 +567,19 @@ bank.patch('/transactions/:id', async (c) => {
     .bind(txId, tenantId).first();
   if (!tx) return c.json({ error: 'Transaction not found' }, 404);
 
+  // Guard (#4): a COA account that has children (e.g. 10000, 11000, 66200) is
+  // not postable — only leaf accounts may be selected.
+  if (body.account_code !== undefined && body.account_code !== null && body.account_code !== '') {
+    const submitted = String(body.account_code);
+    if (!/^\d{1,5}$/.test(submitted)) return c.json({ error: `Invalid account code: ${submitted}` }, 400);
+    const childRow = await db.prepare(
+      `SELECT account_code FROM accounts WHERE user_id = ? AND is_active = 1
+       AND length(account_code) > length(?) AND substr(account_code, 1, length(?)) = ?
+       LIMIT 1`
+    ).bind(tenantId, submitted, submitted, submitted).first();
+    if (childRow) return c.json({ error: `${submitted} is a parent account with child accounts — select a leaf account` }, 400);
+  }
+
   const allowedFields = ['transaction_date', 'description', 'deposit_amount', 'withdrawal_amount', 'balance', 'reference', 'account_code', 'account_type'];
   const sets: string[] = [];
   const params: any[] = [];
@@ -635,31 +650,41 @@ bank.patch('/transactions/:id', async (c) => {
       // Engine-first categorization; explicit user assignment (account_code) wins
       const cat = categorizeTransaction(desc, fullTx.deposit_amount > 0 ? 'deposit' : 'withdrawal');
       const nameOf = (code: string) => accountMap.get(code)?.name || code;
+      // Opening-balance/noise rows (B/F etc.) with no user-assigned account never post
+      const skipPosting = !fullTx.account_code && !!cat && cat.code === '';
 
-      if (fullTx.deposit_amount > 0) {
-        if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
-          lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.deposit_amount, credit: 0 });
-        } else {
-          let contraCode: string | null = null;
-          if (fullTx.account_code && fullTx.account_code !== stmtBankCode) contraCode = fullTx.account_code;
-          else if (cat?.code && cat.code !== stmtBankCode) contraCode = cat.code;
-          else if (isDirector(desc)) contraCode = '21201';
-          else contraCode = '41101';
-          lines.push({ code: contraCode, name: nameOf(contraCode), debit: 0, credit: fullTx.deposit_amount });
+      if (!skipPosting) {
+        if (fullTx.deposit_amount > 0) {
+          if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
+            lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.deposit_amount, credit: 0 });
+          } else {
+            let contraCode: string | null = null;
+            if (fullTx.account_code && fullTx.account_code !== stmtBankCode) contraCode = fullTx.account_code;
+            else if (cat?.code && cat.code !== stmtBankCode) contraCode = cat.code;
+            else if (isDirector(desc)) contraCode = '21201';
+            else {
+              const temp = await getTemporaryAccount(db, tenantId, 'revenue');
+              contraCode = temp?.code ?? '41101';
+            }
+            lines.push({ code: contraCode, name: nameOf(contraCode), debit: 0, credit: fullTx.deposit_amount });
+          }
+          lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: fullTx.deposit_amount, credit: 0 });
         }
-        lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: fullTx.deposit_amount, credit: 0 });
-      }
-      if (fullTx.withdrawal_amount > 0) {
-        if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
-          lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.withdrawal_amount, credit: 0 });
-        } else {
-          let expCode: string;
-          if (fullTx.account_code && fullTx.account_code !== stmtBankCode) expCode = fullTx.account_code;
-          else if (cat?.code && cat.code !== stmtBankCode) expCode = cat.code;
-          else expCode = '62303';
-          lines.push({ code: expCode, name: nameOf(expCode), debit: fullTx.withdrawal_amount, credit: 0 });
+        if (fullTx.withdrawal_amount > 0) {
+          if (desc.includes('OUTCLEARING') || desc.includes('RETURN') || desc.includes('退票')) {
+            lines.push({ code: '21201', name: 'Director Loan', debit: fullTx.withdrawal_amount, credit: 0 });
+          } else {
+            let expCode: string | null = null;
+            if (fullTx.account_code && fullTx.account_code !== stmtBankCode) expCode = fullTx.account_code;
+            else if (cat?.code && cat.code !== stmtBankCode) expCode = cat.code;
+            else {
+              const temp = await getTemporaryAccount(db, tenantId, 'expense');
+              expCode = temp?.code ?? '62303';
+            }
+            lines.push({ code: expCode, name: nameOf(expCode), debit: fullTx.withdrawal_amount, credit: 0 });
+          }
+          lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: 0, credit: fullTx.withdrawal_amount });
         }
-        lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: 0, credit: fullTx.withdrawal_amount });
       }
 
       if (lines.length > 0) {
@@ -1247,7 +1272,15 @@ bank.post('/:id/auto-categorize', async (c) => {
     const desc = tx.description || '';
     const dir = (tx.deposit_amount > 0 ? 'deposit' : 'withdrawal') as 'deposit' | 'withdrawal';
     const r = categorizeTransaction(desc, dir);
-    if (!r || r.code === '') { skipped++; continue; }
+    if (!r) { skipped++; continue; }
+    if (r.code === '') {
+      // Opening balance / internal transfer rows never require a link
+      if (r.tag === 'ignore') {
+        await db.prepare("UPDATE bank_transactions SET match_status = 'not_required' WHERE id = ? AND deleted_at IS NULL").bind(tx.id).run();
+      }
+      skipped++;
+      continue;
+    }
 
     await db.prepare('UPDATE bank_transactions SET account_code = ? WHERE id = ? AND deleted_at IS NULL')
       .bind(r.code, tx.id).run();
