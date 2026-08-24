@@ -517,9 +517,7 @@ export default function BankStatements() {
                                 const dirty = !!edits[tx.id];
                                 const posting = (tx as any).posting as { entry_id: string; entry_number: string; entry_source: string; lines: { account_code: string; account_name: string; debit: number; credit: number }[] } | null;
                                 const stmtBankCode: string = detail?.account_code || '11103';
-                                const contraCodes: string[] = posting
-                                  ? posting.lines.map(l => l.account_code).filter(c => c !== stmtBankCode)
-                                  : [];
+                                const postingLines: { account_code: string; account_name: string; debit: number; credit: number }[] = posting?.lines ?? [];
                                 const movement = dep > 0 ? dep : wit;
 
                                 return (
@@ -597,18 +595,32 @@ export default function BankStatements() {
                                     )}
                                   </td>
                                   <td className="py-1.5 pr-3" onClick={e => e.stopPropagation()}>
-                                    {contraCodes.length > 1 ? (
-                                      <div className="flex flex-col items-start gap-0.5" title={tr('Multi-account posting', '多科目分錄', '多科目分录')}>
-                                        {contraCodes.map(code => (
-                                          <span key={code} className={`text-[10px] font-mono px-1 py-px rounded ${
-                                            isTemporaryAccount(accounts.find((a: any) => a.account_code === code)?.account_name)
-                                              ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                                              : 'bg-primary/10 text-primary'
-                                          }`}>{code}</span>
-                                        ))}
-                                        <span className="text-[9px] text-muted-foreground">
-                                          {(tx as any).posting?.entry_source === 'manual' ? tr('manual split', '手動拆分', '手动拆分') : tr('split', '拆分', '拆分')}
-                                        </span>
+                                    {postingLines.length > 0 ? (
+                                      <div className="flex flex-col items-start gap-0.5">
+                                        {postingLines.map((l, i) => {
+                                          const side = l.debit > 0 ? 'Dr' : 'Cr';
+                                          const accName = accounts.find((a: any) => a.account_code === l.account_code)?.account_name || l.account_name || '';
+                                          const isContra = l.account_code !== stmtBankCode;
+                                          const clickable = isContra && !(hideReconciledCoa && detail?.is_reconciled);
+                                          return (
+                                            <span key={`${l.account_code}-${i}`}
+                                              className={`inline-flex items-center gap-1 max-w-[260px] text-[10px] font-mono px-1 py-px rounded ${
+                                                isTemporaryAccount(accName)
+                                                  ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                                  : 'bg-primary/10 text-primary'
+                                              } ${clickable ? 'cursor-pointer hover:bg-primary/20' : ''}`}
+                                              title={`${side} ${l.account_code} · ${accName} · ${(l.debit > 0 ? l.debit : l.credit).toFixed(2)}${clickable ? tr(' (click to change)', '（點擊更改）', '（点击更改）') : ''}`}
+                                              onClick={() => { if (clickable) setAcctModalTx(tx); }}>
+                                              <span className={`text-[9px] font-semibold ${side === 'Dr' ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400'}`}>{side}</span>
+                                              <span className="truncate">{l.account_code}<span className="text-muted-foreground ml-1">{accName}</span></span>
+                                            </span>
+                                          );
+                                        })}
+                                        {postingLines.length > 2 && (
+                                          <span className="text-[9px] text-muted-foreground">
+                                            {(tx as any).posting?.entry_source === 'manual' ? tr('manual split', '手動拆分', '手动拆分') : tr('split', '拆分', '拆分')}
+                                          </span>
+                                        )}
                                       </div>
                                     ) : tx.account_code ? (
                                       (() => {

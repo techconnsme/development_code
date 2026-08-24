@@ -347,16 +347,25 @@ export default function CardStatements() {
                                 </td>
                                 <td className="py-1 pr-2 text-muted-foreground">{tx.category || '—'}</td>
                                 <td className="py-1 pr-2">
-                                  {posting && posting.lines.filter(l => l.account_code !== '11101').length > 1 ? (
+                                  {posting && posting.lines.length > 0 ? (
                                     <div className="flex flex-col items-start gap-0.5">
-                                      {posting.lines.filter(l => l.account_code !== '11101').map(l => (
-                                        <span key={l.id} className={`font-mono text-[10px] px-1 py-px rounded ${
-                                          isTemporaryAccount(cardAccounts.find((a: any) => a.account_code === l.account_code)?.account_name)
-                                            ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                                            : 'bg-primary/10 text-primary'
-                                        }`}>{l.account_code}</span>
-                                      ))}
-                                      <span className="text-[9px] text-muted-foreground">{tr('split', '拆分', '拆分')}</span>
+                                      {posting.lines.map((l, i) => {
+                                        const side = l.debit > 0 ? 'Dr' : 'Cr';
+                                        const accName = cardAccounts.find((a: any) => a.account_code === l.account_code)?.account_name || l.account_name || '';
+                                        return (
+                                          <span key={l.id || `${l.account_code}-${i}`} className={`inline-flex items-center gap-1 max-w-[220px] font-mono text-[10px] px-1 py-px rounded ${
+                                            isTemporaryAccount(accName)
+                                              ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                              : 'bg-primary/10 text-primary'
+                                          }`}>
+                                            <span className={`text-[9px] font-semibold ${side === 'Dr' ? 'text-blue-600 dark:text-blue-400' : 'text-orange-600 dark:text-orange-400'}`}>{side}</span>
+                                            <span className="truncate" title={`${side} ${l.account_code} · ${accName} · ${(l.debit > 0 ? l.debit : l.credit).toFixed(2)}`}>
+                                              {l.account_code}<span className="text-muted-foreground ml-1">{accName}</span>
+                                            </span>
+                                          </span>
+                                        );
+                                      })}
+                                      {posting.lines.length > 2 && <span className="text-[9px] text-muted-foreground">{tr('split', '拆分', '拆分')}</span>}
                                     </div>
                                   ) : tx.expense_account_code ? (
                                     <span className="text-green-700 dark:text-green-400 font-mono text-[10px]">{tx.expense_account_code}</span>

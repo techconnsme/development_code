@@ -1,3 +1,18 @@
+# Session State — 2026-08-24 (both-side Dr/Cr account badges on statement lists)
+
+## Account column now shows BOTH debit & credit sides (plan Decision #3 completed)
+
+`docs/superpowers/plans/2026-08-24-multi-account-posting.md` Decision #3 said the Account column renders ALL posting-line codes as stacked badges — but both list pages filtered out the fixed side (`filter(c => c !== stmtBankCode)` / `!== '11101'`), showing only contra accounts. Users couldn't see which bank/card account a JE actually hit → old mispostings (hardcoded 11101 contra instead of real HSBC 11102 etc.) were invisible.
+
+**Fix (frontend only):**
+1. `BankStatements.tsx` — every tx with a posting now shows ALL journal lines as stacked badges: `Dr|Cr` prefix (blue=Dr, orange=Cr) + code + name, tooltip adds amount; temp-account red tint preserved; split/manual-split label only when >2 lines. Contra badge stays click-to-edit (AccountModal), bank side locked. No-posting rows keep old select/badge fallback.
+2. `CardStatements.tsx` — same treatment (fixed Cr 11101 side now visible).
+3. Verified NOT broken: `CardStatementReview.tsx:274-275` preview already correct (`Cr 11101` matches real card posting in `card-statements.ts:477-484`); `BankStatementReview.tsx:792-793` already showed both sides.
+
+**Verified:** frontend build OK; tests/posting-validate.test.ts 11/11.
+
+---
+
 # Session State — 2026-08-22 (bank charge → COA auto-linking + auto-match fix)
 
 ## Auto-match "no suggestions" root cause (fixed, deployed 2ed538e2)
@@ -140,3 +155,23 @@ Link-rate context: global bank↔invoice 30/474 (6.3%), inv↔receipt 3/105, ful
 - `frontend/src/components/AutoMatchReviewModal.tsx` (NEW) — unified match review modal
 - `api/src/lib/company-matcher.ts` — fuzzy matcher (scores ~97 for Proficient/Proficiency)
 - `regression-tests/veii-direction-check.spec.ts` (NEW)
+
+## Sample-data link audit (2026-08-24)
+
+Independently re-parsed all 30 statements (16 PNR + 14 EHSIA, both Current+Savings sections) and every invoice total; exhaustive payee-gated subset matching. Full detail in `test-sample-real/LINKS_REPORT.txt` §4.
+
+**One bank tx = 2+ invoices — only 3 cases exist, all PNR→Pastel:**
+- 19 Sep 2025 57,580.80 = Pastel #001414 (15,300) + #001417v2 (42,280.80) — receipt #001281 confirms both
+- 5 Nov 2025 55,000 = Pastel #001441 (40,050) + #001442 (14,950) — receipt #001294 confirms both
+- 5 Feb 2026 27,544 = Pastel #001458v2 (5,200) + #001467-v2 (4,150) + #001484-v2 (18,194) — THREE invoices
+- EHSIA side: NONE (all 1:1)
+- ⚠️ Ground-truth conflict: the auto-match suggestion `$27,544→INV-MT2DDQ93` (single invoice, low confidence, from the 2026-08-22 session) cannot be correct — 27,544 is a 3-invoice combined payment. Exact-amount single-invoice matching can never resolve this case; combined-payment handling is a known gap.
+
+**Split payments (one invoice = 2+ txs):**
+- VEII 2025006 (38,544) = ECQ 102872 11,550 + ECQ 102871 26,994 (both 4 Feb 2026)
+- Founders funding 52,000 each = 50,000 (10 Jan) + 2,000 (27 Jan JL / 1 Feb RS via ATM) — matches Master-PnR.xlsx
+- EHSIA funding RS 52,000 = 50,000 (20 Mar) + 2,000 (2 Apr)
+
+**Ruled-out coincidences:** PNR 27 Jan 2,000 ≠ BR deposits 1,000+1,000 (BR is Oct); 27 Oct WEB HOSTING 1,000 ≠ DNS 500 + MuseLab 500 (paid 20 Oct separately); Pastel 001500 (13,350) ≠ 5,100 + 8,250 (those txs belong to 001473/001511).
+
+**Corrections to earlier notes:** EHSIA Respect I0107 total = 4,200 (not 4,400; the 200 AoA/NNC1 line is only on PnR's I0105); EHSIA fee refunds = 3 × `REFUND MONTHLY FEE25` 200.00 (9 May ×2, 16 Jun ×1); VEII 2025002v2 total = 67,130.80 (matches bank 18 Sep exactly).
