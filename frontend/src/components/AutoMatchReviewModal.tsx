@@ -4,8 +4,9 @@ import { WORKER_API_BASE, iframeClientParam } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
 
 // Unified match-review modal (2026-08-17) — the ONE review surface for the
-// bank-transaction ↔ invoice matching engine, shared by Bank Statements,
-// File Storage, AP, AR, and the dashboard.
+// bank-transaction ↔ invoice matching engine, shared by Bank Statements
+// (BankStatements.tsx), File Storage (FileStorage.tsx), AP (AP.tsx),
+// and AR (AR.tsx).
 //
 // Suggestion rows are accordions: clicking a row slides down a side-by-side
 // dual-PDF preview (bank statement left, invoice right) right below it.
@@ -150,8 +151,8 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
                             </div>
                             {(m.invoice_ids?.length ?? 0) >= 2 ? (
                               <div className="flex-[2] flex gap-3 overflow-x-auto">
-                                {m.invoices.map((inv: any) => (
-                                  <div key={inv.invoice_number} className="flex-1 min-w-[240px] flex flex-col">
+                                {m.invoices.map((inv: any, idx: number) => (
+                                  <div key={`${inv.invoice_number}-${idx}`} className="flex-1 min-w-[240px] flex flex-col">
                                     <span className="text-[10px] text-muted-foreground mb-1 truncate">{tr('Invoice', '發票', '发票')} · {inv.invoice_number}</span>
                                     {inv.file_id ? (
                                       <iframe src={`${WORKER_API_BASE}/file-storage/${inv.file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
