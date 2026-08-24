@@ -470,7 +470,7 @@ ${inputOcrText.slice(0, 8000)}` }],
     const stmtRow = await db.prepare(
       'SELECT bank_name, account_code FROM bank_statements WHERE id = ? AND user_id = ?'
     ).bind(stmtId, userId).first<{ bank_name: string | null; account_code: string | null }>();
-    stmtBankCode = stmtRow?.account_code || resolveBankAccountCode(stmtRow?.bank_name);
+    stmtBankCode = stmtRow?.account_code || await resolveBankAccountCode(db, userId, stmtRow?.bank_name);
     if (!stmtRow?.account_code) {
       await db.prepare(
         "UPDATE bank_statements SET account_code = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?"

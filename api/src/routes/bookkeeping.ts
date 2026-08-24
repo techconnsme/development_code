@@ -1480,7 +1480,7 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
     const dir = (tx.deposit_amount > 0 ? 'deposit' : 'withdrawal') as 'deposit' | 'withdrawal';
     // Shared engine first; legacy heuristics below remain as fallback
     const cat = categorizeTransaction(desc, dir);
-    const stmtBankCode = resolveBankAccountCode(tx.bank_name);
+    const stmtBankCode = await resolveBankAccountCode(db, tenantId, tx.bank_name);
     // Engine-tagged noise/internal transfers: never post unless user assigned a code
     if (cat && cat.code === '' && !tx.account_code) continue;
 

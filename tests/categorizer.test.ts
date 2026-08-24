@@ -191,17 +191,21 @@ t('counterparty-only truncation SMART CITY CONSORTIU -> null (no silent guess)',
   assert.equal(categorizeTransaction('SMART CITY CONSORTIU\nHC12561707588788   17JUN', 'deposit'), null);
 });
 
-// ── resolveBankAccountCode ──
-t('resolveBankAccountCode HSBC variants -> 11102', () => {
-  assert.equal(resolveBankAccountCode('HSBC'), '11102');
-  assert.equal(resolveBankAccountCode('The Hongkong and Shanghai Banking Corporation'), '11102');
-  assert.equal(resolveBankAccountCode('滙豐銀行'), '11102');
-});
-t('resolveBankAccountCode others/null -> 11103', () => {
-  assert.equal(resolveBankAccountCode('Hang Seng Bank'), '11103');
-  assert.equal(resolveBankAccountCode(null), '11103');
-  assert.equal(resolveBankAccountCode(undefined), '11103');
-});
-
-console.log(`\n${pass} passed, ${fail} failed`);
+// ── resolveBankAccountCode (async, tenant-aware — db-backed coverage in tests/bank-resolver.test.ts) ──
+(async () => {
+  try {
+    assert.equal(await resolveBankAccountCode(null as any, 'u-x', 'HSBC'), '11102');
+    assert.equal(await resolveBankAccountCode(null as any, 'u-x', 'The Hongkong and Shanghai Banking Corporation'), '11102');
+    assert.equal(await resolveBankAccountCode(null as any, 'u-x', '滙豐銀行'), '11102');
+    pass++; console.log('ok   - resolveBankAccountCode HSBC variants -> 11102');
+  } catch (e: any) { fail++; console.error('FAIL - resolveBankAccountCode HSBC variants\n       ' + e.message); }
+  try {
+    assert.equal(await resolveBankAccountCode(null as any, '', 'Citibank N.A.'), '11103');
+    assert.equal(await resolveBankAccountCode(null as any, '', null), '11103');
+    assert.equal(await resolveBankAccountCode(null as any, '', undefined), '11103');
+    pass++; console.log('ok   - resolveBankAccountCode unknown/null -> 11103');
+  } catch (e: any) { fail++; console.error('FAIL - resolveBankAccountCode unknown/null\n       ' + e.message); }
+  console.log(`\n${pass} passed, ${fail} failed`);
+  if (fail > 0) process.exit(1);
+})();
 if (fail > 0) process.exit(1);

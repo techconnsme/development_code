@@ -27,7 +27,7 @@ export async function generateStatementJournalEntries(
   const stmtRow = await db.prepare(
     'SELECT bank_name, account_code FROM bank_statements WHERE id = ? AND user_id = ?'
   ).bind(stmtId, userId).first<{ bank_name: string | null; account_code: string | null }>();
-  const stmtBankCode = stmtRow?.account_code || resolveBankAccountCode(stmtRow?.bank_name);
+  const stmtBankCode = stmtRow?.account_code || await resolveBankAccountCode(db, userId, stmtRow?.bank_name);
 
   const usedCodes = await db.prepare(
     'SELECT DISTINCT account_code FROM bank_transactions WHERE bank_statement_id = ? AND account_code IS NOT NULL AND deleted_at IS NULL'
@@ -192,7 +192,7 @@ async function statementBankCode(db: any, userId: string, stmtId: string): Promi
   const row = await db.prepare(
     'SELECT bank_name, account_code FROM bank_statements WHERE id = ? AND user_id = ?'
   ).bind(stmtId, userId).first<{ bank_name: string | null; account_code: string | null }>();
-  return row?.account_code || resolveBankAccountCode(row?.bank_name);
+  return row?.account_code || await resolveBankAccountCode(db, userId, row?.bank_name);
 }
 
 /**

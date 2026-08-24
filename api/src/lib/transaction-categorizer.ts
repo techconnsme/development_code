@@ -20,6 +20,8 @@
  */
 
 import { levenshtein } from './company-matcher';
+import { v4 as uuidv4 } from 'uuid';
+import { ensureMissingAccounts } from './ensure-accounts';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -253,7 +255,63 @@ export function categorizeTransaction(rawDesc: string, dir?: 'deposit' | 'withdr
 
 // ── Bank account resolution ────────────────────────────────────────────────
 
-/** Map statement bank name to its COA bank account: HSBC → 11102, else Other Bank. */
-export function resolveBankAccountCode(bankName?: string | null): '11102' | '11103' {
-  return /HSBC|SHANGHAI BANKING|滙豐|汇丰/i.test(bankName || '') ? '11102' : '11103';
+/**
+ * Non-HSBC banks that get their OWN per-tenant COA leaf under 11100 instead of
+ * the generic 11103 Other Bank. `nameEn`/zh fragment drive lookup of an
+ * existing account; `name` is the bilingual template name used on creation.
+ */
+export const KNOWN_BANKS = [
+  { key: 'hang_seng', match: /HANG\s*SENG|恒生/i, nameEn: 'Hang Seng', name: '恒生銀行 Hang Seng Bank' },
+  { key: 'boc', match: /BANK\s+OF\s+CHINA|中銀|中國銀行|中国银行|\bBOC\b/i, nameEn: 'Bank of China', name: '中國銀行 Bank of China' },
+  { key: 'stanchart', match: /STANDARD\s*CHARTERED|渣打/i, nameEn: 'Standard Chartered', name: '渣打銀行 Standard Chartered' },
+] as const;
+
+/** Match a statement bank name against the known non-HSBC banks (null if unknown). */
+export function matchKnownBank(bankName?: string | null) {
+  const n = bankName || '';
+  return KNOWN_BANKS.find(b => b.match.test(n)) || null;
+}
+
+/**
+ * Map a statement bank name to its COA bank account (tenant-aware):
+ *  - HSBC family → canonical 11102
+ *  - Known bank (Hang Seng / BOC / StanChart) → the tenant's existing account
+ *    matched by name, else a NEW sequential leaf under 11100 (COA ordering
+ *    rule: 11101, 11102, 11103, 11104, ...), created with proper bilingual
+ *    name and parent chain.
+ *  - Anything else → generic 11103 Other Bank.
+ */
+export async function resolveBankAccountCode(db: any, userId: string, bankName?: string | null): Promise<string> {
+  const name = bankName || '';
+  if (/HSBC|SHANGHAI BANKING|滙豐|汇丰/i.test(name)) return '11102';
+
+  const known = matchKnownBank(name);
+  if (known && db && userId) {
+    const zh = known.name.split(' ')[0];
+    const existing = await db.prepare(
+      'SELECT account_code FROM accounts WHERE user_id = ? AND is_active = 1 AND (account_name LIKE ? OR account_name LIKE ?) ORDER BY account_code LIMIT 1'
+    ).bind(userId, `%${known.nameEn}%`, `%${zh}%`).first<{ account_code: string }>();
+    if (existing?.account_code) return existing.account_code;
+
+    // Next sequential 5-digit leaf after the tenant's last 1110x account
+    const maxRow = await db.prepare(
+      "SELECT MAX(CAST(account_code AS INTEGER)) AS mx FROM accounts WHERE user_id = ? AND LENGTH(account_code) = 5 AND SUBSTR(account_code, 1, 4) = '1110'"
+    ).bind(userId).first<{ mx: number | null }>();
+    let n = Math.max(maxRow?.mx || 11103, 11103) + 1;
+    let code = String(n);
+    while (await db.prepare('SELECT id FROM accounts WHERE user_id = ? AND account_code = ?').bind(userId, code).first()) {
+      n += 1;
+      code = String(n);
+    }
+
+    // Ensure the 11100 parent chain exists, then insert the leaf with proper name
+    const created = [0];
+    await ensureMissingAccounts(db, userId, ['10000', '11000', '11100'], created);
+    await db.prepare(
+      "INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, 'asset', ?)"
+    ).bind(`acc-${uuidv4().slice(0, 8)}`, userId, code, known.name, '11100').run();
+    return code;
+  }
+
+  return '11103';
 }

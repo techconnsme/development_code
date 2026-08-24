@@ -664,8 +664,8 @@ bank.patch('/transactions/:id', async (c) => {
 
       const lines: { code: string; name: string; debit: number; credit: number }[] = [];
 
-      // Real bank account as contra (falls back HSBC→11102 / other→11103)
-      const stmtBankCode: string = fullTx.stmt_account_code || resolveBankAccountCode(fullTx.bank_name);
+      // Real bank account as contra (tenant-aware: HSBC→11102, known banks→own per-bank account, else 11103)
+      const stmtBankCode: string = fullTx.stmt_account_code || await resolveBankAccountCode(db, tenantId, fullTx.bank_name);
       // Engine-first categorization; explicit user assignment (account_code) wins
       const cat = categorizeTransaction(desc, fullTx.deposit_amount > 0 ? 'deposit' : 'withdrawal');
       const nameOf = (code: string) => accountMap.get(code)?.name || code;
@@ -1327,7 +1327,7 @@ bank.post('/:id/auto-categorize', async (c) => {
 
   // Persist this statement's COA bank account if not yet resolved
   try {
-    const stmtBankCode = stmt.account_code || resolveBankAccountCode(stmt.bank_name);
+    const stmtBankCode = stmt.account_code || await resolveBankAccountCode(db, tenantId, stmt.bank_name);
     if (!stmt.account_code) {
       await db.prepare(
         "UPDATE bank_statements SET account_code = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?"
