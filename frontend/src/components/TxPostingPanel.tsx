@@ -122,7 +122,11 @@ export default function TxPostingPanel({
         <Lock className="h-3 w-3 text-muted-foreground" />
       </div>
 
-      {/* Editable contra lines */}
+      {/* Editable contra lines — side shown once as group label, not per row */}
+      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+        <span className={`font-mono font-bold text-xs ${contraSide === 'Dr' ? 'text-red-600' : 'text-green-600'}`}>{contraSide}</span>
+        {contraSide === 'Dr' ? tr('Debit accounts', '借方科目', '借方科目') : tr('Credit accounts', '貸方科目', '贷方科目')}
+      </div>
       {lines.map((l, i) => {
         const temp = isTemp(l.account_code);
         const selAcct = accounts.find(a => a.account_code === l.account_code);
@@ -130,7 +134,6 @@ export default function TxPostingPanel({
           <div key={i} className={`flex items-center gap-2 text-xs border rounded px-2 py-1.5 ${
             temp ? 'border-red-300 bg-red-50 dark:bg-red-950/40' : 'border-input bg-background'
           }`}>
-            <span className={`font-mono font-bold ${contraSide === 'Dr' ? 'text-red-600' : 'text-green-600'}`}>{contraSide}</span>
             <select
               value={l.account_code}
               onChange={e => updLine(i, { account_code: e.target.value })}
