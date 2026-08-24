@@ -10,10 +10,7 @@ import * as pdfjsWorkerModule from 'pdfjs-dist/build/pdf.worker.mjs';
 // module there makes the in-process fake worker work in workerd.
 (globalThis as any).pdfjsWorker = pdfjsWorkerModule;
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
-import { jeLive } from '../lib/journal-filters';
 import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
-import { ensureMissingAccounts, HK_COA_NAMES } from '../lib/ensure-accounts';
-import { getTemporaryAccount } from '../lib/coa-temporary';
 import { tryPostInvoiceToGl } from '../lib/post-invoice';
 import { wsBroadcast } from './ws';
 import { generateReceiptNumber, detectOwnNumber } from '../lib/numbering';
@@ -23,6 +20,7 @@ import { resolveDirection, extractAcName } from '../lib/direction-resolver';
 import { extractPrintedTotal } from '../lib/printed-total';
 import { buildTextFromItems } from '../lib/pdf-layout';
 import { reconcileDirections } from '../lib/balance-reconcile';
+import { generateStatementJournalEntries } from '../lib/bank-journal';
 
 // Audit logging helper
 async function auditLog(db: any, userId: string, action: string, entityType: string, entityId: string | null, changes?: object) {
@@ -55,15 +53,18 @@ function inferAccountNumber(ocrText: string | null | undefined): string | null {
 // Shared import: file_record → bank_statement + bank_transactions
 async function importStatementFromFile(
   fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, deepseekKey: string, glmApiKey?: string,
-): Promise<{ success: boolean; statement_id?: string; error?: string; transactions_count?: number; parsed_via_ai?: boolean; ocr_failed?: boolean; duplicate_info?: { type?: string; bank_name: string | null; period: string | null; file_name: string | null }; usage?: any; glm_usage?: any; deepseek_raw?: string | null; ocr_source?: string; is_duplicate?: boolean; duplicate_status?: string | null; duplicate_existing_id?: string | null; needs_review?: boolean; balance_check?: any; balance_status?: string }> {
+): Promise<{ success: boolean; statement_id?: string; error?: string; transactions_count?: number; parsed_via_ai?: boolean; ocr_failed?: boolean; duplicate_info?: { type?: string; bank_name: string | null; period: string | null; file_name: string | null }; usage?: any; glm_usage?: any; deepseek_raw?: string | null; ocr_source?: string; is_duplicate?: boolean; duplicate_status?: string | null; duplicate_existing_id?: string | null; duplicate_blocked?: boolean; needs_review?: boolean; balance_check?: any; balance_status?: string }> {
   let glmUsage: any = null; // hoisted above the GLM fallback (TDZ fix 2026-08-17)
 
   const fileRow = await db.prepare(
-    'SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_status, category FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string; category: string }>();
+    'SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_status, category, content_hash FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string; category: string; content_hash: string | null }>();
   if (!fileRow) return { success: false, error: 'File not found' };
 
-  // Check for duplicate: active first, then soft-deleted
+  // Check for duplicate: active first, then soft-deleted.
+  // Two signals: (1) exact r2_key reuse — only happens when the SAME file_record
+  // is imported twice; each new upload gets a fresh r2_key, so (2) content_hash
+  // matching is what actually catches re-uploading the same statement file.
   let isDuplicate = false, duplicateStatus: string | null = null, duplicateExistingId: string | null = null;
   const existingActive = await db.prepare(
     'SELECT id, bank_name, period_start, period_end, file_name FROM bank_statements WHERE user_id = ? AND r2_key = ? AND deleted_at IS NULL'
@@ -81,6 +82,42 @@ async function importStatementFromFile(
       duplicateStatus = 'deleted';
       duplicateExistingId = existingDeleted.id;
     }
+  }
+  if (!isDuplicate && fileRow.content_hash) {
+    // Same bytes uploaded before under a different r2_key → find that upload's
+    // LIVE statement (draft or active): importing again would multiply its data.
+    const hashDup = await db.prepare(
+      `SELECT bs.id FROM bank_statements bs
+       JOIN file_records fr ON fr.user_id = bs.user_id AND fr.r2_key = bs.r2_key AND fr.deleted_at IS NULL
+       WHERE bs.user_id = ? AND bs.deleted_at IS NULL AND fr.content_hash = ?
+       ORDER BY bs.created_at DESC LIMIT 1`
+    ).bind(userId, fileRow.content_hash).first<{ id: string }>();
+    if (hashDup) {
+      isDuplicate = true;
+      duplicateStatus = 'active';
+      duplicateExistingId = hashDup.id;
+    }
+  }
+  // A live statement for this exact content already exists — never create a
+  // second copy of its transactions/JEs. Point the caller at the existing one.
+  if (isDuplicate && duplicateStatus === 'active' && duplicateExistingId) {
+    return {
+      success: true,
+      statement_id: duplicateExistingId,
+      transactions_count: 0,
+      parsed_via_ai: false,
+      ocr_source: 'tomarkdown',
+      is_duplicate: true,
+      duplicate_status: 'active',
+      duplicate_existing_id: duplicateExistingId,
+      duplicate_blocked: true,
+      needs_review: false,
+      balance_check: null,
+      balance_status: 'ok',
+      usage: null,
+      glm_usage: null,
+      deepseek_raw: null,
+    };
   }
 
   // Get OCR text from file record or run GLM-OCR
@@ -507,89 +544,19 @@ ${inputOcrText.slice(0, 8000)}` }],
     }
   } catch { /* non-critical */ }
 
-  // Auto-generate journal entries from categorized bank transactions.
-  // Contra side = the statement's real bank account (stmtBankCode), not Cash on Hand.
-  // Skips: already-posted (refSet), invoice-matched (payment leg owns them),
-  // and engine-tagged ignore/internal_transfer rows.
+  // Auto-generate journal entries ONLY when the import lands ACTIVE.
+  // Draft statements (balance mismatch / needs review) post on confirm instead —
+  // posting before review was the root cause of duplicate-entry pile-ups when
+  // users re-uploaded the same statement while fighting a failing review.
+  let created = 0;
   let skippedTransfers = 0;
-  try {
-    const usedCodes = await db.prepare(
-      'SELECT DISTINCT account_code FROM bank_transactions WHERE bank_statement_id = ? AND account_code IS NOT NULL AND deleted_at IS NULL'
-    ).bind(stmtId).all();
-    const codeList = Array.from(new Set([
-      ...((usedCodes.results as any[]).map(r => r.account_code).filter(Boolean) as string[]),
-      stmtBankCode,
-    ]));
-    if (codeList.length > 0) {
-      // Ensure accounts exist with proper template names (never code-as-name placeholders)
-      const createdCount: number[] = [0];
-      await ensureMissingAccounts(db, userId, codeList, createdCount);
-
-      // Load account map for line names
-      const allAccts = await db.prepare(
-        'SELECT account_code, account_name FROM accounts WHERE user_id = ? AND is_active = 1'
-      ).bind(userId).all();
-      const acctMap = new Map<string, string>();
-      for (const r of allAccts.results as any[]) acctMap.set(r.account_code, r.account_name);
-      const nameOf = (code: string) => acctMap.get(code) || HK_COA_NAMES[code]?.name || code;
-
-      // Get unprocessed transactions
-      const existingRefs = await db.prepare(
-        `SELECT reference_id FROM journal_entries
-         WHERE user_id = ? AND reference_type = 'bank_transaction' AND ${jeLive('journal_entries')}`
-      ).bind(userId).all();
-      const refSet = new Set((existingRefs.results as any[]).map(r => r.reference_id));
-
-      const txs = await db.prepare(
-        'SELECT * FROM bank_transactions WHERE bank_statement_id = ? AND deleted_at IS NULL ORDER BY transaction_date'
-      ).bind(stmtId).all();
-      let created = 0;
-      for (const tx of txs.results as any[]) {
-        if (refSet.has(tx.id)) continue;
-        // Invoice-matched transactions are posted by the payment leg on match-confirm
-        if (tx.invoice_id) continue;
-        const desc = tx.description || '';
-        const dir = (tx.deposit_amount > 0 ? 'deposit' : 'withdrawal') as 'deposit' | 'withdrawal';
-        const cat = categorizeTransaction(desc, dir);
-        if (cat && cat.code === '') {
-          // Engine says never post (B/F noise, internal transfers between own accounts)
-          if (cat.tag === 'internal_transfer') skippedTransfers++;
-          continue;
-        }
-        let contraCode: string | null = tx.account_code || cat?.code || null;
-        if (!contraCode) {
-          // Unmapped by user + engine: park in Temporary Revenue/Expenses per direction
-          const temp = await getTemporaryAccount(db, userId, dir === 'deposit' ? 'revenue' : 'expense');
-          contraCode = temp?.code ?? (dir === 'deposit' ? '41101' : '62303');
-        }
-        if (contraCode === stmtBankCode) { skippedTransfers++; continue; }
-        const entryId = `je-${uuidv4().slice(0, 8)}`;
-        const entryNum = `JE-AUTO-${String(Date.now()).slice(-6)}-${uuidv4().slice(0, 4)}`;
-        const lines: { code: string; name: string; debit: number; credit: number }[] = [];
-
-        if (tx.deposit_amount > 0) {
-          lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: tx.deposit_amount, credit: 0 });
-          lines.push({ code: contraCode, name: nameOf(contraCode), debit: 0, credit: tx.deposit_amount });
-        } else if (tx.withdrawal_amount > 0) {
-          lines.push({ code: contraCode, name: nameOf(contraCode), debit: tx.withdrawal_amount, credit: 0 });
-          lines.push({ code: stmtBankCode, name: nameOf(stmtBankCode), debit: 0, credit: tx.withdrawal_amount });
-        }
-
-        if (lines.length > 0) {
-          await db.prepare(
-            'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-          ).bind(entryId, userId, entryNum, tx.transaction_date, desc, 'bank_transaction', tx.id).run();
-          for (let i = 0; i < lines.length; i++) {
-            const l = lines[i];
-            await db.prepare(
-              'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-            ).bind(`jl-${uuidv4().slice(0, 8)}`, entryId, l.code, l.name, desc, l.debit, l.credit, i).run();
-          }
-          created++;
-        }
-      }
-    }
-  } catch { /* non-critical - auto-generation is best-effort */ }
+  if (finalStatus === 'active') {
+    try {
+      const gen = await generateStatementJournalEntries(db, userId, stmtId);
+      created = gen.created;
+      skippedTransfers = gen.skippedTransfers;
+    } catch { /* non-critical - auto-generation is best-effort */ }
+  }
 
   return {
     success: true,
@@ -598,6 +565,7 @@ ${inputOcrText.slice(0, 8000)}` }],
     auto_categorized: autoCategorized,
     bank_account_code: stmtBankCode,
     skipped_transfers: skippedTransfers,
+    journal_entries_created: created,
     parsed_via_ai: !!parsed,
     usage,
     glm_usage: glmUsage,

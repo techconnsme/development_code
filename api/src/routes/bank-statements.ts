@@ -10,6 +10,7 @@ import { categorizeTransaction, resolveBankAccountCode } from '../lib/transactio
 import { findBestInvoiceMatch } from '../lib/bank-matcher';
 import { getTemporaryAccount } from '../lib/coa-temporary';
 import { findParentAccountError, isNumericCoaCode } from '../lib/account-guard';
+import { generateStatementJournalEntries } from '../lib/bank-journal';
 import { restoreInvoiceJournal, purgeInvoiceJournal } from '../lib/invoice-journal';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -205,6 +206,18 @@ bank.post('/:id/confirm', async (c) => {
     "UPDATE bank_statements SET status = 'active', balance_status = ?, balance_check = ?, updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
   ).bind(balanceStatus, balanceCheck, id).run();
 
+  // Generate journal entries now that the draft is confirmed. Import no longer
+  // posts for draft statements (duplicate-pile-up root cause) — this is where
+  // they finally post. Skipped when another live statement already owns the
+  // same file (journalSkipped dedup above); generation itself is idempotent.
+  let journalCreated = 0;
+  if (!journalSkipped) {
+    try {
+      const gen = await generateStatementJournalEntries(c.env.DB, tenantId, id);
+      journalCreated = gen.created;
+    } catch (e: any) { console.log('[CONFIRM-JE] generation error:', e?.message); }
+  }
+
   // Auto-detect matching invoices in background (suggested badges only — user confirms later)
   c.executionCtx.waitUntil((async () => {
     try {
@@ -244,7 +257,7 @@ bank.post('/:id/confirm', async (c) => {
     } catch (e: any) { console.log('[AUTO-MATCH] background error:', e?.message); }
   })());
 
-  return c.json({ success: true, id, status: 'active', journal_skipped: journalSkipped });
+  return c.json({ success: true, id, status: 'active', journal_skipped: journalSkipped, journal_entries_created: journalCreated });
 });
 
 // ── Edit statement header fields (used during review) ──
