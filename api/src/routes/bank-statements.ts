@@ -7,7 +7,7 @@ import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { postPaymentToGl } from '../lib/post-payment';
 import { jePosted, jeLive, jeDeleted, jeNotOrphaned } from '../lib/journal-filters';
 import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
-import { findBestInvoiceMatch } from '../lib/bank-matcher';
+import { findBestInvoiceMatch, findInvoiceGroupMatch } from '../lib/bank-matcher';
 import { getTemporaryAccount } from '../lib/coa-temporary';
 import { findParentAccountError, isNumericCoaCode } from '../lib/account-guard';
 import { generateStatementJournalEntries } from '../lib/bank-journal';
@@ -355,6 +355,10 @@ bank.post('/auto-match', async (c) => {
 
   const matched: any[] = [];
   const usedInvoiceIds = new Set<string>();
+  const matchedTxIds = new Set<string>();
+  interface DeferredTx { tx: any; amountKey: string; direction: string; pool: any[]; }
+  const deferred: DeferredTx[] = [];
+
   const toMatchable = (i: any) => ({
     id: i.id, invoice_number: i.invoice_number, total: i.total, currency: i.currency,
     issue_date: i.issue_date, due_date: i.due_date,
@@ -362,52 +366,79 @@ bank.post('/auto-match', async (c) => {
     file_id: i.file_id || null,
   });
 
-  // Helper: run shared matcher (graduated tiers; see lib/bank-matcher.ts)
-  function findBestMatch(tx: any, invoices: any[], amountKey: string): { bestMatch: any; bestConfidence: string; reason: string } | null {
+  async function stmtFileIdFor(txId: string): Promise<string | null> {
+    const stmt = await db.prepare('SELECT r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(txId).first<any>();
+    if (!stmt?.r2_key) return null;
+    const f = await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt.r2_key, tenantId).first<any>();
+    return f?.id || null;
+  }
+
+  function findTiered(tx: any, invoices: any[], amountKey: string): { bestMatch: any; bestConfidence: string; reason: string; tier: number } | null {
     const r = findBestInvoiceMatch(
       { id: tx.id, transaction_date: tx.transaction_date, description: tx.description, reference: tx.reference, amount: tx[amountKey], currency: tx.currency },
       invoices.map(toMatchable),
       usedInvoiceIds
     );
-    return r ? { bestMatch: r.invoice, bestConfidence: r.confidence, reason: r.reason } : null;
+    return r ? { bestMatch: r.invoice, bestConfidence: r.confidence, reason: r.reason, tier: r.tier ?? 4 } : null;
   }
 
-  // Match deposits → AR invoices
-  for (const tx of deposits.results as any[]) {
-    const result = findBestMatch(tx, arInvoices, 'deposit_amount');
-    if (result) {
-      const { bestMatch, bestConfidence, reason } = result;
-
-      const stmt = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
-      const stmtFile = stmt?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt.r2_key, tenantId).first() as any : null;
-      matched.push({ transaction_id: tx.id, invoice_id: bestMatch.id,
-        invoice_number: bestMatch.invoice_number, amount: tx.deposit_amount,
-        confidence: bestConfidence, reason, direction: 'deposit→AR',
-        invoice_file_id: bestMatch.file_id || null,
-        stmt_file_id: stmtFile?.id || null });
-      usedInvoiceIds.add(bestMatch.id);
+  // Phase A — narration/exact/near singles (tiers 1–3). Name-tier candidates
+  // (tier 4) are DEFERRED so groups get first pick of their members (anti-starvation).
+  for (const { txs, amountKey, direction, pool } of [
+    { txs: deposits.results as any[], amountKey: 'deposit_amount', direction: 'deposit→AR', pool: arInvoices },
+    { txs: withdrawals.results as any[], amountKey: 'withdrawal_amount', direction: 'withdrawal→AP', pool: apInvoices },
+  ]) {
+    for (const tx of txs) {
+      const result = findTiered(tx, pool, amountKey);
+      if (result && result.tier <= 3) {
+        matched.push({ transaction_id: tx.id, invoice_id: result.bestMatch.id,
+          invoice_number: result.bestMatch.invoice_number, amount: tx[amountKey],
+          confidence: result.bestConfidence, reason: result.reason, direction,
+          invoice_file_id: result.bestMatch.file_id || null,
+          stmt_file_id: await stmtFileIdFor(tx.id) });
+        usedInvoiceIds.add(result.bestMatch.id);
+        matchedTxIds.add(tx.id);
+      } else {
+        deferred.push({ tx, amountKey, direction, pool });
+      }
     }
   }
 
-  // Match withdrawals → AP invoices
-  for (const tx of withdrawals.results as any[]) {
-    const result = findBestMatch(tx, apInvoices, 'withdrawal_amount');
-    if (result) {
-      const { bestMatch, bestConfidence, reason } = result;
+  // Phase B — exact-sum groups over whatever the high tiers left unconsumed.
+  for (const d of deferred) {
+    const g = findInvoiceGroupMatch(
+      { id: d.tx.id, transaction_date: d.tx.transaction_date, description: d.tx.description, reference: d.tx.reference, amount: d.tx[d.amountKey], currency: d.tx.currency },
+      d.pool.map(toMatchable),
+      usedInvoiceIds
+    );
+    if (!g) continue;
+    matched.push({
+      transaction_id: d.tx.id,
+      invoice_ids: g.invoices.map(i => i.id),
+      invoices: g.invoices.map(i => ({ invoice_number: i.invoice_number, total: i.total, file_id: (i as any).file_id || null })),
+      amount: d.tx[d.amountKey], confidence: g.confidence, reason: g.reason,
+      direction: d.direction, stmt_file_id: await stmtFileIdFor(d.tx.id),
+    });
+    for (const i of g.invoices) usedInvoiceIds.add(i.id);
+    matchedTxIds.add(d.tx.id);
+  }
 
-      const stmt2 = await db.prepare('SELECT id, r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(tx.id).first() as any;
-      const stmtFile2 = stmt2?.r2_key ? await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt2.r2_key, tenantId).first() as any : null;
-      matched.push({ transaction_id: tx.id, invoice_id: bestMatch.id,
-        invoice_number: bestMatch.invoice_number, amount: tx.withdrawal_amount,
-        confidence: bestConfidence, reason, direction: 'withdrawal→AP',
-        invoice_file_id: bestMatch.file_id || null,
-        stmt_file_id: stmtFile2?.id || null });
-      usedInvoiceIds.add(bestMatch.id);
-    }
+  // Phase C — name-tier singles LAST, only on invoices no group reserved.
+  for (const d of deferred) {
+    if (matchedTxIds.has(d.tx.id)) continue; // got a group in Phase B
+    const result = findTiered(d.tx, d.pool, d.amountKey);
+    if (!result) continue;
+    matched.push({ transaction_id: d.tx.id, invoice_id: result.bestMatch.id,
+      invoice_number: result.bestMatch.invoice_number, amount: d.tx[d.amountKey],
+      confidence: result.bestConfidence, reason: result.reason, direction: d.direction,
+      invoice_file_id: result.bestMatch.file_id || null,
+      stmt_file_id: await stmtFileIdFor(d.tx.id) });
+    usedInvoiceIds.add(result.bestMatch.id);
+    matchedTxIds.add(d.tx.id);
   }
 
   const totalUnmatched = (deposits.results as any[]).length + (withdrawals.results as any[]).length;
-  const unmatchedCount = totalUnmatched - matched.length;
+  const unmatchedCount = totalUnmatched - matchedTxIds.size;
   return c.json({ matched, unmatched_count: unmatchedCount, excluded_skipped });
 });
 
