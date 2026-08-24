@@ -125,7 +125,11 @@ export default function TxPostingPanel({
       {/* Editable contra lines — side shown once as group label, not per row */}
       <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
         <span className={`font-mono font-bold text-xs ${contraSide === 'Dr' ? 'text-red-600' : 'text-green-600'}`}>{contraSide}</span>
-        {contraSide === 'Dr' ? tr('Debit accounts', '借方科目', '借方科目') : tr('Credit accounts', '貸方科目', '贷方科目')}
+        <span>
+          {contraSide === 'Dr' ? tr('Debit accounts', '借方科目', '借方科目') : tr('Credit accounts', '貸方科目', '贷方科目')}
+          {' — '}{tr('amounts must sum to', '各行金額總和須等於', '各行金额总和须等于')}
+        </span>
+        <span className="font-mono font-medium text-foreground">{rounded.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
       </div>
       {lines.map((l, i) => {
         const temp = isTemp(l.account_code);
