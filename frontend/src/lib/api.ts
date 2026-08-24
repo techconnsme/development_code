@@ -83,7 +83,7 @@ export async function api(path: string, options: ApiOptions = {}) {
 export async function streamChat(
   body: any,
   onChunk: (text: string) => void,
-  onDone: (sessionId?: string) => void,
+  onDone: (sessionId?: string, provider?: string, model?: string) => void,
   onError: (err: string) => void,
 ) {
   try {
@@ -123,10 +123,12 @@ export async function streamChat(
     }
 
     const sessionId = res.headers.get('X-Session-Id');
+    const llmProvider = res.headers.get('X-LLM-Provider') || undefined;
+    const llmModel = res.headers.get('X-LLM-Model') || undefined;
 
     // Read stream
     const reader = res.body?.getReader();
-    if (!reader) { onDone(sessionId || undefined); return; }
+    if (!reader) { onDone(sessionId || undefined, llmProvider, llmModel); return; }
 
     const decoder = new TextDecoder();
     let buffer = '';
@@ -141,7 +143,7 @@ export async function streamChat(
       buffer = '';
     }
 
-    onDone(sessionId || undefined);
+    onDone(sessionId || undefined, llmProvider, llmModel);
   } catch (e: any) {
     onError(e.message || 'Connection error');
   }

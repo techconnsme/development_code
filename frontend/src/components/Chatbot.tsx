@@ -134,8 +134,10 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
         });
       },
       // onDone
-      (newSid) => {
+      (newSid, provider, model) => {
         if (newSid && !sessionId) setSessionId(newSid);
+        // Log which LLM provider/model answered (browser console for debugging)
+        if (provider) console.log(`[Chatbot] answered by ${provider}${model ? ` (${model})` : ''}`);
         setBusy(false);
       },
       // onError

@@ -1787,12 +1787,20 @@ chat.post('/', async (c) => {
   const dsKey = c.env.DEEPSEEK_API_KEY;
   if (!tpKey && !qwenKey && !dsKey) return c.json({ reply: 'No LLM API key configured' });
   // Chain: DashScope International Qwen (primary) → Token Plan Qwen → DeepSeek
+  // Track which provider/model produced the final answer so the client can log it.
+  let answeredProvider: string | null = null;
+  let answeredModel: string | null = null;
+  const mark = (provider: string, model: string, res: any) => {
+    answeredProvider = provider;
+    answeredModel = model;
+    return res;
+  };
   const callLLM = async (msgs: any[], tools?: any[], force?: boolean) => {
     if (qwenKey) {
       try {
         const res = await callQwen(qwenKey, msgs, tools, force);
         console.log('Qwen (DashScope International) is answered');
-        return res;
+        return mark('Qwen (DashScope International)', 'qwen3.7-plus', res);
       } catch (err: any) {
         // Primary failed (quota exhausted, throttled, empty answer, etc.) — fall
         // back to Qwen Token Plan rather than failing the request.
@@ -1801,14 +1809,14 @@ chat.post('/', async (c) => {
           try {
             const res = await callQwenTokenPlan(tpKey, msgs, tools, force);
             console.log('Qwen Token Plan is answered');
-            return res;
+            return mark('Qwen Token Plan', 'qwen3.7-plus', res);
           } catch (err2: any) {
             console.error('Qwen TokenPlan error:', err2?.message);
-            if (dsKey) return await callDeepSeek(dsKey, msgs, tools, force);
+            if (dsKey) return mark('DeepSeek', 'deepseek-chat', await callDeepSeek(dsKey, msgs, tools, force));
             throw err2;
           }
         } else if (dsKey) {
-          return await callDeepSeek(dsKey, msgs, tools, force);
+          return mark('DeepSeek', 'deepseek-chat', await callDeepSeek(dsKey, msgs, tools, force));
         }
         throw err;
       }
@@ -1817,14 +1825,14 @@ chat.post('/', async (c) => {
       try {
         const res = await callQwenTokenPlan(tpKey, msgs, tools, force);
         console.log('Qwen Token Plan is answered');
-        return res;
+        return mark('Qwen Token Plan', 'qwen3.7-plus', res);
       } catch (err: any) {
         console.error('Qwen TokenPlan error:', err?.message);
-        if (dsKey) return await callDeepSeek(dsKey, msgs, tools, force);
+        if (dsKey) return mark('DeepSeek', 'deepseek-chat', await callDeepSeek(dsKey, msgs, tools, force));
         throw err;
       }
     }
-    return callDeepSeek(dsKey, msgs, tools, force);
+    return mark('DeepSeek', 'deepseek-chat', await callDeepSeek(dsKey, msgs, tools, force));
   };
 
   const db = c.env.DB;
@@ -2259,12 +2267,16 @@ chat.post('/', async (c) => {
       const stream = new ReadableStream({
         start(controller) { controller.enqueue(encoder.encode(reply)); controller.close(); },
       });
-      return new Response(stream, {
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'X-Session-Id': sid },
-      });
+      const streamHeaders: Record<string, string> = {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Session-Id': sid,
+      };
+      if (answeredProvider) streamHeaders['X-LLM-Provider'] = answeredProvider;
+      if (answeredModel) streamHeaders['X-LLM-Model'] = answeredModel;
+      return new Response(stream, { headers: streamHeaders });
     }
 
-    return c.json({ reply, session_id: sid });
+    return c.json({ reply, session_id: sid, provider: answeredProvider, model: answeredModel });
   } catch (e: any) {
     console.error('Chat error:', e?.message, e?.stack);
     return c.json({ reply: `${t.error} (${e.message || 'unknown'})`, error_detail: e?.message || 'unknown' }, 500);
