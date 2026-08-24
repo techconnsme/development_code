@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
 import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, X } from 'lucide-react';
@@ -35,6 +35,12 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [selectedPLAccount, setSelectedPLAccount] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const entryRowRef = useRef<HTMLTableRowElement | null>(null);
+  const navigate = useNavigate();
+
+  // Deep-link a bank transaction into its statement card on the Bank Statements page
+  const handlePostClick = (bankStatementId: string, transactionId: string) => {
+    navigate(`/bank-statements?statement=${encodeURIComponent(bankStatementId)}&highlight=${encodeURIComponent(transactionId)}`);
+  };
 
   const { startDate, endDate } = useDateFilter();
   // P&L account transaction drill-down
@@ -816,7 +822,12 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                           </h4>
                           <div className="space-y-2">
                             {(plTransactions?.bank_transactions || []).map((bt: any, i: number) => (
-                              <div key={bt.id || i} className="bg-muted/30 rounded-lg p-2.5 text-xs">
+                              <div
+                                key={bt.id || i}
+                                className="bg-muted/30 rounded-lg p-2.5 text-xs"
+                                onClick={bt.bank_statement_id ? () => handlePostClick(bt.bank_statement_id, bt.id) : undefined}
+                                title={bt.bank_statement_id ? tr('Open in Bank Statements', '於銀行對賬開啟', '在银行对账打开') : undefined}
+                              >
                                 <div className="flex items-center justify-between mb-1">
                                   <span className="text-muted-foreground">{bt.transaction_date}</span>
                                   {bt.match_status && <span className="px-1 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700">{bt.match_status}</span>}

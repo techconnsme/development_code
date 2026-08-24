@@ -71,6 +71,33 @@ export default function BankStatements() {
   const [autoMatchResults, setAutoMatchResults] = useState<any[] | null>(null);
   const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
 
+  const [searchParams, setSearchParams] = useSearchParams();
+  const highlightTxRef = React.useRef<string | null>(null);
+
+  // Auto-expand statement and highlight transaction from query params
+  React.useEffect(() => {
+    const statementId = searchParams.get('statement');
+    const highlightId = searchParams.get('highlight');
+    if (statementId) {
+      setExpandedId(statementId);
+      highlightTxRef.current = highlightId;
+    }
+  }, []); // Run once on mount
+
+  // After scrolling/highlighting, clear the URL params
+  React.useEffect(() => {
+    if (!searchParams.has('statement') && !searchParams.has('highlight')) return;
+    const timer = setTimeout(() => {
+      const newParams = new URLSearchParams(searchParams);
+      if (newParams.has('highlight') || newParams.has('statement')) {
+        newParams.delete('highlight');
+        newParams.delete('statement');
+        setSearchParams(newParams, { replace: true });
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [searchParams]);
+
   const { data, isLoading } = useQuery({
     queryKey: ['bank-statements', startDate, endDate],
     queryFn: () => {
@@ -271,6 +298,26 @@ export default function BankStatements() {
       )
     : transactions;
   const displayTransactions = activeFilter === 'unmatched' ? filteredTransactions : transactions;
+
+  // Scroll to highlighted transaction after detail loads (deep-link from P&L drill-down)
+  React.useEffect(() => {
+    if (highlightTxRef.current && detail && !detailQuery.isLoading) {
+      const txId = highlightTxRef.current;
+      // Small delay to let DOM render
+      setTimeout(() => {
+        const el = document.getElementById(`tx-${txId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('highlight-pulse');
+          // Clear highlight after 5 seconds
+          setTimeout(() => {
+            el.classList.remove('highlight-pulse');
+          }, 5000);
+        }
+        highlightTxRef.current = null;
+      }, 300);
+    }
+  }, [detail, detailQuery.isLoading]);
 
   const totalDeposits = displayTransactions.reduce((s: number, tx: Transaction) => s + tx.deposit_amount, 0);
   const totalWithdrawals = displayTransactions.reduce((s: number, tx: Transaction) => s + tx.withdrawal_amount, 0);
@@ -532,7 +579,7 @@ export default function BankStatements() {
 
                                 return (
                                   <React.Fragment key={tx.id}>
-                                <tr onClick={() => { if (!editMode) setExpandedTxId(expandedTxId === tx.id ? null : tx.id); }}
+                                <tr id={`tx-${tx.id}`} onClick={() => { if (!editMode) setExpandedTxId(expandedTxId === tx.id ? null : tx.id); }}
                                   className={`cursor-pointer border-b border-muted/50 hover:bg-muted/20 ${dirty ? 'bg-blue-50 dark:bg-blue-950/20' : ''} ${
                                   tx.match_status === 'suggested' ? 'bg-yellow-50 dark:bg-yellow-950/20' :
                                   tx.match_status === 'confirmed' ? 'bg-green-50 dark:bg-green-950/20' : ''

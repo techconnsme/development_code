@@ -88,3 +88,17 @@
 .slide-in-right {
   animation: slideInRight 200ms ease-out;
 }
+
+/* Transaction highlight pulse (BankStatements deep-link) */
+@keyframes pulseHighlight {
+  0%   { background-color: #fef3c7; }
+  50%  { background-color: #fde68a; }
+  100% { background-color: #fef3c7; }
+}
+
+.highlight-pulse {
+  animation: pulseHighlight 1s ease-in-out 3;
+  border: 2px solid #fbbf24;
+  border-radius: 4px;
+  scroll-margin-top: 100px; /* offset for smooth scrollIntoView */
+}
