@@ -245,7 +245,7 @@ export default function BankStatements() {
     ? transactions.filter((tx: Transaction) =>
         !tx.invoice_id && !tx.card_statement_id &&
         tx.match_status !== 'confirmed' && tx.match_status !== 'skipped' &&
-        tx.match_status !== 'suggested'
+        tx.match_status !== 'suggested' && tx.match_status !== 'not_required'
       )
     : transactions;
   const displayTransactions = activeFilter === 'unmatched' ? filteredTransactions : transactions;
@@ -507,12 +507,13 @@ export default function BankStatements() {
                                   tx.match_status === 'confirmed' ? 'bg-green-50 dark:bg-green-950/20' : ''
                                 } ${
                                   activeFilter === 'unmatched' && !tx.invoice_id && !tx.card_statement_id &&
-                                  tx.match_status !== 'confirmed' && tx.match_status !== 'skipped'
+                                  tx.match_status !== 'confirmed' && tx.match_status !== 'skipped' &&
+                                  tx.match_status !== 'not_required'
                                     ? 'border-l-4 border-l-amber-400' : ''
                                 }`}>
                                   <td className="py-1.5 pr-3 whitespace-nowrap">
                                     {/* Flag: unlinked + not skipped → needs attention */}
-                                    {!editMode && !tx.invoice_number && !tx.card_statement_id && tx.match_status !== 'suggested' && tx.match_status !== 'skipped' && (
+                                    {!editMode && !tx.invoice_number && !tx.card_statement_id && tx.match_status !== 'suggested' && tx.match_status !== 'skipped' && tx.match_status !== 'not_required' && (
                                       <span className="inline-flex items-center mr-1 text-amber-500" title="This transaction needs a linked document or to be marked as skipped">
                                         <AlertTriangle className="h-3 w-3" />
                                       </span>
@@ -595,17 +596,24 @@ export default function BankStatements() {
                                       <span className="text-xs text-muted-foreground italic">—</span>
                                     ) : (
                                       <select
-                                        className="text-xs border rounded px-1 py-0.5 bg-background max-w-[260px] truncate cursor-pointer"
+                                        className={`text-xs border rounded px-1 py-0.5 bg-background max-w-[260px] truncate cursor-pointer ${
+                                          tx.match_status === 'not_required' ? 'border-border text-muted-foreground' : ''
+                                        }`}
                                         value={tx.account_code || ''}
                                         onChange={e => {
                                           if (e.target.value) {
                                             updateTxMut.mutate({ id: tx.id, body: { account_code: e.target.value } });
                                           }
                                         }}
+                                        title={tx.match_status === 'not_required'
+                                          ? tr('Opening balance — no invoice link or COA posting required', '期初結餘——無需發票連結或會計分錄', '期初结余——无需发票连结或会计分录')
+                                          : undefined}
                                         onClick={e => e.stopPropagation()}
                                       >
                                         <option value="" className="text-muted-foreground">
-                          {tr('-- Select account --', '-- 選科目 --', '-- 選科目 --')}
+                          {tx.match_status === 'not_required'
+                            ? tr('N/A · opening balance', 'N/A · 期初結餘', 'N/A · 期初结余')
+                            : tr('-- Select account --', '-- 選科目 --', '-- 選科目 --')}
                         </option>
                                         {accounts.map((a: any) => (
                                           <option key={a.account_code} value={a.account_code}>
@@ -656,8 +664,17 @@ export default function BankStatements() {
                                         <Ban className="h-3.5 w-3.5" />
                                       </button>
                                     )}
+                                    {/* ── Opening balance — no link required ── */}
+                                    {!tx.card_statement_id && !tx.invoice_number && tx.match_status === 'not_required' && (
+                                      <span
+                                        className="inline-flex items-center gap-1 text-muted-foreground"
+                                        title={tr('Opening balance — no link or posting required', '期初結餘——無需連結或過賬', '期初结余——无需连结或过账')}
+                                      >
+                                        <span className="px-1 py-px rounded bg-muted border border-border font-medium text-[10px]">N/A</span>
+                                      </span>
+                                    )}
                                     {/* ── Two-icon row: link or opt-out ── */}
-                                    {!tx.card_statement_id && !tx.invoice_number && tx.match_status !== 'suggested' && tx.match_status !== 'skipped' && (
+                                    {!tx.card_statement_id && !tx.invoice_number && tx.match_status !== 'suggested' && tx.match_status !== 'skipped' && tx.match_status !== 'not_required' && (
                                       <div className="flex items-center gap-1.5 justify-center">
                                         <button onClick={() => setMatchTxId(tx.id)}
                                           className="text-muted-foreground hover:text-primary" title="Link to invoice or card statement">
