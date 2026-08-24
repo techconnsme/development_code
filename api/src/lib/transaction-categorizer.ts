@@ -118,7 +118,7 @@ export const CATEGORIZE_RULES: CategorizeRule[] = [
   { pattern: /\bAUDIT\b|審計|\bDELOITTE\b|\bKPMG\b|\bPWC\b|\bERNST YOUNG\b/, code: '63101', tag: 'expense', direction: 'withdrawal' },
   { pattern: /\bSECRETARY\b|秘書|\bHKICS\b/, code: '63102', tag: 'expense', direction: 'withdrawal' },
   { pattern: /\bLEGAL\b|律師|法律|\bBAKER MCKENZIE\b/, code: '63103', tag: 'expense', direction: 'withdrawal' },
-  { pattern: /\bINSURANCE\b|保險|保险/, code: '63300', tag: 'expense', direction: 'withdrawal' },
+  { pattern: /\bINSURANCE\b|保險|保险/, code: '63309', tag: 'expense', direction: 'withdrawal' },
 
   // ── staff ──
   { pattern: /\bSALARIES\b|\bSALARY\b|\bPAYROLL\b|\bWAGES?\b|薪金|薪資|工資/, code: '61201', tag: 'expense', direction: 'withdrawal' },
@@ -200,7 +200,7 @@ const FUZZY_KEYWORDS: FuzzyEntry[] = [
   { token: 'SALARY', code: '61201', tag: 'expense', direction: 'withdrawal' },
   { token: 'PAYROLL', code: '61201', tag: 'expense', direction: 'withdrawal' },
   { token: 'UTILITIES', code: '62200', tag: 'expense', direction: 'withdrawal' },
-  { token: 'INSURANCE', code: '63300', tag: 'expense', direction: 'withdrawal' },
+  { token: 'INSURANCE', code: '63309', tag: 'expense', direction: 'withdrawal' },
   { token: 'TELECOM', code: '62301', tag: 'expense', direction: 'withdrawal' },
   { token: 'HOSTING', code: '62302', tag: 'expense', direction: 'withdrawal' },
 ];

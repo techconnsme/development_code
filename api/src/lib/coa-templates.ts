@@ -136,6 +136,7 @@ export const BASE_HK_COA: CoaTemplateAccount[] = [
   { account_code: '63300', account_name: '保險 Insurance', account_type: 'expense', parent_code: '63000' },
   { account_code: '63301', account_name: '勞工保險 EC Insurance', account_type: 'expense', parent_code: '63300' },
   { account_code: '63302', account_name: '專業責任保險 Professional Indemnity', account_type: 'expense', parent_code: '63300' },
+  { account_code: '63309', account_name: '其他保險 Other Insurance', account_type: 'expense', parent_code: '63300' },
   { account_code: '64100', account_name: '市場推廣 Marketing', account_type: 'expense', parent_code: '64000' },
   { account_code: '64101', account_name: '廣告費用 Advertising', account_type: 'expense', parent_code: '64100' },
   { account_code: '64102', account_name: '網站推廣 Website Promotion', account_type: 'expense', parent_code: '64100' },
