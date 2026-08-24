@@ -192,3 +192,14 @@ Independently re-parsed all 30 statements (16 PNR + 14 EHSIA, both Current+Savin
 **Ruled-out coincidences:** PNR 27 Jan 2,000 ≠ BR deposits 1,000+1,000 (BR is Oct); 27 Oct WEB HOSTING 1,000 ≠ DNS 500 + MuseLab 500 (paid 20 Oct separately); Pastel 001500 (13,350) ≠ 5,100 + 8,250 (those txs belong to 001473/001511).
 
 **Corrections to earlier notes:** EHSIA Respect I0107 total = 4,200 (not 4,400; the 200 AoA/NNC1 line is only on PnR's I0105); EHSIA fee refunds = 3 × `REFUND MONTHLY FEE25` 200.00 (9 May ×2, 16 Jun ×1); VEII 2025002v2 total = 67,130.80 (matches bank 18 Sep exactly).
+
+## Multi-invoice (1:N) combined-payment matching SHIPPED (2026-08-25)
+
+Auto bank→invoice matching now links ONE bank tx to MULTIPLE invoices (combined payments). Spec: `docs/superpowers/specs/2026-08-24-multi-invoice-bank-matching-design.md` · Plan: `docs/superpowers/plans/2026-08-24-multi-invoice-bank-matching.md` (+ task briefs/reports in `.superpowers/sdd/2026-08-24-multi-invoice-bank-matching/`). Code through commit `66969d0`; migration `api/src/db/migration-bank-transaction-invoice-links.sql` applied to REMOTE D1 (indexes idx_btil_tx + idx_btil_inv verified); API worker redeployed (version 0843f0a5) + frontend rebuilt and deployed to Cloudflare Pages.
+
+**Live verification on production (tenant u-83161e0c), all PASS:**
+- Auto-match suggests the three Pastel combined payments as group rows with `invoice_ids` sizes **2 / 2 / 3** (57,580.80 / 55,000 / 27,544), reason "Combined payment: …", confidence=medium. This RESOLVES the ground-truth conflict flagged above — 27,544 now suggests its true 3-invoice group instead of a wrong single invoice.
+- Headed Playwright run (`SKIP_UPLOAD=1 HOLD_MS=30000 npx playwright test auto-link-onetomany --headed`) passed; deterministic API script `tests/verify-onetomany-live.ts` passed all steps.
+- 55,000 group end-to-end: confirm → both invoices paid + payment JE `JE-PMT-MULTI-*` with 3 lines (Dr 21101 ×2 per-invoice allocations + Cr 11102 55,000); unlink → invoices back to `sent`, tx back to `unmatched`. Tenant left as found. Edge case: confirm with empty `invoice_ids` → HTTP 400.
+
+**Anomalies (minor):** spec test logs `invoice undefined` for group rows (it reads single-invoice fields that group rows don't have — engine output correct); first verify-script run hit a script bug parsing GET /transactions (`{data:[...]}` shape), fixed and re-run clean; wrangler 3.x deprecation warning during deploys (non-blocking).

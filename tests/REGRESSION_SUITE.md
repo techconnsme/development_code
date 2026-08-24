@@ -140,3 +140,19 @@ Source: `test-sample-real/PNR/estatement/`
 - Travel expenses: the 32 PNG/JPG receipt photos need a separate image-OCR test
 - PNR→EHSIA invoices: `PNR/EHSIA/` contains invoices PNR issued TO EHSIA (AR for PNR)
 - EHSIA→PNR invoices: `EHSIA/PnR/` contains invoices EHSIA issued TO PNR (AP for PNR when logged in as EHSIA user)
+
+---
+
+## Multi-Invoice (1:N) Combined Payments — ✅ PASSING 2026-08-25, auto 1:N live-verified
+
+The three PNR Pastel combined payments are suggested as GROUP rows by `POST /bank-statements/auto-match` on production (`invoice_ids` sizes 2 / 2 / 3, confidence=medium):
+
+| Bank tx amount | Suggested group | Reason |
+|----------------|-----------------|--------|
+| 57,580.80 | 2 invoices (#001414 15,300 + #001417v2 42,280.80) | "Combined payment: 15,300.00 + 42,280.80 = 57,580.80" |
+| 55,000.00 | 2 invoices (#001441 40,050 + #001442 14,950) | "Combined payment: 40,050.00 + 14,950.00 = 55,000.00" |
+| 27,544.00 | 3 invoices (#001458v2 5,200 + #001467-v2 4,150 + #001484-v2 18,194) | "Combined payment: 5,200.00 + 4,150.00 + 18,194.00 = 27,544.00" |
+
+End-to-end (55,000 group): confirm → both invoices `paid`, payment JE `JE-PMT-MULTI-*` with 3 lines (2× Dr 21101 per-invoice allocations + Cr 11102 bank); unlink → invoices back to `sent`, tx back to `unmatched`. Reviewer edge case: confirm with `invoice_ids: []` → HTTP 400.
+
+Checks: browser spec `tests/auto-link-onetomany.spec.ts` (SKIP_UPLOAD=1 HOLD_MS=30000) + deterministic API script `tests/verify-onetomany-live.ts`. The detailed suite table for these checks lives in `regression-tests/REGRESSION_SUITE.md` § Multi-Invoice Bank Transactions.
