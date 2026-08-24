@@ -368,10 +368,15 @@ bank.post('/auto-match', async (c) => {
   });
 
   async function stmtFileIdFor(txId: string): Promise<string | null> {
-    const stmt = await db.prepare('SELECT r2_key FROM bank_statements WHERE id = (SELECT bank_statement_id FROM bank_transactions WHERE id = ?)').bind(txId).first<any>();
-    if (!stmt?.r2_key) return null;
-    const f = await db.prepare('SELECT id FROM file_records WHERE r2_key = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1').bind(stmt.r2_key, tenantId).first<any>();
-    return f?.id || null;
+    const f = await db.prepare(
+      `SELECT f.id AS file_id
+       FROM bank_transactions bt
+       JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+       JOIN file_records f ON f.r2_key = bs.r2_key
+       WHERE bt.id = ? AND bt.user_id = ? AND f.user_id = ? AND f.deleted_at IS NULL
+       LIMIT 1`
+    ).bind(txId, tenantId, tenantId).first<any>();
+    return f?.file_id || null;
   }
 
   function findTiered(tx: any, invoices: any[], amountKey: string): { bestMatch: any; bestConfidence: string; reason: string; tier: number } | null {
@@ -380,6 +385,7 @@ bank.post('/auto-match', async (c) => {
       invoices.map(toMatchable),
       usedInvoiceIds
     );
+    // evaluateInvoice now always sets tier; ?? 4 merely routes any future tier-less result into the deferral bucket by design.
     return r ? { bestMatch: r.invoice, bestConfidence: r.confidence, reason: r.reason, tier: r.tier ?? 4 } : null;
   }
 
