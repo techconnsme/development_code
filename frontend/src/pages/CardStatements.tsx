@@ -371,6 +371,7 @@ export default function CardStatements() {
                                     <TxPostingPanel
                                       kind="card"
                                       movementAmount={movement}
+                                      contraSide="Dr"
                                       fixedCode="11101"
                                       fixedName={cardAccounts.find((a: any) => a.account_code === '11101')?.account_name || 'Cash on Hand'}
                                       posting={posting}

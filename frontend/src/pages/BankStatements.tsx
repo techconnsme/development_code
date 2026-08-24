@@ -801,6 +801,7 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                                       <TxPostingPanel
                                         kind="bank"
                                         movementAmount={movement}
+                                        contraSide={dep > 0 ? 'Cr' : 'Dr'}
                                         fixedCode={stmtBankCode}
                                         fixedName={accounts.find((a: any) => a.account_code === stmtBankCode)?.account_name || 'Bank account'}
                                         posting={posting}

@@ -12,6 +12,8 @@ interface TxPostingPanelProps {
   kind: 'bank' | 'card';
   /** Movement amount to allocate (abs of deposit/withdrawal/amount) */
   movementAmount: number;
+  /** Which side the EDITABLE lines sit on: deposit ⇒ 'Cr' (bank Dr fixed), withdrawal ⇒ 'Dr' (bank Cr fixed); cards ⇒ 'Dr' */
+  contraSide: 'Dr' | 'Cr';
   /** Fixed side display: code + name (bank account or Cash on Hand) */
   fixedCode: string;
   fixedName: string;
@@ -33,10 +35,11 @@ interface TxPostingPanelProps {
  * split across N accounts with amounts. Save validates allocation == movement.
  */
 export default function TxPostingPanel({
-  kind, movementAmount, fixedCode, fixedName, posting, currentCode,
+  kind, movementAmount, contraSide, fixedCode, fixedName, posting, currentCode,
   accounts, tree, disabled, lockedReason, onSave, onResetAuto,
 }: TxPostingPanelProps) {
   const rounded = Math.round(movementAmount * 100) / 100;
+  const fixedSide: 'Dr' | 'Cr' = contraSide === 'Dr' ? 'Cr' : 'Dr';
   const [lines, setLines] = useState<PostingLine[]>(() => {
     if (posting && posting.lines.length > 0) {
       return posting.lines
@@ -110,8 +113,8 @@ export default function TxPostingPanel({
 
       {/* Fixed bank/cash side */}
       <div className="flex items-center gap-2 text-xs bg-muted/60 border border-border rounded px-2 py-1.5">
-        <span className={`font-mono font-bold ${kind === 'card' ? 'text-red-600' : 'text-green-600'}`}>
-          {kind === 'card' ? 'Cr' : tr('Dr/Cr', '借/貸', '借/贷')}
+        <span className={`font-mono font-bold ${fixedSide === 'Dr' ? 'text-red-600' : 'text-green-600'}`}>
+          {fixedSide}
         </span>
         <span className="font-mono">{fixedCode}</span>
         <span className="text-muted-foreground truncate flex-1">{fixedName}</span>
@@ -127,7 +130,7 @@ export default function TxPostingPanel({
           <div key={i} className={`flex items-center gap-2 text-xs border rounded px-2 py-1.5 ${
             temp ? 'border-red-300 bg-red-50 dark:bg-red-950/40' : 'border-input bg-background'
           }`}>
-            <span className="font-mono font-bold text-green-600">{kind === 'card' ? 'Dr' : 'Cr'}</span>
+            <span className={`font-mono font-bold ${contraSide === 'Dr' ? 'text-red-600' : 'text-green-600'}`}>{contraSide}</span>
             <select
               value={l.account_code}
               onChange={e => updLine(i, { account_code: e.target.value })}
