@@ -40,11 +40,25 @@ export default function TxPostingPanel({
 }: TxPostingPanelProps) {
   const rounded = Math.round(movementAmount * 100) / 100;
   const fixedSide: 'Dr' | 'Cr' = contraSide === 'Dr' ? 'Cr' : 'Dr';
+  const isContraLine = (l: { debit: number; credit: number }) => contraSide === 'Cr' ? l.credit > 0 : l.debit > 0;
+  const isFixedLine = (l: { debit: number; credit: number }) => contraSide === 'Cr' ? l.debit > 0 : l.credit > 0;
+  // Legacy auto-JEs (pre 2026-08-22) posted the fixed side to hardcoded 11101
+  // instead of the statement's real bank account. Derive sides by Dr/Cr, not by
+  // code, so those render honestly: actual fixed line locked, real contra lines editable.
+  const postedFixedLine = posting?.lines.find(isFixedLine) || null;
+  const displayFixedCode = postedFixedLine?.account_code || fixedCode;
+  const displayFixedName = postedFixedLine?.account_name || fixedName;
+  const displayFixedAmount = postedFixedLine
+    ? Math.round((postedFixedLine.debit || postedFixedLine.credit || 0) * 100) / 100
+    : rounded;
   const [lines, setLines] = useState<PostingLine[]>(() => {
     if (posting && posting.lines.length > 0) {
-      return posting.lines
-        .map(l => ({ account_code: l.account_code, amount: Math.round((l.debit || l.credit || 0) * 100) / 100 }))
-        .filter(l => l.account_code !== fixedCode);
+      const bySide = posting.lines.filter(isContraLine);
+      const fallback = bySide.length > 0 ? bySide : posting.lines.filter(l => l.account_code !== fixedCode);
+      if (fallback.length > 0) {
+        return fallback
+          .map(l => ({ account_code: l.account_code, amount: Math.round((l.debit || l.credit || 0) * 100) / 100 }));
+      }
     }
     if (currentCode) return [{ account_code: currentCode, amount: rounded }];
     return [{ account_code: '', amount: rounded }];
@@ -111,14 +125,14 @@ export default function TxPostingPanel({
         )}
       </div>
 
-      {/* Fixed bank/cash side */}
+      {/* Fixed bank/cash side — shows the ACTUAL posted fixed line (legacy JEs may differ from the statement's bank account) */}
       <div className="flex items-center gap-2 text-xs bg-muted/60 border border-border rounded px-2 py-1.5">
         <span className={`font-mono font-bold ${fixedSide === 'Dr' ? 'text-red-600' : 'text-green-600'}`}>
           {fixedSide}
         </span>
-        <span className="font-mono">{fixedCode}</span>
-        <span className="text-muted-foreground truncate flex-1">{fixedName}</span>
-        <span className="font-mono font-medium">{rounded.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+        <span className="font-mono">{displayFixedCode}</span>
+        <span className="text-muted-foreground truncate flex-1">{displayFixedName}</span>
+        <span className="font-mono font-medium">{displayFixedAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
         <Lock className="h-3 w-3 text-muted-foreground" />
       </div>
 

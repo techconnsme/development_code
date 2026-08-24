@@ -1,15 +1,22 @@
 # Session State — 2026-08-24 (both-side Dr/Cr account badges on statement lists)
 
-## Account column now shows BOTH debit & credit sides (plan Decision #3 completed)
+## Legacy 11101 Cash-on-Hand JEs — root-caused + backfilled (279 JEs, 8 tenants)
 
-`docs/superpowers/plans/2026-08-24-multi-account-posting.md` Decision #3 said the Account column renders ALL posting-line codes as stacked badges — but both list pages filtered out the fixed side (`filter(c => c !== stmtBankCode)` / `!== '11101'`), showing only contra accounts. Users couldn't see which bank/card account a JE actually hit → old mispostings (hardcoded 11101 contra instead of real HSBC 11102 etc.) were invisible.
+User spotted phantom `Cr 11101 Cash on Hand` line in the TxPostingPanel on a bank deposit (over-allocated 100,200/50,100).
 
-**Fix (frontend only):**
-1. `BankStatements.tsx` — every tx with a posting now shows ALL journal lines as stacked badges: `Dr|Cr` prefix (blue=Dr, orange=Cr) + code + name, tooltip adds amount; temp-account red tint preserved; split/manual-split label only when >2 lines. Contra badge stays click-to-edit (AccountModal), bank side locked. No-posting rows keep old select/badge fallback.
-2. `CardStatements.tsx` — same treatment (fixed Cr 11101 side now visible).
-3. Verified NOT broken: `CardStatementReview.tsx:274-275` preview already correct (`Cr 11101` matches real card posting in `card-statements.ts:477-484`); `BankStatementReview.tsx:792-793` already showed both sides.
+**Root cause (2 layers):**
+1. **Data**: pre-2026-08-22 auto-JEs hardcoded the fixed side to `11101` instead of the statement's real bank account (SESSION_STATE 08-22: "JEs contra = real bank acct (was always 11101)"). Verified live: `JE-AUTO-645975-b084` = Dr 11101/Cr 41101 on a bank deposit.
+2. **Code**: `TxPostingPanel.tsx` derived editable contra lines by `code !== fixedCode` (not by Dr/Cr side) → the `Dr 11101` line rendered as an editable *credit* row.
 
-**Verified:** frontend build OK; tests/posting-validate.test.ts 11/11.
+**Fixes:**
+1. **Panel** (`TxPostingPanel.tsx`): contra lines now derived by side (`credit>0`/`debit>0` vs contraSide); fixed row shows the JE's ACTUAL posted fixed line (code+name+amount) — legacy JEs render honestly; Save/Reset-to-auto still rebuild with the statement's real bank code, which permanently corrects them.
+2. **Backfill** (`api/backfill-legacy-bank-je-11101.sql`, run on remote D1): all 279 legacy fixed-side 11101 lines retargeted to the statement's real bank — HSBC-family→`11102` (244), and per-tenant NEW accounts for other banks (user decision): Hang Seng→`11104 恒生銀行 Hang Seng Bank` (u-a21aaae1, u-bf5c166e), BOC→`11104`/`11105 中國銀行 Bank of China` (u-5bc78c1c/u-a21aaae1), StanChart→`11106 渣打銀行 Standard Chartered` (u-a21aaae1). Codes follow the COA ordering rule (next sequential leaf under `11100`). Also created missing canonical accounts (u-21e2a52a: 11102; u-d0757ac1: 10000/11000/11100/11102 + re-parented its 11101) and synced affected `bank_statements.account_code` so PATCH-regen/auto-categorize won't reintroduce wrong codes.
+   - **Guards held**: contra-must-be-non-asset preserved legit cash↔bank transfers; post-verify 0 bad JEs left; per-tenant names verified.
+   - **Known follow-up**: `resolveBankAccountCode()` (transaction-categorizer.ts:257) still maps ALL non-HSBC banks→11103 for NEW imports; extending the engine's bank→code map (Hang Seng/BOC/StanChart) is a separate task.
+
+## Both-side Dr/Cr badges (earlier this session)
+
+`BankStatements.tsx` + `CardStatements.tsx` Account columns now render ALL posting lines as stacked badges — `Dr`(blue)/`Cr`(orange) prefix + code + name, amount in tooltip; temp-account red tint kept; split label only >2 lines; contra badge click-to-edit. Plan Decision #3 (`2026-08-24-multi-account-posting.md`) completed. Verified `CardStatementReview.tsx:274-275` preview already correct (Cr 11101 matches real card posting).
 
 ---
 
