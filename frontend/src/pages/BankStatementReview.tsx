@@ -110,15 +110,18 @@ export default function BankStatementReview() {
   });
   const coaOptions = useMemo(() => {
     const all = (coaResp?.data || []);
-    const codes = new Set(all.map(a => a.account_code));
-    // Parents with children are not postable — hide them from the picker
-    const hasChildren = (c: string) => {
-      for (const x of codes) if (x !== c && x.startsWith(c)) return true;
-      return false;
-    };
-    return all.filter(a => !hasChildren(a.account_code))
+    // Parents with children are not postable — hide them. Fixed-length HK codes:
+    // strip trailing zeros to a stem ('66200'→'662', '11000'→'11'); any OTHER
+    // code on the same stem means this one is a parent.
+    const stemOf = (c: string) => c.replace(/0+$/, '') || c.slice(0, 1);
+    const byStem = new Map<string, number>();
+    for (const a of all) {
+      const s = stemOf(a.account_code);
+      byStem.set(s, (byStem.get(s) || 0) + 1);
+    }
+    return all.filter(a => (byStem.get(stemOf(a.account_code)) || 0) <= 1)
       .slice()
-      .sort((a, b) => a.account_code.localeCompare(b.account_code));
+      .sort((x, y) => x.account_code.localeCompare(y.account_code));
   }, [coaResp]);
 
   // Local edit state

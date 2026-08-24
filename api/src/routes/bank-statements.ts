@@ -568,15 +568,18 @@ bank.patch('/transactions/:id', async (c) => {
   if (!tx) return c.json({ error: 'Transaction not found' }, 404);
 
   // Guard (#4): a COA account that has children (e.g. 10000, 11000, 66200) is
-  // not postable — only leaf accounts may be selected.
+  // not postable — only leaf accounts may be selected. HK scheme is fixed-length,
+  // so "has children" = another active code shares this code's zero-stripped stem
+  // ('66200'→stem '662' sees 66201..; '11000'→'11' sees 111xx).
   if (body.account_code !== undefined && body.account_code !== null && body.account_code !== '') {
     const submitted = String(body.account_code);
     if (!/^\d{1,5}$/.test(submitted)) return c.json({ error: `Invalid account code: ${submitted}` }, 400);
+    const stem = submitted.replace(/0+$/, '') || submitted.slice(0, 1);
     const childRow = await db.prepare(
       `SELECT account_code FROM accounts WHERE user_id = ? AND is_active = 1
-       AND length(account_code) > length(?) AND substr(account_code, 1, length(?)) = ?
+       AND account_code != ? AND substr(account_code, 1, length(?)) = ?
        LIMIT 1`
-    ).bind(tenantId, submitted, submitted, submitted).first();
+    ).bind(tenantId, submitted, stem, stem).first();
     if (childRow) return c.json({ error: `${submitted} is a parent account with child accounts — select a leaf account` }, 400);
   }
 
