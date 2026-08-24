@@ -138,10 +138,12 @@ export default function BankStatements() {
   });
 
   const confirmMatchMut = useMutation({
-    mutationFn: ({ txId, invoiceId }: { txId: string; invoiceId: string }) =>
+    mutationFn: ({ txId, invoiceId, invoiceIds }: { txId: string; invoiceId: string | null; invoiceIds?: string[] }) =>
       api(`/bank-statements/transactions/${txId}/match`, {
         method: 'PATCH',
-        body: { invoice_id: invoiceId, action: 'confirm' },
+        body: invoiceIds?.length
+          ? { invoice_ids: invoiceIds, action: 'confirm' }
+          : { invoice_id: invoiceId, action: 'confirm' },
       }),
     onSuccess: (_data: any) => {
       queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
@@ -921,8 +923,8 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
       {autoMatchResults && (
         <AutoMatchReviewModal
           matches={autoMatchResults}
-          onConfirm={(txId, invoiceId) =>
-            confirmMatchMut.mutateAsync({ txId, invoiceId })
+          onConfirm={(txId, invoiceId, invoiceIds) =>
+            confirmMatchMut.mutateAsync({ txId, invoiceId, invoiceIds })
           }
           onReject={(txId) =>
             unlinkMut.mutateAsync(txId)

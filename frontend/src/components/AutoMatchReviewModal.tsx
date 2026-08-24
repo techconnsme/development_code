@@ -13,7 +13,7 @@ import { tr } from '../lib/i18nHelpers';
 // on every toggle. Only one row can be expanded at a time.
 export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onClose }: {
   matches: any[];
-  onConfirm: (txId: string, invoiceId: string) => void | Promise<void>;
+  onConfirm: (txId: string, invoiceId: string | null, invoiceIds?: string[]) => void | Promise<void>;
   onReject: (txId: string) => void | Promise<void>;
   onClose: () => void;
 }) {
@@ -25,11 +25,11 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
 
   const pending = matches.filter(m => !confirmed.has(m.transaction_id) && !rejected.has(m.transaction_id));
 
-  const handleConfirm = async (txId: string, invoiceId: string) => {
-    setProcessing(txId);
+  const handleConfirm = async (m: any) => {
+    setProcessing(m.transaction_id);
     try {
-      await onConfirm(txId, invoiceId);
-      setConfirmed(prev => new Set(prev).add(txId));
+      await onConfirm(m.transaction_id, m.invoice_id ?? null, m.invoice_ids);
+      setConfirmed(prev => new Set(prev).add(m.transaction_id));
     } catch { /* parent surfaces the error; keep the row pending */ }
     setProcessing(null);
   };
@@ -44,7 +44,7 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
   };
 
   const acceptAll = async () => {
-    for (const m of pending) await handleConfirm(m.transaction_id, m.invoice_id);
+    for (const m of pending) await handleConfirm(m);
   };
 
   return (
@@ -99,7 +99,14 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
                             m.confidence === 'high' ? 'bg-green-100 text-green-700' :
                             m.confidence === 'medium' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
                           }`}>{m.confidence?.toUpperCase() || 'LOW'}</span>
-                          <span className="text-sm font-medium truncate">{m.invoice_number}</span>
+                          {(m.invoice_ids?.length ?? 0) >= 2 ? (
+                            <>
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">COMBINED</span>
+                              <span className="text-sm font-medium truncate">{m.invoices.map((i: any) => i.invoice_number).join(' + ')}</span>
+                            </>
+                          ) : (
+                            <span className="text-sm font-medium truncate">{m.invoice_number}</span>
+                          )}
                           <span className="font-mono text-xs text-muted-foreground">HKD {m.amount?.toLocaleString()}</span>
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5 truncate">{m.reason}</p>
@@ -109,7 +116,7 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
                           className="px-2 py-1 text-xs text-primary hover:bg-blue-50 rounded">
                           {tr('Preview', '預覽', '预览')}
                         </button>
-                        <button onClick={() => handleConfirm(m.transaction_id, m.invoice_id)}
+                        <button onClick={() => handleConfirm(m)}
                           disabled={processing === m.transaction_id}
                           className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-50">
                           ✓ {tr('Confirm', '確認', '确认')}
@@ -130,7 +137,7 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
                       <div className="overflow-hidden min-h-0">
                         <div className="border-t px-3 pt-3 pb-1">
                           <div className="flex gap-3 h-80">
-                            <div className="flex-1 flex flex-col">
+                            <div className="flex-1 min-w-[220px] flex flex-col">
                               <span className="text-[10px] text-muted-foreground mb-1">{tr('Bank Statement', '銀行月結單', '银行月结单')}</span>
                               {m.stmt_file_id ? (
                                 <iframe src={`${WORKER_API_BASE}/file-storage/${m.stmt_file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
@@ -141,17 +148,35 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
                                 </div>
                               )}
                             </div>
-                            <div className="flex-1 flex flex-col">
-                              <span className="text-[10px] text-muted-foreground mb-1">{tr('Invoice', '發票', '发票')}</span>
-                              {m.invoice_file_id ? (
-                                <iframe src={`${WORKER_API_BASE}/file-storage/${m.invoice_file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
-                                  className="w-full flex-1 border rounded" title="Invoice" />
-                              ) : (
-                                <div className="w-full flex-1 border rounded bg-muted/30 flex items-center justify-center text-xs text-muted-foreground">
-                                  {tr('No invoice file', '沒有發票文件', '没有发票文件')}
-                                </div>
-                              )}
-                            </div>
+                            {(m.invoice_ids?.length ?? 0) >= 2 ? (
+                              <div className="flex-[2] flex gap-3 overflow-x-auto">
+                                {m.invoices.map((inv: any) => (
+                                  <div key={inv.invoice_number} className="flex-1 min-w-[240px] flex flex-col">
+                                    <span className="text-[10px] text-muted-foreground mb-1 truncate">{tr('Invoice', '發票', '发票')} · {inv.invoice_number}</span>
+                                    {inv.file_id ? (
+                                      <iframe src={`${WORKER_API_BASE}/file-storage/${inv.file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
+                                        className="w-full flex-1 border rounded" title={inv.invoice_number} />
+                                    ) : (
+                                      <div className="w-full flex-1 border rounded bg-muted/30 flex items-center justify-center text-xs text-muted-foreground">
+                                        {tr('No invoice file', '沒有發票文件', '没有发票文件')}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="flex-1 flex flex-col">
+                                <span className="text-[10px] text-muted-foreground mb-1">{tr('Invoice', '發票', '发票')}</span>
+                                {m.invoice_file_id ? (
+                                  <iframe src={`${WORKER_API_BASE}/file-storage/${m.invoice_file_id}/download?inline=1&token=${token}${iframeClientParam()}`}
+                                    className="w-full flex-1 border rounded" title="Invoice" />
+                                ) : (
+                                  <div className="w-full flex-1 border rounded bg-muted/30 flex items-center justify-center text-xs text-muted-foreground">
+                                    {tr('No invoice file', '沒有發票文件', '没有发票文件')}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>

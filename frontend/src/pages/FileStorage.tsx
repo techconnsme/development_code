@@ -620,8 +620,13 @@ export default function FileStorage() {
   });
 
   const matchConfirmMut = useMutation({
-    mutationFn: ({ txId, invoiceId }: { txId: string; invoiceId: string }) =>
-      api(`/bank-statements/transactions/${txId}/match`, { method: 'PATCH', body: { invoice_id: invoiceId, action: 'confirm' } }),
+    mutationFn: ({ txId, invoiceId, invoiceIds }: { txId: string; invoiceId: string | null; invoiceIds?: string[] }) =>
+      api(`/bank-statements/transactions/${txId}/match`, {
+        method: 'PATCH',
+        body: invoiceIds?.length
+          ? { invoice_ids: invoiceIds, action: 'confirm' }
+          : { invoice_id: invoiceId, action: 'confirm' },
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['file-storage'] });
       queryClient.invalidateQueries({ queryKey: ['bank-statements'] });
@@ -1178,7 +1183,7 @@ export default function FileStorage() {
       {matchResults && (
         <AutoMatchReviewModal
           matches={matchResults}
-          onConfirm={(txId, invoiceId) => matchConfirmMut.mutateAsync({ txId, invoiceId })}
+          onConfirm={(txId, invoiceId, invoiceIds) => matchConfirmMut.mutateAsync({ txId, invoiceId, invoiceIds })}
           onReject={() => Promise.resolve() /* suggest-only: nothing persisted to unlink */}
           onClose={() => { setMatchResults(null); queryClient.invalidateQueries({ queryKey: ['file-storage'] }); }}
         />
