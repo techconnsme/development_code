@@ -11,6 +11,7 @@ import { useAuth } from '../contexts/AuthContext';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import { tr } from '../lib/i18nHelpers';
+import { buildCoaTree, CoaNode } from '../lib/coa-hierarchy';
 
 interface Transaction {
   id: string;
@@ -34,13 +35,6 @@ interface Transaction {
   cs_statement_year?: number | null;
   cs_statement_month?: number | null;
   cs_closing_balance?: number | null;
-}
-
-// Parents with children are not postable — only leaf accounts may be selected
-// (mirrors the backend PATCH guard and the statement review page picker).
-function leafAccountsOnly(accounts: any[]): any[] {
-  const codes = accounts.map(a => a.account_code);
-  return accounts.filter(a => !codes.some(c => c !== a.account_code && c.startsWith(a.account_code)));
 }
 
 export default function BankStatements() {
@@ -84,7 +78,9 @@ export default function BankStatements() {
     queryFn: () => api('/bookkeeping/accounts'),
   });
   const accounts: any[] = accountsData?.data || [];
-  const leafAccounts = useMemo(() => leafAccountsOnly(accounts), [accounts]);
+  // Hierarchical COA: parents = group headers (not postable), leaves selectable.
+  // Zero-stripped-stem rule shared with the backend PATCH guard + review page.
+  const coaTree: CoaNode[] = useMemo(() => buildCoaTree(accounts), [accounts]);
 
   const detailQuery = useQuery({
     queryKey: ['bank-statement', expandedId],
@@ -623,9 +619,13 @@ export default function BankStatements() {
                             ? tr('N/A · opening balance', 'N/A · 期初結餘', 'N/A · 期初结余')
                             : tr('-- Select account --', '-- 選科目 --', '-- 選科目 --')}
                         </option>
-                                        {leafAccounts.map((a: any) => (
-                                          <option key={a.account_code} value={a.account_code}>
-                                            {a.account_code} {a.account_name}
+                                        {coaTree.map(n => n.isParent ? (
+                                          <option key={n.account.account_code} value="" disabled className="text-muted-foreground">
+                                            {`${'\u00A0'.repeat(n.depth * 2)}${n.account.account_code} ${n.account.account_name}`}
+                                          </option>
+                                        ) : (
+                                          <option key={n.account.account_code} value={n.account.account_code}>
+                                            {`${'\u00A0'.repeat(n.depth * 3)}${n.account.account_code} ${n.account.account_name}`}
                                           </option>
                                         ))}
                                       </select>
@@ -800,7 +800,7 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
           tx={acctModalTx}
           allTx={filteredTransactions}
           accounts={accounts}
-          pickable={leafAccounts}
+          tree={coaTree}
           onClose={() => setAcctModalTx(null)}
           onApply={(code, _applySimilar, similarIds) => {
             // Update this transaction
@@ -933,11 +933,11 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
 }
 
 
-function AccountModal({ tx, allTx, accounts, pickable, onClose, onApply }: {
+function AccountModal({ tx, allTx, accounts, tree, onClose, onApply }: {
   tx: Transaction;
   allTx: Transaction[];
   accounts: any[];
-  pickable: any[];
+  tree: CoaNode[];
   onClose: () => void;
   onApply: (code: string, applySimilar: boolean, similarIds?: Set<string>) => void;
 }) {
@@ -946,10 +946,10 @@ function AccountModal({ tx, allTx, accounts, pickable, onClose, onApply }: {
   const [selectedCode, setSelectedCode] = useState(tx.account_code || '');
   const [selectedSimilar, setSelectedSimilar] = useState<Set<string>>(new Set());
 
-  const filtered = pickable.filter((a: any) => {
+  const filtered: CoaNode[] = tree.filter(n => {
     if (!search) return true;
     const q = search.toLowerCase();
-    return a.account_code.includes(q) || (a.account_name || '').toLowerCase().includes(q);
+    return n.account.account_code.includes(q) || (n.account.account_name || '').toLowerCase().includes(q);
   });
 
   // Find similar transactions
@@ -991,19 +991,40 @@ function AccountModal({ tx, allTx, accounts, pickable, onClose, onApply }: {
             className="w-full pl-9 pr-3 py-2 border rounded-md text-sm bg-background" autoFocus />
         </div>
 
-        {/* Account list */}
+        {/* Account list — hierarchical: parents are non-selectable group headers */}
         <div className="border rounded-lg flex-1 min-h-0 overflow-y-auto">
-          {filtered.slice(0, 200).map((a: any) => (
-            <button key={a.account_code}
-              onClick={() => setSelectedCode(a.account_code)}
-              className={`w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center justify-between ${
-                selectedCode === a.account_code ? 'bg-primary/10 text-primary font-medium' : ''
-              }`}>
-              <span className="font-mono text-xs">{a.account_code}</span>
-              <span className="flex-1 ml-3 truncate">{a.account_name}</span>
-              {selectedCode === a.account_code && <Check className="h-4 w-4 text-primary flex-shrink-0" />}
-            </button>
-          ))}
+          {filtered.slice(0, 300).map(n => {
+            const a = n.account;
+            const selected = selectedCode === a.account_code;
+            if (n.isParent) {
+              return (
+                <div
+                  key={a.account_code}
+                  title={tr('Category group — select one of its sub-accounts', '類別組——請選擇其下的子科目', '类别组——请选择其下的子科目')}
+                  style={{ paddingLeft: `${12 + n.depth * 18}px` }}
+                  className="pr-3 py-2 text-sm flex items-center justify-between bg-muted/60 text-muted-foreground border-b border-muted/40 last:border-0"
+                >
+                  <span className="font-mono text-xs">{a.account_code}</span>
+                  <span className="flex-1 ml-3 truncate">{a.account_name}</span>
+                  <span className="text-[10px] uppercase tracking-wide opacity-70">{tr('group', '組', '组')}</span>
+                </div>
+              );
+            }
+            return (
+              <button
+                key={a.account_code}
+                onClick={() => setSelectedCode(a.account_code)}
+                style={{ paddingLeft: `${12 + n.depth * 18}px` }}
+                className={`w-full text-left pr-3 py-2 text-sm hover:bg-muted flex items-center justify-between ${
+                  selected ? 'bg-primary/10 text-primary font-medium' : ''
+                }`}
+              >
+                <span className="font-mono text-xs">{a.account_code}</span>
+                <span className="flex-1 ml-3 truncate">{a.account_name}</span>
+                {selected && <Check className="h-4 w-4 text-primary flex-shrink-0" />}
+              </button>
+            );
+          })}
           {filtered.length === 0 && (
             <p className="text-sm text-muted-foreground text-center py-4">{tr('No matching accounts', '無匹配科目', '无匹配科目')}</p>
           )}

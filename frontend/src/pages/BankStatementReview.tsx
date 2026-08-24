@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
 import { tr } from '../lib/i18nHelpers';
+import { filterLeafAccounts } from '../lib/coa-hierarchy';
 
 // Money formatter — always 2 decimals with thousand separators
 const money = (v: number | null | undefined): string => {
@@ -110,18 +111,11 @@ export default function BankStatementReview() {
   });
   const coaOptions = useMemo(() => {
     const all = (coaResp?.data || []);
-    // Parents with children are not postable — hide them. Fixed-length HK codes:
-    // strip trailing zeros to a stem ('66200'→'662', '11000'→'11'); any OTHER
-    // code on the same stem means this one is a parent.
-    const stemOf = (c: string) => c.replace(/0+$/, '') || c.slice(0, 1);
-    const byStem = new Map<string, number>();
-    for (const a of all) {
-      const s = stemOf(a.account_code);
-      byStem.set(s, (byStem.get(s) || 0) + 1);
-    }
-    return all.filter(a => (byStem.get(stemOf(a.account_code)) || 0) <= 1)
+    // Parents with children are not postable — hide them (shared zero-stripped-
+    // stem rule, same as the bank statements list pickers + backend PATCH guard).
+    return filterLeafAccounts(all)
       .slice()
-      .sort((x, y) => x.account_code.localeCompare(y.account_code));
+      .sort((x: any, y: any) => x.account_code.localeCompare(y.account_code));
   }, [coaResp]);
 
   // Local edit state
