@@ -759,6 +759,12 @@ export default function BankStatementReview() {
                               onChange={ev => upTx('description', ev.target.value)}
                               className="w-full px-1 py-0.5 bg-transparent border border-input rounded text-xs"
                             />
+                            {tx.match_status === 'not_required' && (
+                              <div className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                                <span className="px-1 py-px rounded bg-muted border border-border font-medium">N/A</span>
+                                {tr('Opening balance — no link or posting required', '期初結餘——無需連結或過賬', '期初结余——无需连结或过账')}
+                              </div>
+                            )}
                           </td>
                           <td className="py-1 pr-1">
                             <MoneyInput
