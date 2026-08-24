@@ -5,6 +5,7 @@ import { verify as jwtVerify } from 'jsonwebtoken';
 import { Bindings, Variables } from '../types';
 import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { postPaymentToGl } from '../lib/post-payment';
+import { validateGroupConfirm } from '../lib/group-confirm';
 import { jePosted, jeLive, jeDeleted, jeNotOrphaned } from '../lib/journal-filters';
 import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
 import { findBestInvoiceMatch, findInvoiceGroupMatch } from '../lib/bank-matcher';
@@ -800,6 +801,10 @@ bank.patch('/transactions/:id/match', async (c) => {
   // For 'link': alias for confirm with an explicit invoice_id (manual linking)
   const effectiveAction = action === 'link' ? 'confirm' : action;
 
+  // Direction/amount of the transaction — shared by the single and group paths
+  const isDeposit = tx.deposit_amount > 0;
+  const txAmount = isDeposit ? tx.deposit_amount : tx.withdrawal_amount;
+
   if (effectiveAction === 'confirm' && invoice_id) {
     const inv = await db.prepare(
       'SELECT id, status, total, direction, currency, file_id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
@@ -814,13 +819,11 @@ bank.patch('/transactions/:id/match', async (c) => {
     if (inv.status === 'paid') return c.json({ error: 'Invoice already paid' }, 409);
 
     // Direction: deposits pay AR (outgoing), withdrawals pay AP (incoming)
-    const isDeposit = tx.deposit_amount > 0;
     const invIsIncoming = inv.direction === 'incoming';
     if (isDeposit && invIsIncoming) return c.json({ error: 'A deposit cannot pay an incoming (AP) invoice' }, 400);
     if (!isDeposit && !invIsIncoming) return c.json({ error: 'A withdrawal cannot pay an outgoing (AR) invoice' }, 400);
 
     // Amount within tolerance
-    const txAmount = isDeposit ? tx.deposit_amount : tx.withdrawal_amount;
     if (Math.abs(txAmount - inv.total) >= 0.02) return c.json({ error: `Amount mismatch: transaction ${txAmount} vs invoice ${inv.total}` }, 409);
 
     // Currency
@@ -848,6 +851,50 @@ bank.patch('/transactions/:id/match', async (c) => {
     return c.json({ success: true, invoice_status: 'paid', paid_date: tx.transaction_date, gl_entry_id: gl.entry_id || null, gl_error: gl.error || null });
   }
 
+  // ── GROUP confirm: one tx settles several invoices exactly ──
+  if (effectiveAction === 'confirm' && Array.isArray(body.invoice_ids)) {
+    const requested: string[] = body.invoice_ids;
+    if (tx.match_status === 'confirmed') return c.json({ error: 'Transaction already matched — unlink first' }, 409);
+
+    const placeholders = requested.map(() => '?').join(',');
+    const rowsRes = await db.prepare(
+      `SELECT id, status, total, direction, currency, file_id, deleted_at
+       FROM invoices WHERE id IN (${placeholders}) AND user_id = ?`
+    ).bind(...requested, tenantId).all<any>();
+    const byId = new Map<string, any>((rowsRes.results || []).map((r: any) => [r.id, r]));
+    const ordered = requested.map(id => byId.get(id));
+
+    const v = validateGroupConfirm({
+      txAmount, txIsDeposit: tx.deposit_amount > 0, txCurrency: tx.currency, invoices: ordered,
+    });
+    if (!v.ok) return c.json({ error: v.error }, v.httpStatus as 400 | 404 | 409);
+
+    const stmts = [
+      db.prepare(
+        `UPDATE bank_transactions SET match_confidence = 'manual', match_status = 'confirmed'
+         WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+      ).bind(txId, tenantId),
+      ...v.allocations.map(a => db.prepare(
+        `INSERT INTO bank_transaction_invoice_links (id, user_id, transaction_id, invoice_id, allocated_amount)
+         VALUES (?, ?, ?, ?, ?)`
+      ).bind(`btil-${uuidv4().slice(0, 8)}`, tenantId, txId, a.invoice_id, a.allocated_amount)),
+      ...v.allocations.map(a => db.prepare(
+        `UPDATE invoices SET status = 'paid', paid_date = ?, updated_at = datetime('now')
+         WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+      ).bind(tx.transaction_date, a.invoice_id, tenantId)),
+      ...v.fileIds.filter((fid): fid is string => !!fid).map(fid => db.prepare(
+        `UPDATE file_records SET payment_status = 'matched', updated_at = datetime('now')
+         WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+      ).bind(fid, tenantId)),
+    ];
+    await db.batch(stmts);
+
+    const gl = await postPaymentToGl(db, tenantId, txId);
+    const ids = v.allocations.map(a => a.invoice_id);
+    await auditLog(db, user.id, 'confirm_match_group', 'bank_transaction', txId, { invoice_ids: ids, action: 'confirm_group', gl_entry: gl.entry_id || gl.error });
+    return c.json({ success: true, invoice_status: 'paid', paid_date: tx.transaction_date, invoice_ids: ids, gl_entry_id: gl.entry_id || null, gl_error: gl.error || null });
+  }
+
   // reject/unlink: revert everything this match wrote
   if (effectiveAction === 'reject' || effectiveAction === 'unlink') {
     const linkedInvoiceId = tx.current_invoice_id;
@@ -857,7 +904,31 @@ bank.patch('/transactions/:id/match', async (c) => {
       `UPDATE bank_transactions SET invoice_id = NULL, match_confidence = NULL, match_status = 'unmatched' WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
     ).bind(txId, tenantId).run();
 
-    if (linkedInvoiceId) {
+    // Group members (junction rows) — revert ALL of them atomically-ish with
+    // the tx reset; there is no per-member unlink by design this round.
+    const linkRows = await db.prepare(
+      `SELECT l.invoice_id, i.file_id FROM bank_transaction_invoice_links l
+       JOIN invoices i ON i.id = l.invoice_id
+       WHERE l.transaction_id = ? AND l.user_id = ?`
+    ).bind(txId, tenantId).all<{ invoice_id: string; file_id: string | null }>();
+    const groupInvoiceIds = (linkRows.results || []).map(r => r.invoice_id);
+
+    if (groupInvoiceIds.length > 0) {
+      const ph = groupInvoiceIds.map(() => '?').join(',');
+      await db.prepare(`DELETE FROM bank_transaction_invoice_links WHERE transaction_id = ? AND user_id = ?`).bind(txId, tenantId).run();
+      await db.prepare(
+        `UPDATE invoices SET status = 'sent', paid_date = NULL, updated_at = datetime('now')
+         WHERE id IN (${ph}) AND user_id = ? AND status = 'paid'`
+      ).bind(...groupInvoiceIds, tenantId).run();
+      const fileIds = (linkRows.results || []).map(r => r.file_id).filter((f): f is string => !!f);
+      if (fileIds.length > 0) {
+        const phF = fileIds.map(() => '?').join(',');
+        await db.prepare(
+          `UPDATE file_records SET payment_status = 'unmatched', updated_at = datetime('now')
+           WHERE id IN (${phF}) AND user_id = ? AND deleted_at IS NULL`
+        ).bind(...fileIds, tenantId).run();
+      }
+    } else if (linkedInvoiceId) {
       // Un-pay the invoice (it was paid by this confirm)
       await db.prepare(
         `UPDATE invoices SET status = 'sent', paid_date = NULL, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND status = 'paid'`
@@ -879,7 +950,7 @@ bank.patch('/transactions/:id/match', async (c) => {
       "DELETE FROM journal_entries WHERE reference_type = 'payment' AND reference_id = ? AND user_id = ?"
     ).bind(txId, tenantId).run();
 
-    await auditLog(db, user.id, 'unlink_match', 'bank_transaction', txId, { action: effectiveAction, gl_entries_deleted: jeDel.meta?.changes || 0 });
+    await auditLog(db, user.id, 'unlink_match', 'bank_transaction', txId, { action: effectiveAction, gl_entries_deleted: jeDel.meta?.changes || 0, group_size: groupInvoiceIds.length });
     return c.json({ success: true });
   }
 
