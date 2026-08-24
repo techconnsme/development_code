@@ -40,8 +40,14 @@ function getDepth(code: string): number {
   return Math.max(0, stripped.length - 1);
 }
 
-function isParentCode(code: string): boolean {
-  return /00$/.test(code || '');
+function isParentCode(code: string, allCodes: string[]): boolean {
+  if (!code) return false;
+  // Zero-stripped stem rule (same as backend guard + other pickers):
+  // '66200' is a parent when another code starts with its stem '662'.
+  // The old /00$/ heuristic missed parents like '11000'→'11' and misflagged
+  // leaves that happen to end in 00.
+  const stem = code.replace(/0+$/, '') || code.slice(0, 1);
+  return allCodes.some(c => c !== code && c.startsWith(stem));
 }
 
 function formatBalance(v: number | null | undefined, forceZero = false): string {
@@ -62,9 +68,9 @@ function getReferenceLabel(type: string | null): string {
   }
 }
 
-function getDepthBgClass(code: string): string {
+function getDepthBgClass(code: string, allCodes: string[]): string {
   if (!code) return '';
-  if (isParentCode(code)) {
+  if (isParentCode(code, allCodes)) {
     const depth = getDepth(code);
     if (depth === 0) return 'bg-slate-100';
     if (depth === 1) return 'bg-slate-50';
@@ -123,6 +129,7 @@ export default function ChartOfAccounts() {
 
   const accounts = ((data as any)?.data || (data as any)?.results || []) as any[];
   const hasCurrentBalance = !!(data as any)?.as_of;
+  const allCoaCodes = useMemo(() => accounts.map(a => a.account_code), [accounts]);
 
   // Build parent lookup for hierarchy (parent expansion / descendant hiding)
   const parentMap = useMemo(() => {
@@ -214,7 +221,7 @@ export default function ChartOfAccounts() {
   }, []);
 
   const toggleAccount = useCallback(async (code: string) => {
-    if (isParentCode(code)) {
+    if (isParentCode(code, allCoaCodes)) {
       // Parent account — toggle child visibility
       setCollapsedParents(prev => {
         const next = new Set(prev);
@@ -237,7 +244,7 @@ export default function ChartOfAccounts() {
         setAccountTxnLoading(prev => ({ ...prev, [code]: false }));
       }
     }
-  }, [startDate, endDate, accountTxns, accountTxnLoading]);
+  }, [allCoaCodes, startDate, endDate, accountTxns, accountTxnLoading]);
 
   const handleAddChild = useCallback((parentCode: string, parentType: string) => {
     setNewAccount({
@@ -508,7 +515,7 @@ export default function ChartOfAccounts() {
               </thead>
               <tbody>
                 {grouped[type].map((a: any, i: number) => {
-                  const isParent = isParentCode(a.account_code);
+                  const isParent = isParentCode(a.account_code, allCoaCodes);
                   const isParentCollapsed = isParent && collapsedParents.has(a.account_code);
                   const isLeafExpanded = !isParent && !!expandedAccounts[a.account_code];
                   const isExpanded = isParent ? !isParentCollapsed : isLeafExpanded;
@@ -518,7 +525,7 @@ export default function ChartOfAccounts() {
                     <React.Fragment key={a.id || a.account_code || i}>
                       <tr
                         onClick={() => toggleAccount(a.account_code)}
-                        className={`${i % 2 ? 'bg-muted/5' : ''} hover:bg-muted/30 transition-colors cursor-pointer ${a.is_active === 0 ? 'opacity-50' : ''} ${getDepthBgClass(a.account_code)}`}
+                        className={`${i % 2 ? 'bg-muted/5' : ''} hover:bg-muted/30 transition-colors cursor-pointer ${a.is_active === 0 ? 'opacity-50' : ''} ${getDepthBgClass(a.account_code, allCoaCodes)}`}
                       >
                         <td className={`px-4 py-2.5 font-mono text-xs ${isParent ? 'font-bold' : ''}`}>
                           <span className="inline-flex items-center gap-1">

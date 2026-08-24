@@ -6,6 +6,7 @@ import { authMiddleware, requireHigherTier } from '../middleware/auth';
 import { getJwtSecret } from '../middleware/auth';
 import { jeLive } from '../lib/journal-filters';
 import { categorizeTransaction } from '../lib/transaction-categorizer';
+import { findParentAccountError } from '../lib/account-guard';
 const card = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 // Audit log helper
 async function auditLog(db: any, userId: string, action: string, entityType: string, entityId: string | null, changes?: object) {
@@ -342,6 +343,11 @@ card.patch('/transactions/:id', async (c) => {
     'SELECT id FROM card_transactions WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
   ).bind(id, tenantId).first();
   if (!existing) return c.json({ error: 'Not found' }, 404);
+  // Leaf-only guard: a parent/group COA account must never receive postings
+  if (body.expense_account_code !== undefined && body.expense_account_code !== null && body.expense_account_code !== '') {
+    const guardError = await findParentAccountError(c.env.DB, tenantId, String(body.expense_account_code));
+    if (guardError) return c.json({ error: guardError }, 400);
+  }
   const allowed = ['transaction_date', 'posting_date', 'description', 'amount',
     'transaction_type', 'foreign_currency', 'foreign_amount', 'category', 'reference',
     'expense_account_code', 'match_status'];

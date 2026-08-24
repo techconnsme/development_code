@@ -7,6 +7,7 @@ import { useToast } from '../components/Toast';
 import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
+import { filterLeafAccounts, stemOfCode } from '../lib/coa-hierarchy';
 import DropdownSelect from '../components/DropdownSelect';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import PnlFormulaBanner from '../components/PnlFormulaBanner';
@@ -96,6 +97,11 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     queryFn: () => api('/bookkeeping/accounts'),
     enabled: tab === 'accounts' || tab === 'ledger' || tab === 'entries',
   });
+  // Only leaf (postable) accounts for journal-entry pickers — parents are groups
+  const leafAccounts = useMemo(
+    () => filterLeafAccounts(accounts?.data || []),
+    [accounts]
+  );
 
   const { data: trialBalance } = useQuery({
     queryKey: ['trial-balance'],
@@ -1028,7 +1034,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                                 }}
                                 className="w-full px-2 py-1 border rounded text-xs bg-background min-w-[130px]">
                                 <option value="">{tr('Select...', '選擇科目...', '选择科目...')}</option>
-                                {(accounts?.data || []).map((a: any) => (
+                                {leafAccounts.map((a: any) => (
                                   <option key={a.id} value={a.account_name}>{a.account_code} – {a.account_name}</option>
                                 ))}
                               </select>
@@ -1114,7 +1120,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
               </div>
             </form>
             <datalist id="account-list">
-              {(accounts?.data || []).map((a: any) => (
+              {leafAccounts.map((a: any) => (
                 <option key={a.id} value={a.account_code}>{a.account_code} – {a.account_name}</option>
               ))}
             </datalist>
@@ -1276,8 +1282,9 @@ function AccountsTab({ accounts }: { accounts: any[] }) {
           <tbody>
             {accounts.map((a: any) => {
               const isParent = grouped[a.account_code]?.length > 0;
-              const indent = a.account_code?.length <= 5 ? 0 : (a.account_code?.length === 5 ? 1 : 2);
-              const editing = a.account_code in bfEdits;
+              // Depth from zero-stripped stem ('10000'→0, '11000'→1, leaves→2)
+              const indent = Math.max(0, stemOfCode(a.account_code || '').length - 1);
+              const editing = !isParent && a.account_code in bfEdits;
               const bfVal = editing ? bfEdits[a.account_code] : (a.opening_balance || 0);
               return (
                 <tr key={a.id} className={`border-b hover:bg-muted/30 ${isParent ? 'font-semibold bg-muted/20' : ''}`}>
@@ -1291,10 +1298,14 @@ function AccountsTab({ accounts }: { accounts: any[] }) {
                       <input
                         type="number" step="0.01"
                         value={bfVal}
+                        disabled={isParent}
                         onChange={e => setBfEdits(prev => ({...prev, [a.account_code]: e.target.value}))}
                         onKeyDown={e => { if (e.key === 'Enter') saveBF(a.account_code); }}
                         onBlur={() => { if (editing) saveBF(a.account_code); }}
-                        className="w-32 px-2 py-1 border rounded text-xs text-right bg-background"
+                        title={isParent
+                          ? tr('Group account — B/F balances are entered on its sub-accounts', '類別科目——承上結餘請填於其子科目', '类别科目——承上结余请填于其子科目')
+                          : undefined}
+                        className="w-32 px-2 py-1 border rounded text-xs text-right bg-background disabled:bg-transparent disabled:text-muted-foreground"
                       />
                       {editing && (
                         <button onClick={() => saveBF(a.account_code)}

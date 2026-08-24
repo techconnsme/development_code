@@ -10,6 +10,7 @@ import { postInvoiceToGl } from '../lib/post-invoice';
 import { jePosted, jeLive, jeDeleted, jeNotOrphaned } from '../lib/journal-filters';
 import { HK_COA_NAMES, getCodeType, ensureMissingAccounts } from '../lib/ensure-accounts';
 import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
+import { findParentAccountError } from '../lib/account-guard';
 import { getTemporaryAccount } from '../lib/coa-temporary';
 
 // Re-exported for backward compatibility with anything importing them from here.
@@ -142,6 +143,11 @@ bookkeeping.post('/entries', bookkeeperMiddleware, zValidator('json', entrySchem
   const missingCodes = codes.filter(c => !existingCodes.has(c));
   if (missingCodes.length > 0) {
     return c.json({ error: `Account code(s) not found: ${missingCodes.join(', ')}` }, 400);
+  }
+  // Leaf-only guard: journal lines must never post to a parent/group account
+  for (const cde of codes) {
+    const guardError = await findParentAccountError(db, tenantId, cde);
+    if (guardError) return c.json({ error: guardError }, 400);
   }
 
   if (!(await checkPeriodOpen(db, tenantId, data.entry_date)))
@@ -734,6 +740,12 @@ bookkeeping.patch('/accounts/:code', authMiddleware, bookkeeperMiddleware, async
   const changes: Record<string, unknown> = {};
 
   if (body.opening_balance !== undefined) {
+    // Parent/group accounts roll up their children — a B/F balance there would
+    // double-count. Opening balances belong on leaf accounts only.
+    const guardError = await findParentAccountError(db, tenantId, code);
+    if (guardError) {
+      return c.json({ error: `Cannot set B/F balance on ${code}: is a parent/group account — set it on its sub-accounts` }, 400);
+    }
     sets.push('opening_balance = ?'); params.push(body.opening_balance);
     changes.opening_balance = body.opening_balance;
   }

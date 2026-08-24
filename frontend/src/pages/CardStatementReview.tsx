@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, WORKER_API_BASE } from '../lib/api';
@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import { CreditCard, Save, Trash2, Plus, AlertTriangle, CheckCircle } from 'lucide-react';
 import { useToast } from '../components/Toast';
+import { filterLeafAccounts } from '../lib/coa-hierarchy';
 
 interface CardTransaction {
   id: string; transaction_date: string; posting_date: string | null;
@@ -54,6 +55,11 @@ export default function CardStatementReview() {
     enabled: !!id,
   });
   const accounts = (acctData as any)?.data || (acctData as any)?.results || [];
+  // Only leaf (postable) expense/cost accounts — parents are group headers
+  const leafExpenseAccounts = useMemo(
+    () => filterLeafAccounts(accounts).filter((a: any) => a.account_type === 'expense' || a.account_type === 'cost'),
+    [accounts]
+  );
 
   // Post card transactions to GL
   const postToGlMut = useMutation({
@@ -259,7 +265,7 @@ export default function CardStatementReview() {
                           className="w-full px-1 py-0.5 border rounded text-[11px] bg-background"
                         >
                           <option value="">—</option>
-                          {accounts.filter((a: any) => a.account_type === 'expense' || a.account_type === 'cost').map((a: any) => (
+                          {leafExpenseAccounts.map((a: any) => (
                             <option key={a.account_code} value={a.account_code}>{a.account_code}</option>
                           ))}
                         </select>
