@@ -203,3 +203,5 @@ Auto bank→invoice matching now links ONE bank tx to MULTIPLE invoices (combine
 - 55,000 group end-to-end: confirm → both invoices paid + payment JE `JE-PMT-MULTI-*` with 3 lines (Dr 21101 ×2 per-invoice allocations + Cr 11102 55,000); unlink → invoices back to `sent`, tx back to `unmatched`. Tenant left as found. Edge case: confirm with empty `invoice_ids` → HTTP 400.
 
 **Anomalies (minor):** spec test logs `invoice undefined` for group rows (it reads single-invoice fields that group rows don't have — engine output correct); first verify-script run hit a script bug parsing GET /transactions (`{data:[...]}` shape), fixed and re-run clean; wrangler 3.x deprecation warning during deploys (non-blocking).
+
+**Follow-up (same day):** hardened verify-onetomany-live.ts landed (a87d76b) �X PARTIAL=1 read-only mode, finally-unlink cleanup guarantee, strict reversion gate (invoices unpaid AND tx unmatched AND invoice_id NULL), exit-code gate; regression-tests/REGRESSION_SUITE.md now records the 3 multi-invoice checks + 1 split-payment case. Fresh PARTIAL=1 production run: exit 0, all 3 group suggestions correct.
