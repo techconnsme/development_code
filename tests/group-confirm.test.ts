@@ -13,7 +13,10 @@ function t(name: string, fn: () => void): void {
 const row = (over: Partial<GroupConfirmInvoiceRow>): GroupConfirmInvoiceRow =>
   ({ id: 'x', total: 100, direction: 'incoming', currency: 'HKD', status: 'sent', deleted_at: null, file_id: null, ...over });
 
-const input = (invoices: any[], over: object = {}) => ({
+const input = (
+  invoices: (GroupConfirmInvoiceRow | undefined)[],
+  over: Partial<Omit<Parameters<typeof validateGroupConfirm>[0], 'invoices'>> = {},
+): Parameters<typeof validateGroupConfirm>[0] => ({
   txAmount: 55000, txIsDeposit: false, txCurrency: 'HKD', invoices, ...over,
 });
 
@@ -64,6 +67,11 @@ t('deposit cannot pay AP incoming -> 400', () => {
 t('withdrawal cannot pay AR outgoing -> 400', () => {
   const v = validateGroupConfirm(input([row({ id: 'a', direction: 'outgoing', total: 40050 }), row({ id: 'b', direction: 'outgoing', total: 14950 })]));
   assert.ok(!v.ok && v.httpStatus === 400);
+});
+
+t('mixed-direction group -> 400 (outgoing member trips withdrawal guard)', () => {
+  const v = validateGroupConfirm(input([row({ id: 'a', total: 40050 }), row({ id: 'b', direction: 'outgoing', total: 14950 })]));
+  assert.ok(!v.ok && v.httpStatus === 400 && /withdrawal cannot pay an outgoing/i.test(v.error));
 });
 
 t('currency mismatch -> 409', () => {
