@@ -180,11 +180,25 @@ function subsetSumExact(
 }
 
 /**
- * Combined-payment detection: one tx settling 2..4 invoices exactly.
- * Pool shares one counterparty whose fuzzy score vs the narration is >=80
- * (same gate as the name tier). Narration fast-path first, then smallest-size-
- * first subset search within ±0.01, gated by loose dates (oldest issue −15d …
- * newest due +120d — real combined payments settle long after due date).
+ * Combined-payment detection: one tx settling 2..4 invoices exactly, never
+ * mixing counterparties. Pipeline, in execution order:
+ *  1. Parse tx date (invalid -> null); build narration = description + reference.
+ *  2. Group the pool by counterparty_name, dropping excluded ids, other-currency
+ *     rows, invoices without a counterparty_name, and non-positive totals.
+ *  3. Per party (insertion order):
+ *     - Pool-size gate: skip parties with <2 or >30 eligible invoices.
+ *     - Sort that party's pool by total desc.
+ *     - Narration fast-path runs BEFORE the party gate: if >=2 of its invoice
+ *       numbers (>=4 chars) appear verbatim in the narration, return them
+ *       immediately at confidence 'high' — no fuzzy-party, sum, or date checks.
+ *     - Party gate: fuzzyMatchCompany(tx.description, [party]) must score >=80,
+ *       else the whole party is skipped.
+ *     - Smallest-size-first subset search over sizes 2..min(4, pool size),
+ *       accepting subsets whose totals sum within ±0.01 of the tx amount.
+ *     - Date gate per found subset: tx date must fall between the oldest issue
+ *       −15d and the newest due +120d, else keep searching.
+ *     - Hit -> confidence 'medium', members returned sorted total desc.
+ *  4. No party yields a match -> null.
  */
 export function findInvoiceGroupMatch(
   tx: MatchableTx,

@@ -267,5 +267,49 @@ t('group pool over cap of 30 -> skip combinatorics', () => {
   assert.equal(g, null);
 });
 
+t('group 4-member exact sum: 15,500 = 8,000 + 4,000 + 2,500 + 1,000', () => {
+  const pool = [
+    mkInv('m1', '#M0001', 1000, '2025-10-01', '2025-11-01'),
+    mkInv('m2', '#M0002', 2500, '2025-10-02', '2025-11-02'),
+    mkInv('m3', '#M0003', 4000, '2025-10-03', '2025-11-03'),
+    mkInv('m4', '#M0004', 8000, '2025-10-04', '2025-11-04'),
+  ];
+  const g = findInvoiceGroupMatch(
+    { id: 'txM', transaction_date: '2025-11-05', description: 'PASTEL TECH LIMITED four', amount: 15500 },
+    pool
+  );
+  assert.ok(g);
+  assert.equal(g.invoices.length, 4);
+  assert.equal(g.confidence, 'medium');
+});
+
+const ZETA = 'Zeta Logistics Limited';
+t('group multi-counterparty pool: same-party wins over other-party sums', () => {
+  const pool = [
+    { ...mkInv('z1', '#ZL001', 150, '2025-10-06', '2025-11-05'), counterparty_name: ZETA },
+    { ...mkInv('z2', '#ZL002', 150, '2025-10-20', '2025-11-19'), counterparty_name: ZETA },
+    mkInv('p1', '#PT001', 100, '2025-10-06', '2025-11-05'),
+    mkInv('p2', '#PT002', 200, '2025-10-20', '2025-11-19'),
+  ];
+  const g = findInvoiceGroupMatch(
+    { id: 'txMC', transaction_date: '2025-11-05', description: 'PASTEL TECH LIMITED split', amount: 300 },
+    pool
+  );
+  assert.ok(g);
+  assert.deepEqual(g.invoices.map(i => i.id).sort(), ['p1', 'p2']);
+});
+
+t('group multi-counterparty pool: never mixes parties (no solo sum -> null)', () => {
+  const pool = [
+    mkInv('p1', '#PT001', 100, '2025-10-06', '2025-11-05'),
+    { ...mkInv('z1', '#ZL001', 200, '2025-10-20', '2025-11-19'), counterparty_name: ZETA },
+  ];
+  const g = findInvoiceGroupMatch(
+    { id: 'txMM', transaction_date: '2025-11-05', description: 'PASTEL TECH LIMITED mix', amount: 300 },
+    pool
+  );
+  assert.equal(g, null);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
