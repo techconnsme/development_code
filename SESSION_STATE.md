@@ -8,7 +8,7 @@ New `components/SlideOpen.tsx` — grid-template-rows 0fr↔1fr transition, self
 - Transaction rows: rotating `ChevronDown` cell between Account and Linked Document (colSpan 8/9 → 9/10); expanded posting row now slides (always-rendered tr + SlideOpen; TxPostingPanel keyed by posting.entry_id so state refreshes after save).
 - Statement rows: chevron upgraded to single rotating icon; expanded transaction table slides via SlideOpen. Shared detail query is keyed by expandedId, so closing content is FROZEN via `stmtContentRef` (last open JSX replayed while animating shut — avoids wrong-statement rows/loading spinner mid-close).
 
-CardStatements still uses instant expand (not in scope; same pattern applicable).
+CardStatements: same treatment (rotating chevrons, SlideOpen at statement + transaction levels, frozen closing content via stmtContentRef, colSpan 6→7).
 
 ## Legacy 11101 Cash-on-Hand JEs — root-caused + backfilled (279 JEs, 8 tenants)
 

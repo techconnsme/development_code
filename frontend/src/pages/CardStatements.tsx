@@ -1,11 +1,12 @@
-import { Fragment, useState, useEffect, useRef } from 'react';
+import { Fragment, useState, useEffect, useRef, ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
-import { Eye, Trash2, AlertTriangle, CheckCircle, ChevronDown, ChevronRight, Pencil, FileText, CreditCard, Building2, Download } from 'lucide-react';
+import { Eye, Trash2, AlertTriangle, CheckCircle, ChevronDown, Pencil, FileText, CreditCard, Building2, Download } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
 import TxPostingPanel, { PostingLine } from '../components/TxPostingPanel';
+import SlideOpen from '../components/SlideOpen';
 import { buildCoaTree, isTemporaryAccount } from '../lib/coa-hierarchy';
 
 /** Fetch an authenticated file as a blob URL (Authorization header, never query-string tokens). */
@@ -161,6 +162,10 @@ export default function CardStatements() {
 
   // Multi-account posting panel state + data
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
+  // Frozen JSX per statement: while a statement slides shut, the shared detail
+  // query may already describe the newly opened statement — replay the last
+  // open render instead so the closing content stays stable.
+  const stmtContentRef = useRef<Map<string, ReactNode>>(new Map());
   const { data: accountsResp } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => api('/bookkeeping/accounts'),
@@ -244,7 +249,7 @@ export default function CardStatements() {
                   className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/50 transition-colors"
                   onClick={() => setExpandedId(isExpanded ? null : s.id)}
                 >
-                  {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                  <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`} />
                   <CreditCard className="h-4 w-4 text-muted-foreground" />
                   <div className="flex-1 min-w-0">
                     <div className="font-medium truncate">{cardLabel(s)}</div>
@@ -285,9 +290,12 @@ export default function CardStatements() {
                   </div>
                 </div>
 
-                {/* Expanded transactions */}
-                {isExpanded && (
-                  <div className="border-t bg-muted/20 px-4 py-2">
+                {/* Expanded transactions — slides; content frozen from last open render */}
+                <SlideOpen open={isExpanded}>
+                {(() => {
+                  if (isExpanded) {
+                    stmtContentRef.current.set(s.id, (
+                    <div className="border-t bg-muted/20 px-4 py-2">
                     {/* Summary bar */}
                     <div className="flex flex-wrap gap-4 text-xs text-muted-foreground mb-2">
                       {s.cardholder_name && <span><Building2 className="h-3 w-3 inline mr-1" />{s.cardholder_name}</span>}
@@ -326,6 +334,7 @@ export default function CardStatements() {
                               <th className="py-1 pr-2">Type</th>
                               <th className="py-1 pr-2">Category</th>
                               <th className="py-1 pr-2">Account</th>
+                              <th className="py-1 pr-1 w-6" aria-label="Expand"></th>
                             </tr>
                           </thead>
                           <tbody>
@@ -373,11 +382,15 @@ export default function CardStatements() {
                                     <span className="text-muted-foreground/50">—</span>
                                   )}
                                 </td>
+                                <td className="py-1 pr-1 w-6 text-muted-foreground">
+                                  <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-300 ${expandedTxId === tx.id ? 'rotate-180' : ''}`} />
+                                </td>
                               </tr>
-                              {expandedTxId === tx.id && (
-                                <tr>
-                                  <td colSpan={6} className="p-0">
+                              <tr>
+                                <td colSpan={7} className="p-0">
+                                  <SlideOpen open={expandedTxId === tx.id}>
                                     <TxPostingPanel
+                                      key={(tx as any).posting?.entry_id || 'auto'}
                                       kind="card"
                                       movementAmount={movement}
                                       contraSide="Dr"
@@ -392,9 +405,9 @@ export default function CardStatements() {
                                       onSave={(lines) => saveCardPosting(tx.id, movement, lines)}
                                       onResetAuto={() => saveCardPosting(tx.id, movement, undefined, true)}
                                     />
-                                  </td>
-                                </tr>
-                              )}
+                                  </SlideOpen>
+                                </td>
+                              </tr>
                               </Fragment>
                               );
                             })}
@@ -403,7 +416,11 @@ export default function CardStatements() {
                       </div>
                     )}
                   </div>
-                )}
+                    ));
+                  }
+                  return stmtContentRef.current.get(s.id) ?? null;
+                })()}
+                </SlideOpen>
               </div>
             );
           })}
