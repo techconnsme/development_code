@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -34,6 +34,13 @@ interface Transaction {
   cs_statement_year?: number | null;
   cs_statement_month?: number | null;
   cs_closing_balance?: number | null;
+}
+
+// Parents with children are not postable — only leaf accounts may be selected
+// (mirrors the backend PATCH guard and the statement review page picker).
+function leafAccountsOnly(accounts: any[]): any[] {
+  const codes = accounts.map(a => a.account_code);
+  return accounts.filter(a => !codes.some(c => c !== a.account_code && c.startsWith(a.account_code)));
 }
 
 export default function BankStatements() {
@@ -77,6 +84,7 @@ export default function BankStatements() {
     queryFn: () => api('/bookkeeping/accounts'),
   });
   const accounts: any[] = accountsData?.data || [];
+  const leafAccounts = useMemo(() => leafAccountsOnly(accounts), [accounts]);
 
   const detailQuery = useQuery({
     queryKey: ['bank-statement', expandedId],
@@ -615,7 +623,7 @@ export default function BankStatements() {
                             ? tr('N/A · opening balance', 'N/A · 期初結餘', 'N/A · 期初结余')
                             : tr('-- Select account --', '-- 選科目 --', '-- 選科目 --')}
                         </option>
-                                        {accounts.map((a: any) => (
+                                        {leafAccounts.map((a: any) => (
                                           <option key={a.account_code} value={a.account_code}>
                                             {a.account_code} {a.account_name}
                                           </option>
@@ -792,6 +800,7 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
           tx={acctModalTx}
           allTx={filteredTransactions}
           accounts={accounts}
+          pickable={leafAccounts}
           onClose={() => setAcctModalTx(null)}
           onApply={(code, _applySimilar, similarIds) => {
             // Update this transaction
@@ -924,10 +933,11 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
 }
 
 
-function AccountModal({ tx, allTx, accounts, onClose, onApply }: {
+function AccountModal({ tx, allTx, accounts, pickable, onClose, onApply }: {
   tx: Transaction;
   allTx: Transaction[];
   accounts: any[];
+  pickable: any[];
   onClose: () => void;
   onApply: (code: string, applySimilar: boolean, similarIds?: Set<string>) => void;
 }) {
@@ -936,7 +946,7 @@ function AccountModal({ tx, allTx, accounts, onClose, onApply }: {
   const [selectedCode, setSelectedCode] = useState(tx.account_code || '');
   const [selectedSimilar, setSelectedSimilar] = useState<Set<string>>(new Set());
 
-  const filtered = accounts.filter((a: any) => {
+  const filtered = pickable.filter((a: any) => {
     if (!search) return true;
     const q = search.toLowerCase();
     return a.account_code.includes(q) || (a.account_name || '').toLowerCase().includes(q);
@@ -951,14 +961,14 @@ function AccountModal({ tx, allTx, accounts, onClose, onApply }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-card border rounded-xl p-4 w-[80vw] mx-4 space-y-3 max-h-[70vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
+      <div className="bg-card border rounded-xl p-4 w-[80vw] mx-4 h-[70vh] flex flex-col gap-3" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between shrink-0">
           <h3 className="font-bold text-lg flex items-center gap-2"><Tag className="h-5 w-5" /> {tr('Select Account Code', '選擇會計科目', '选择会计科目')}</h3>
           <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="h-5 w-5" /></button>
         </div>
 
         {/* Transaction info */}
-        <div className="bg-muted/30 rounded-lg p-3 text-sm flex items-center gap-3">
+        <div className="bg-muted/30 rounded-lg p-3 text-sm flex items-center gap-3 shrink-0">
           <span className="font-medium flex-shrink-0">{tx.transaction_date}</span>
           <span className="text-muted-foreground truncate flex-1 min-w-0">{desc}</span>
           <span className={`font-mono flex-shrink-0 font-medium ${tx.deposit_amount > 0 ? 'text-green-600' : 'text-red-600'}`}>
@@ -974,7 +984,7 @@ function AccountModal({ tx, allTx, accounts, onClose, onApply }: {
         </div>
 
         {/* Search */}
-        <div className="relative">
+        <div className="relative shrink-0">
           <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder={tr('Search by code or name...', '輸入科目編號或名稱搜尋...', '輸入科目编号或名称搜索...')}
@@ -982,8 +992,8 @@ function AccountModal({ tx, allTx, accounts, onClose, onApply }: {
         </div>
 
         {/* Account list */}
-        <div className="border rounded-lg max-h-36 overflow-y-auto">
-          {filtered.slice(0, 50).map((a: any) => (
+        <div className="border rounded-lg flex-1 min-h-0 overflow-y-auto">
+          {filtered.slice(0, 200).map((a: any) => (
             <button key={a.account_code}
               onClick={() => setSelectedCode(a.account_code)}
               className={`w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center justify-between ${
@@ -1001,7 +1011,7 @@ function AccountModal({ tx, allTx, accounts, onClose, onApply }: {
 
         {/* Apply to similar transactions */}
         {similar.length > 0 && (
-          <div className="border rounded-lg">
+          <div className="border rounded-lg shrink-0">
             <div className="px-3 py-2 bg-muted/30 border-b text-sm font-medium flex items-center gap-2">
               <span>{tr(`Similar transactions (${similar.length})`, `相似交易 (${similar.length})`, `相似交易 (${similar.length})`)}</span>
               <span className="text-xs text-muted-foreground">
@@ -1067,7 +1077,7 @@ function AccountModal({ tx, allTx, accounts, onClose, onApply }: {
           if (selectedCode) onApply(selectedCode, false, selectedSimilar);
         }}
           disabled={!selectedCode}
-          className="w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-30">
+          className="w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-30 shrink-0">
           {selectedSimilar.size > 0
             ? (tr(`Apply to ${selectedSimilar.size + 1} transactions`, `套用科目（含 ${selectedSimilar.size} 筆相似交易）`, `套用科目（含 ${selectedSimilar.size} 笔相似交易）`))
             : (tr('Apply Account Code', '套用科目', '套用科目'))}
