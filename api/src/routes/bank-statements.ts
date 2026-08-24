@@ -797,7 +797,8 @@ bank.patch('/transactions/:id/match', async (c) => {
   if (!tx) return c.json({ error: 'Transaction not found' }, 404);
 
   // For 'confirm': if no invoice_id passed, use the one already set on the tx (from suggestion badges)
-  if (action === 'confirm' && !invoice_id) invoice_id = tx.current_invoice_id || undefined;
+  // Group requests (invoice_ids[]) must never fall into the single path via this fallback.
+  if (action === 'confirm' && !invoice_id && !Array.isArray(body.invoice_ids)) invoice_id = tx.current_invoice_id || undefined;
   // For 'link': alias for confirm with an explicit invoice_id (manual linking)
   const effectiveAction = action === 'link' ? 'confirm' : action;
 
@@ -854,6 +855,8 @@ bank.patch('/transactions/:id/match', async (c) => {
   // ── GROUP confirm: one tx settles several invoices exactly ──
   if (effectiveAction === 'confirm' && Array.isArray(body.invoice_ids)) {
     const requested: string[] = body.invoice_ids;
+    // Reject <2 members BEFORE building the IN () clause (empty array would be a SQLite syntax error)
+    if (requested.length < 2) return c.json({ error: 'A combined payment needs at least two invoices' }, 400);
     if (tx.match_status === 'confirmed') return c.json({ error: 'Transaction already matched — unlink first' }, 409);
 
     const placeholders = requested.map(() => '?').join(',');
