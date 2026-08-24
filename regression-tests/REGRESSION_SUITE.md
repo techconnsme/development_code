@@ -108,6 +108,24 @@ Source: `test-sample-real/PNR/estatement/`
 | `POST /bank-statements/auto-match` (bank→invoice) | ≥1 candidate | ⬜ | ⬜ |
 | `POST /invoices/auto-match-receipts?direction=incoming` | ≥5 candidates (from 10 receipt pairs) | ⬜ | ⬜ |
 
+### Multi-Invoice Bank Transactions (1 bank tx = 2+ invoices; verified 2026-08-24, see test-sample-real/LINKS_REPORT.txt §4)
+
+One PASTEL TECH withdrawal settles multiple Pastel invoices (exact sum):
+
+| Bank tx (statement) | Amount | Covers invoices | API | UI |
+|---------------------|--------|-----------------|-----|----|
+| `eStatement 20250930.pdf` 19 Sep PASTEL TECH | 57,580.80 | #001414 (15,300) + #001417v2 (42,280.80) | ✅ | ✅ |
+| `eStatement 20251129.pdf` 5 Nov PASTEL TECH | 55,000.00 | #001441 (40,050) + #001442 (14,950) | ✅ | ✅ |
+| `eStatement 20260228.pdf` 5 Feb PASTEL TECH | 27,544.00 | #001458v2 (5,200) + #001467-v2 (4,150) + #001484-v2 (18,194) | ✅ | ✅ |
+
+**✅ 2026-08-25 — PASSING, auto 1:N live-verified on production:** `POST /bank-statements/auto-match` suggests all three as group rows (`invoice_ids` sizes 2 / 2 / 3, reason "Combined payment: …"); headed Playwright run confirms the UI shows them. The 55,000 group was confirmed end-to-end via `PATCH /transactions/:id/match` (both invoices → paid, payment JE `JE-PMT-MULTI-*` with 3 lines) then unlinked (everything reverted to unpaid/unmatched). Deterministic script: `tests/verify-onetomany-live.ts`.
+
+### Split Payments (1 invoice = 2 bank txs)
+
+| Invoice | Amount | Bank txs | API | UI |
+|---------|--------|----------|-----|----|
+| `VEII/Invoice 2025006.pdf` | 38,544 | 4 Feb ECQ DEPOSIT 102872 (11,550) + ECQ DEPOSIT 102871 (26,994) | ⬜ | ⬜ |
+
 ---
 
 ## Summary
@@ -121,7 +139,9 @@ Source: `test-sample-real/PNR/estatement/`
 | Receipt→Invoice Links | 10 | — | — | — | — |
 | Bank Continuity | 2 | — | — | — | — |
 | Auto-Match | 2 | — | — | — | — |
-| **TOTAL** | **29** | — | — | — | — |
+| Multi-Invoice Bank Tx | 3 | — | — | — | — |
+| Split Payments | 1 | — | — | — | — |
+| **TOTAL** | **33** | — | — | — | — |
 
 ---
 
