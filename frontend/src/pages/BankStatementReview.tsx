@@ -756,6 +756,7 @@ export default function BankStatementReview() {
                       const dirty = !!txEdits[tx.id];
                       const check = totals.rowChecks[tx.id];
                       const mismatch = check?.mismatch;
+                      const selectedCoa = (e.account_code ?? tx.account_code) || '';
                       const upTx = (field: keyof Transaction, value: any) =>
                         setTxEdits(prev => ({ ...prev, [tx.id]: { ...prev[tx.id], [field]: value } }));
                       const isLocal = tx.id.startsWith('local-');
@@ -783,6 +784,16 @@ export default function BankStatementReview() {
                               <div className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
                                 <span className="px-1 py-px rounded bg-muted border border-border font-medium">N/A</span>
                                 {tr('Opening balance — no link or posting required', '期初結餘——無需連結或過賬', '期初结余——无需连结或过账')}
+                              </div>
+                            )}
+                            {!tx.match_status && (dep > 0 || wit > 0) && (
+                              <div className="text-[10px] text-muted-foreground mt-0.5 font-mono">
+                                {dep > 0
+                                  ? <>Dr {(stmt as any)?.account_code || '11103'} {money(dep)} · Cr {selectedCoa || '—'} {money(dep)}</>
+                                  : <>Dr {selectedCoa || '—'} {money(wit)} · Cr {(stmt as any)?.account_code || '11103'} {money(wit)}</>}
+                                <span className="ml-1 opacity-70">
+                                  {tr('(posts on confirm — splits available after)', '(確認後過賬——其後可拆分)', '(确认后过账——其后可拆分)')}
+                                </span>
                               </div>
                             )}
                           </td>

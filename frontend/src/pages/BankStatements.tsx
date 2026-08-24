@@ -12,6 +12,8 @@ import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import { tr } from '../lib/i18nHelpers';
 import { buildCoaTree, CoaNode } from '../lib/coa-hierarchy';
+import TxPostingPanel, { PostingLine } from '../components/TxPostingPanel';
+import { isTemporaryAccount } from '../lib/coa-hierarchy';
 
 interface Transaction {
   id: string;
@@ -52,6 +54,7 @@ export default function BankStatements() {
   const activeFilter = searchParams.get('filter') || null;
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
+  const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, Partial<Transaction>>>({});
   const [acctModalTx, setAcctModalTx] = useState<Transaction | null>(null);
   const [aiLoading, setAiLoading] = useState<string | null>(null);
@@ -180,6 +183,14 @@ export default function BankStatements() {
       queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
     },
   });
+
+  const saveTxPosting = async (txId: string, movement: number, lines?: PostingLine[], reset?: boolean) => {
+    await api(`/bank-statements/transactions/${txId}/posting`, {
+      method: 'PUT',
+      body: reset ? { reset_to_auto: true } : { lines, movement_amount: movement },
+    });
+    queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
+  };
 
   const autoMatchCardsMut = useMutation({
     mutationFn: () => api('/bank-statements/auto-match-cards', { method: 'POST' }),
@@ -504,9 +515,17 @@ export default function BankStatements() {
                                 const wit = e.withdrawal_amount !== undefined ? e.withdrawal_amount : tx.withdrawal_amount;
                                 const bal = e.balance !== undefined ? e.balance : tx.balance;
                                 const dirty = !!edits[tx.id];
+                                const posting = (tx as any).posting as { entry_id: string; entry_number: string; entry_source: string; lines: { account_code: string; account_name: string; debit: number; credit: number }[] } | null;
+                                const stmtBankCode: string = detail?.account_code || '11103';
+                                const contraCodes: string[] = posting
+                                  ? posting.lines.map(l => l.account_code).filter(c => c !== stmtBankCode)
+                                  : [];
+                                const movement = dep > 0 ? dep : wit;
 
                                 return (
-                                <tr key={tx.id} className={`border-b border-muted/50 hover:bg-muted/20 ${dirty ? 'bg-blue-50 dark:bg-blue-950/20' : ''} ${
+                                  <React.Fragment key={tx.id}>
+                                <tr onClick={() => { if (!editMode) setExpandedTxId(expandedTxId === tx.id ? null : tx.id); }}
+                                  className={`cursor-pointer border-b border-muted/50 hover:bg-muted/20 ${dirty ? 'bg-blue-50 dark:bg-blue-950/20' : ''} ${
                                   tx.match_status === 'suggested' ? 'bg-yellow-50 dark:bg-yellow-950/20' :
                                   tx.match_status === 'confirmed' ? 'bg-green-50 dark:bg-green-950/20' : ''
                                 } ${
@@ -578,7 +597,20 @@ export default function BankStatements() {
                                     )}
                                   </td>
                                   <td className="py-1.5 pr-3" onClick={e => e.stopPropagation()}>
-                                    {tx.account_code ? (
+                                    {contraCodes.length > 1 ? (
+                                      <div className="flex flex-col items-start gap-0.5" title={tr('Multi-account posting', '多科目分錄', '多科目分录')}>
+                                        {contraCodes.map(code => (
+                                          <span key={code} className={`text-[10px] font-mono px-1 py-px rounded ${
+                                            isTemporaryAccount(accounts.find((a: any) => a.account_code === code)?.account_name)
+                                              ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                              : 'bg-primary/10 text-primary'
+                                          }`}>{code}</span>
+                                        ))}
+                                        <span className="text-[9px] text-muted-foreground">
+                                          {(tx as any).posting?.entry_source === 'manual' ? tr('manual split', '手動拆分', '手动拆分') : tr('split', '拆分', '拆分')}
+                                        </span>
+                                      </div>
+                                    ) : tx.account_code ? (
                                       (() => {
                                         const acc = accounts.find((a: any) => a.account_code === tx.account_code);
                                         const name = acc?.account_name || '(unknown account)';
@@ -763,8 +795,29 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                                     </td>
                                   )}
                                 </tr>
-                              );
-                            })}
+                                {expandedTxId === tx.id && !editMode && (
+                                  <tr>
+                                    <td colSpan={detail?.accounts?.length > 1 ? 9 : 8} className="p-0 border-b border-muted/50">
+                                      <TxPostingPanel
+                                        kind="bank"
+                                        movementAmount={movement}
+                                        fixedCode={stmtBankCode}
+                                        fixedName={accounts.find((a: any) => a.account_code === stmtBankCode)?.account_name || 'Bank account'}
+                                        posting={posting}
+                                        currentCode={tx.account_code}
+                                        accounts={accounts}
+                                        tree={coaTree}
+                                        disabled={!!detail?.is_reconciled}
+                                        lockedReason={tr('Statement is reconciled — reopen reconciliation before changing postings', '月結單已對賬——請先重開對賬再修改分錄', '月结单已对账——请先重开对账再修改分录')}
+                                        onSave={(lines) => saveTxPosting(tx.id, movement, lines)}
+                                        onResetAuto={() => saveTxPosting(tx.id, movement, undefined, true)}
+                                      />
+                                    </td>
+                                  </tr>
+                                )}
+                                  </React.Fragment>
+                                );
+                              })}
                             </tbody>
                             <tfoot>
                               <tr className="border-t font-medium text-xs">

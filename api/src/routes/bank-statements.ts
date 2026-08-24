@@ -11,6 +11,7 @@ import { findBestInvoiceMatch } from '../lib/bank-matcher';
 import { getTemporaryAccount } from '../lib/coa-temporary';
 import { findParentAccountError, isNumericCoaCode } from '../lib/account-guard';
 import { generateStatementJournalEntries } from '../lib/bank-journal';
+import { getStatementPostings, replaceTransactionPosting, resetTransactionToAuto, validatePostingLines } from '../lib/bank-journal';
 import { restoreInvoiceJournal, purgeInvoiceJournal } from '../lib/invoice-journal';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -610,6 +611,13 @@ bank.patch('/transactions/:id', async (c) => {
 
   // Auto-regenerate linked journal entry if transaction was modified
   if (body.account_code !== undefined || body.deposit_amount !== undefined || body.withdrawal_amount !== undefined || body.description !== undefined) {
+    // Manual multi-line postings are never overwritten by automation — the user
+    // expressed explicit intent. (Reset via PUT /transactions/:id/posting.)
+    const manualJe = await db.prepare(
+      `SELECT id FROM journal_entries WHERE reference_type = 'bank_transaction' AND reference_id = ?
+       AND entry_source = 'manual' AND ${jeLive('journal_entries')} LIMIT 1`
+    ).bind(txId, tenantId).first();
+    if (!manualJe) {
     // Delete existing journal entry (CASCADE handles lines)
     await db.prepare(
       `DELETE FROM journal_entries WHERE reference_type = 'bank_transaction' AND reference_id = ?
@@ -710,6 +718,7 @@ bank.patch('/transactions/:id', async (c) => {
           ).bind(`jl-${uuidv4().slice(0, 8)}`, entryId, l.code, l.name, desc, l.debit, l.credit, i).run();
         }
       }
+    }
     }
   }
 
@@ -1039,7 +1048,80 @@ bank.get('/:id', async (c) => {
     'SELECT COUNT(*) as n FROM bank_reconciliations WHERE bank_statement_id = ? AND user_id = ?'
   ).bind(c.req.param('id'), tenantId).first<{ n: number }>();
 
-  return c.json({ ...stmt, transactions: txs.results, is_reconciled: (recon?.n || 0) > 0 });
+  // Per-transaction journal postings (Dr/Cr lines + entry_source) for the
+  // inline posting panel. Keyed by tx id; absent = not yet posted.
+  const postings = await getStatementPostings(c.env.DB, tenantId, String((stmt as any).id));
+  const transactions = (txs.results as any[]).map(tx => ({
+    ...tx,
+    posting: postings.get(tx.id) || null,
+  }));
+
+  return c.json({ ...stmt, transactions, is_reconciled: (recon?.n || 0) > 0 });
+});
+
+// ── Replace a transaction's posting with a user-built multi-line allocation ──
+// Contra lines only: for a deposit they land on the CREDIT side (bank Dr fixed),
+// for a withdrawal on the DEBIT side (bank Cr fixed) — double-entry guaranteed.
+bank.put('/transactions/:id/posting', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const txId = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+
+  const tx = await db.prepare(
+    `SELECT bt.id, bt.bank_statement_id AS stmt_id, bt.invoice_id, bt.match_status,
+            bs.status AS stmt_status
+     FROM bank_transactions bt
+     JOIN bank_statements bs ON bs.id = bt.bank_statement_id
+     WHERE bt.id = ? AND bt.user_id = ? AND bt.deleted_at IS NULL`
+  ).bind(txId, tenantId).first<any>();
+  if (!tx) return c.json({ error: 'Transaction not found' }, 404);
+  if (!body?.reset_to_auto && tx.match_status === 'not_required') {
+    return c.json({ error: 'Opening-balance rows are not posted to the ledger' }, 400);
+  }
+  if (tx.invoice_id) {
+    return c.json({ error: 'This transaction is posted via its linked invoice payment — unlink it first' }, 400);
+  }
+  if (tx.stmt_status !== 'active') {
+    return c.json({ error: 'Confirm the statement before editing postings' }, 400);
+  }
+  const recon = await db.prepare(
+    'SELECT COUNT(*) as n FROM bank_reconciliations WHERE bank_statement_id = ? AND user_id = ?'
+  ).bind(tx.stmt_id, tenantId).first<{ n: number }>();
+  if ((recon?.n || 0) > 0) {
+    return c.json({ error: 'Statement is reconciled — reopen reconciliation before changing postings' }, 400);
+  }
+
+  try {
+    if (body?.reset_to_auto) {
+      const gen = await resetTransactionToAuto(db, tenantId, txId);
+      await auditLog(db, user.id, 'update', 'bank_transaction_posting', txId, { reset_to_auto: true, created: gen.created });
+      return c.json({ success: true, reset: true, created: gen.created });
+    }
+
+    const movement = Math.round(((body?.movement_amount ?? 0) as number) * 100) / 100;
+    if (!(movement > 0)) return c.json({ error: 'Invalid transaction amount' }, 400);
+    const check = validatePostingLines(body?.lines, movement);
+    if (!check.ok) return c.json({ error: check.error }, 400);
+
+    // Leaf-only guard per distinct account code
+    for (const code of [...new Set(check.lines.map(l => l.account_code))]) {
+      const guardError = await findParentAccountError(db, tenantId, code);
+      if (guardError) return c.json({ error: guardError }, 400);
+    }
+
+    const result = await replaceTransactionPosting(db, tenantId, txId, check.lines);
+    await auditLog(db, user.id, 'update', 'bank_transaction_posting', txId, {
+      manual: true,
+      lines: check.lines.length,
+      total: movement,
+    });
+    return c.json({ success: true, ...result });
+  } catch (e: any) {
+    console.log('[PUT-POSTING] error:', e?.message);
+    return c.json({ error: e?.message || 'Failed to save posting' }, 500);
+  }
 });
 
 // ── Import (parsed data + transactions) ──
@@ -1270,6 +1352,9 @@ bank.post('/:id/auto-categorize', async (c) => {
   }
 
   // Categorize via the shared engine (single source of truth)
+  // NOTE: account_code IS NULL also excludes manually-posted transactions —
+  // PUT /transactions/:id/posting always sets a non-null synced code, so user
+  // multi-line splits are never touched here.
   const txs = await db.prepare(
     'SELECT id, description, deposit_amount, withdrawal_amount FROM bank_transactions WHERE bank_statement_id = ? AND deleted_at IS NULL AND account_code IS NULL ORDER BY sort_order'
   ).bind(stmtId).all();

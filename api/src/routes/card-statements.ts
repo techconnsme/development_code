@@ -7,6 +7,7 @@ import { getJwtSecret } from '../middleware/auth';
 import { jeLive } from '../lib/journal-filters';
 import { categorizeTransaction } from '../lib/transaction-categorizer';
 import { findParentAccountError } from '../lib/account-guard';
+import { getStatementPostings, replaceTransactionPosting, validatePostingLines } from '../lib/bank-journal';
 const card = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 // Audit log helper
 async function auditLog(db: any, userId: string, action: string, entityType: string, entityId: string | null, changes?: object) {
@@ -470,8 +471,8 @@ card.post('/:id/post-to-gl', async (c) => {
     if (amount < 0.01) continue;
 
     await db.prepare(
-      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(entryId, tenantId, voucherNum, tx.transaction_date || tx.posting_date, tx.description || 'Card Transaction', 'card_transaction', tx.id).run();
+      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id, entry_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(entryId, tenantId, voucherNum, tx.transaction_date || tx.posting_date, tx.description || 'Card Transaction', 'card_transaction', tx.id, 'auto').run();
 
     // Dr expense account, Cr Cash on Hand (11101)
     await db.prepare(
@@ -508,7 +509,52 @@ card.get('/:id', async (c) => {
             expense_account_code, match_status, is_edited
      FROM card_transactions WHERE card_statement_id = ? AND deleted_at IS NULL ORDER BY sort_order`
   ).bind(id).all();
-  return c.json({ ...stmt, transactions: tx.results });
+
+  // Per-transaction journal postings for the inline posting panel
+  const postings = await getStatementPostings(c.env.DB, tenantId, id, { table: 'card_transactions', refType: 'card_transaction' });
+  const transactions = (tx.results as any[]).map(t => ({ ...t, posting: postings.get(t.id) || null }));
+
+  return c.json({ ...stmt, transactions });
+});
+
+// ── Replace a card transaction's posting with a user-built allocation ──
+// Contra lines only: Dr expense(s) split; Cr Cash on Hand (11101) fixed.
+card.put('/transactions/:id/posting', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const txId = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+
+  const tx = await db.prepare(
+    `SELECT ct.id, ct.card_statement_id AS stmt_id, cs.status AS stmt_status
+     FROM card_transactions ct
+     JOIN card_statements cs ON cs.id = ct.card_statement_id
+     WHERE ct.id = ? AND ct.user_id = ? AND ct.deleted_at IS NULL`
+  ).bind(txId, tenantId).first<any>();
+  if (!tx) return c.json({ error: 'Transaction not found' }, 404);
+  if (tx.stmt_status !== 'active') {
+    return c.json({ error: 'Confirm the statement before editing postings' }, 400);
+  }
+
+  try {
+    const movement = Math.round(((body?.movement_amount ?? 0) as number) * 100) / 100;
+    if (!(movement > 0)) return c.json({ error: 'Invalid transaction amount' }, 400);
+    const check = validatePostingLines(body?.lines, movement);
+    if (!check.ok) return c.json({ error: check.error }, 400);
+
+    for (const code of [...new Set(check.lines.map(l => l.account_code))]) {
+      const guardError = await findParentAccountError(db, tenantId, code);
+      if (guardError) return c.json({ error: guardError }, 400);
+    }
+
+    const result = await replaceTransactionPosting(db, tenantId, txId, check.lines, 'card');
+    await auditLog(db, user.id, 'update', 'card_transaction_posting', txId, { manual: true, lines: check.lines.length, total: movement });
+    return c.json({ success: true, ...result });
+  } catch (e: any) {
+    console.log('[PUT-CARD-POSTING] error:', e?.message);
+    return c.json({ error: e?.message || 'Failed to save posting' }, 500);
+  }
 });
 
 // ── Create import (from file-storage OCR result) ──

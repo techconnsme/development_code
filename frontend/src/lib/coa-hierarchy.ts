@@ -21,6 +21,11 @@ export function stemOfCode(code: string): string {
   return code.replace(/0+$/, '') || code.slice(0, 1);
 }
 
+/** Parking accounts created by the engine (暫記收入 Temporary Revenue / 暫記支出 Temporary Expenses). */
+export function isTemporaryAccount(accountName: string | null | undefined): boolean {
+  return !!accountName && /temporary|暫記|暂记/i.test(accountName);
+}
+
 /**
  * Parent = some OTHER active code starts with this code's zero-stripped stem
  * ('66200'→'662' sees '66201..'; '11000'→'11' sees '111xx'). Mirrors the SQL

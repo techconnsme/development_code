@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
+import { Fragment, useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
 import { Eye, Trash2, AlertTriangle, CheckCircle, ChevronDown, ChevronRight, Pencil, FileText, CreditCard, Building2, Download } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
+import TxPostingPanel, { PostingLine } from '../components/TxPostingPanel';
+import { buildCoaTree, isTemporaryAccount } from '../lib/coa-hierarchy';
 
 /** Fetch an authenticated file as a blob URL (Authorization header, never query-string tokens). */
 async function authedBlobUrl(path: string): Promise<string> {
@@ -156,6 +158,22 @@ export default function CardStatements() {
     mutationFn: ({ id, body }: { id: string; body: any }) => api(`/card-statements/transactions/${id}`, { method: 'PATCH', body }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['card-statement', expandedId] }),
   });
+
+  // Multi-account posting panel state + data
+  const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
+  const { data: accountsResp } = useQuery({
+    queryKey: ['accounts'],
+    queryFn: () => api('/bookkeeping/accounts'),
+  });
+  const cardAccounts: any[] = accountsResp?.data || [];
+  const cardCoaTree = buildCoaTree(cardAccounts);
+  const saveCardPosting = async (txId: string, movement: number, lines?: PostingLine[], reset?: boolean) => {
+    await api(`/card-statements/transactions/${txId}/posting`, {
+      method: 'PUT',
+      body: reset ? { reset_to_auto: true } : { lines, movement_amount: movement },
+    });
+    queryClient.invalidateQueries({ queryKey: ['card-statement', expandedId] });
+  };
 
   const years = new Set<number>();
   statements.forEach(s => { if (s.statement_year) years.add(s.statement_year); });
@@ -311,8 +329,14 @@ export default function CardStatements() {
                             </tr>
                           </thead>
                           <tbody>
-                            {txs.map((tx) => (
-                              <tr key={tx.id} className={`border-b border-muted/30 ${tx.match_status === 'categorized' ? 'bg-green-50 dark:bg-green-950/20' : ''} ${tx.is_edited ? 'bg-blue-50 dark:bg-blue-950/20' : ''}`}>
+                            {txs.map((tx) => {
+                              const movement = Math.abs(tx.amount || 0);
+                              const posting = (tx as any).posting as { entry_id: string; entry_number: string; entry_source: string; lines: { id: string; account_code: string; account_name: string; debit: number; credit: number }[] } | null;
+                              const stmtActive = (detail as any)?.status === 'active';
+                              return (
+                              <Fragment key={tx.id}>
+                              <tr onClick={() => setExpandedTxId(expandedTxId === tx.id ? null : tx.id)}
+                                className={`cursor-pointer border-b border-muted/30 ${tx.match_status === 'categorized' ? 'bg-green-50 dark:bg-green-950/20' : ''} ${tx.is_edited ? 'bg-blue-50 dark:bg-blue-950/20' : ''}`}>
                                 <td className="py-1 pr-2 whitespace-nowrap">{tx.transaction_date}</td>
                                 <td className="py-1 pr-2 max-w-[200px] truncate">{tx.description}</td>
                                 <td className="py-1 pr-2 text-right font-mono relative">${fmt(tx.amount)}{tx.is_edited ? <span className="text-blue-500 ml-1" title={tr('Manually edited', '已手動修改', '已手动修改')}>✏</span> : ''}</td>
@@ -323,14 +347,47 @@ export default function CardStatements() {
                                 </td>
                                 <td className="py-1 pr-2 text-muted-foreground">{tx.category || '—'}</td>
                                 <td className="py-1 pr-2">
-                                  {tx.expense_account_code ? (
+                                  {posting && posting.lines.filter(l => l.account_code !== '11101').length > 1 ? (
+                                    <div className="flex flex-col items-start gap-0.5">
+                                      {posting.lines.filter(l => l.account_code !== '11101').map(l => (
+                                        <span key={l.id} className={`font-mono text-[10px] px-1 py-px rounded ${
+                                          isTemporaryAccount(cardAccounts.find((a: any) => a.account_code === l.account_code)?.account_name)
+                                            ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                            : 'bg-primary/10 text-primary'
+                                        }`}>{l.account_code}</span>
+                                      ))}
+                                      <span className="text-[9px] text-muted-foreground">{tr('split', '拆分', '拆分')}</span>
+                                    </div>
+                                  ) : tx.expense_account_code ? (
                                     <span className="text-green-700 dark:text-green-400 font-mono text-[10px]">{tx.expense_account_code}</span>
                                   ) : (
                                     <span className="text-muted-foreground/50">—</span>
                                   )}
                                 </td>
                               </tr>
-                            ))}
+                              {expandedTxId === tx.id && (
+                                <tr>
+                                  <td colSpan={6} className="p-0">
+                                    <TxPostingPanel
+                                      kind="card"
+                                      movementAmount={movement}
+                                      fixedCode="11101"
+                                      fixedName={cardAccounts.find((a: any) => a.account_code === '11101')?.account_name || 'Cash on Hand'}
+                                      posting={posting}
+                                      currentCode={tx.expense_account_code}
+                                      accounts={cardAccounts}
+                                      tree={cardCoaTree}
+                                      disabled={!stmtActive}
+                                      lockedReason={tr('Confirm the statement before editing postings', '請先確認月結單再修改分錄', '请先确认月结单再修改分录')}
+                                      onSave={(lines) => saveCardPosting(tx.id, movement, lines)}
+                                      onResetAuto={() => saveCardPosting(tx.id, movement, undefined, true)}
+                                    />
+                                  </td>
+                                </tr>
+                              )}
+                              </Fragment>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>

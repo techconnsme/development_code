@@ -6,7 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import { CreditCard, Save, Trash2, Plus, AlertTriangle, CheckCircle } from 'lucide-react';
 import { useToast } from '../components/Toast';
-import { filterLeafAccounts } from '../lib/coa-hierarchy';
+import { filterLeafAccounts, isTemporaryAccount } from '../lib/coa-hierarchy';
 
 interface CardTransaction {
   id: string; transaction_date: string; posting_date: string | null;
@@ -266,9 +266,15 @@ export default function CardStatementReview() {
                         >
                           <option value="">—</option>
                           {leafExpenseAccounts.map((a: any) => (
-                            <option key={a.account_code} value={a.account_code}>{a.account_code}</option>
+                            <option key={a.account_code} value={a.account_code}>{a.account_code}{isTemporaryAccount(a.account_name) ? ' · 暫記' : ''}</option>
                           ))}
                         </select>
+                        {(txEdits[tx.id]?.expense_account_code ?? tx.expense_account_code) && Math.abs(tx.amount || 0) >= 0.01 && (
+                          <div className="text-[9px] text-muted-foreground mt-0.5 font-mono">
+                            Dr {(txEdits[tx.id]?.expense_account_code ?? tx.expense_account_code)} {Math.abs(tx.amount || 0).toFixed(2)}
+                            {' · '}Cr 11101 {Math.abs(tx.amount || 0).toFixed(2)}
+                          </div>
+                        )}
                       </td>
                       <td className="py-1"><button onClick={() => setDeletedTxIds(s => new Set([...s, tx.id]))} className="p-0.5 text-muted-foreground hover:text-red-500"><Trash2 className="h-3 w-3" /></button></td>
                     </tr>
