@@ -13,6 +13,7 @@ import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import { tr } from '../lib/i18nHelpers';
 import { buildCoaTree, CoaNode } from '../lib/coa-hierarchy';
 import TxPostingPanel, { PostingLine } from '../components/TxPostingPanel';
+import SlideOpen from '../components/SlideOpen';
 import { isTemporaryAccount } from '../lib/coa-hierarchy';
 
 interface Transaction {
@@ -55,6 +56,10 @@ export default function BankStatements() {
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
+  // Frozen JSX per statement: while a statement slides shut, the shared detail
+  // query may already describe the newly opened statement — replay the last
+  // open render instead so the closing content stays stable.
+  const stmtContentRef = useRef<Map<string, React.ReactNode>>(new Map());
   const [edits, setEdits] = useState<Record<string, Partial<Transaction>>>({});
   const [acctModalTx, setAcctModalTx] = useState<Transaction | null>(null);
   const [aiLoading, setAiLoading] = useState<string | null>(null);
@@ -330,10 +335,7 @@ export default function BankStatements() {
                 >
                   <div className="space-y-0.5 min-w-0">
                     <div className="flex items-center gap-2">
-                      {expandedId === s.id
-                        ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
-                        : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
-                      }
+                      <ChevronDown className={`h-4 w-4 text-muted-foreground shrink-0 transition-transform duration-300 ${expandedId === s.id ? 'rotate-180' : ''}`} />
                       <span className="text-sm font-medium truncate">
                         {s.statement_year}-{String(s.statement_month).padStart(2, '0')} {s.bank_name || 'Statement'}
                       </span>
@@ -396,9 +398,14 @@ export default function BankStatements() {
                   </div>
                 </div>
 
-                {/* Expanded: Transaction table */}
-                {expandedId === s.id && (
-                  <div className="border-x border-b rounded-b-md bg-muted/10 px-4 py-3">
+                {/* Expanded: Transaction table — slides open/closed; content frozen from the
+                    last open render while closing (shared detail query may already point
+                    at a different statement mid-animation) */}
+                <SlideOpen open={expandedId === s.id}>
+                  {(() => {
+                    if (expandedId === s.id) {
+                      stmtContentRef.current.set(s.id, (
+                      <div className="border-x border-b rounded-b-md bg-muted/10 px-4 py-3">
                     {detailQuery.isLoading ? (
                       <p className="text-sm text-muted-foreground py-4 text-center">
                         {tr('Loading transactions...', '載入交易中...', '载入交易中...')}
@@ -502,6 +509,7 @@ export default function BankStatements() {
                                 <th className="py-2 pr-3 font-medium text-right">Withdrawal</th>
                                 <th className="py-2 pr-3 font-medium text-right">Balance</th>
                                 <th className="py-2 pr-3 font-medium min-w-[200px]">Account</th>
+                                <th className="py-2 pr-1 font-medium w-6" aria-label="Expand"></th>
                                 <th className="py-2 font-medium text-center">{tr('Linked Document', '連結文件', '连结文件')}</th>
                                 {editMode && <th className="py-2 font-medium text-center w-16">Save</th>}
                               </tr>
@@ -675,6 +683,9 @@ export default function BankStatements() {
                                       </select>
                                     )}
                                   </td>
+                                  <td className="py-1.5 pr-1 w-6 text-muted-foreground">
+                                    <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-300 ${expandedTxId === tx.id ? 'rotate-180' : ''}`} />
+                                  </td>
                                   <td className="py-1.5 text-center">
                                     {/* ── Invoice linked ── */}
                                     {tx.invoice_number && (
@@ -807,24 +818,27 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                                     </td>
                                   )}
                                 </tr>
-                                {expandedTxId === tx.id && !editMode && (
+                                {!editMode && (
                                   <tr>
-                                    <td colSpan={detail?.accounts?.length > 1 ? 9 : 8} className="p-0 border-b border-muted/50">
-                                      <TxPostingPanel
-                                        kind="bank"
-                                        movementAmount={movement}
-                                        contraSide={dep > 0 ? 'Cr' : 'Dr'}
-                                        fixedCode={stmtBankCode}
-                                        fixedName={accounts.find((a: any) => a.account_code === stmtBankCode)?.account_name || 'Bank account'}
-                                        posting={posting}
-                                        currentCode={tx.account_code}
-                                        accounts={accounts}
-                                        tree={coaTree}
-                                        disabled={!!detail?.is_reconciled}
-                                        lockedReason={tr('Statement is reconciled — reopen reconciliation before changing postings', '月結單已對賬——請先重開對賬再修改分錄', '月结单已对账——请先重开对账再修改分录')}
-                                        onSave={(lines) => saveTxPosting(tx.id, movement, lines)}
-                                        onResetAuto={() => saveTxPosting(tx.id, movement, undefined, true)}
-                                      />
+                                    <td colSpan={detail?.accounts?.length > 1 ? 10 : 9} className={`p-0 ${expandedTxId === tx.id ? 'border-b border-muted/50' : ''}`}>
+                                      <SlideOpen open={expandedTxId === tx.id}>
+                                        <TxPostingPanel
+                                          key={(tx as any).posting?.entry_id || 'auto'}
+                                          kind="bank"
+                                          movementAmount={movement}
+                                          contraSide={dep > 0 ? 'Cr' : 'Dr'}
+                                          fixedCode={stmtBankCode}
+                                          fixedName={accounts.find((a: any) => a.account_code === stmtBankCode)?.account_name || 'Bank account'}
+                                          posting={posting}
+                                          currentCode={tx.account_code}
+                                          accounts={accounts}
+                                          tree={coaTree}
+                                          disabled={!!detail?.is_reconciled}
+                                          lockedReason={tr('Statement is reconciled — reopen reconciliation before changing postings', '月結單已對賬——請先重開對賬再修改分錄', '月结单已对账——请先重开对账再修改分录')}
+                                          onSave={(lines) => saveTxPosting(tx.id, movement, lines)}
+                                          onResetAuto={() => saveTxPosting(tx.id, movement, undefined, true)}
+                                        />
+                                      </SlideOpen>
                                     </td>
                                   </tr>
                                 )}
@@ -846,6 +860,7 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                                 </td>
                                 <td></td>
                                 <td></td>
+                                <td></td>
                               </tr>
                             </tfoot>
                           </table>
@@ -853,7 +868,11 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                       </div>
                     )}
                   </div>
-                )}
+                      ));
+                    }
+                    return stmtContentRef.current.get(s.id) ?? null;
+                  })()}
+                </SlideOpen>
               </div>
             ))}
           </div>
