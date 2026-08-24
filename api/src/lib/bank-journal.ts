@@ -93,6 +93,10 @@ export async function generateStatementJournalEntries(
     }
 
     if (lines.length > 0) {
+      // Credit interest deposits can never link to an invoice — auto-N/A when unmatched
+      if (cat.tag === 'interest_income' && !tx.invoice_id && (!tx.match_status || tx.match_status === 'unmatched')) {
+        await db.prepare("UPDATE bank_transactions SET match_status = 'not_required' WHERE id = ? AND deleted_at IS NULL").bind(tx.id).run();
+      }
       await db.prepare(
         'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id, entry_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).bind(entryId, userId, entryNum, tx.transaction_date, desc, 'bank_transaction', tx.id, 'auto').run();

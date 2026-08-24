@@ -482,7 +482,7 @@ ${inputOcrText.slice(0, 8000)}` }],
   let autoCategorized = 0;
   try {
     const txs = await db.prepare(
-      'SELECT id, description, deposit_amount FROM bank_transactions WHERE bank_statement_id = ? AND account_code IS NULL AND deleted_at IS NULL'
+      'SELECT id, description, deposit_amount, invoice_id, match_status FROM bank_transactions WHERE bank_statement_id = ? AND account_code IS NULL AND deleted_at IS NULL'
     ).bind(stmtId).all();
 
     for (const tx of txs.results as any[]) {
@@ -496,7 +496,9 @@ ${inputOcrText.slice(0, 8000)}` }],
         }
         continue;
       }
-      await db.prepare('UPDATE bank_transactions SET account_code = ? WHERE id = ? AND deleted_at IS NULL').bind(r.code, tx.id).run();
+      // Credit interest can never link to an invoice — auto-N/A the link when unmatched
+      const naLink = r.tag === 'interest_income' && !tx.invoice_id && (!tx.match_status || tx.match_status === 'unmatched');
+      await db.prepare(`UPDATE bank_transactions SET account_code = ?${naLink ? ", match_status = 'not_required'" : ''} WHERE id = ? AND deleted_at IS NULL`).bind(r.code, tx.id).run();
       autoCategorized++;
     }
   } catch { /* non-critical */ }

@@ -1,5 +1,9 @@
 # Session State — 2026-08-24 (both-side Dr/Cr account badges on statement lists)
 
+## Credit interest → link auto-N/A (deployed v73118ed0)
+
+Engine-tagged `interest_income` deposits (CREDIT INTEREST → 42101) can never link to an invoice — all 3 engine paths now auto-set `match_status='not_required'` (only when row has no invoice + still unmatched): file-storage import, `bank-statements/:id/auto-categorize`, `generateStatementJournalEntries` (confirm path). PUT `/transactions/:id/posting` guard relaxed: not_required blocks posting ONLY when `account_code IS NULL` (B/F rows) — interest rows keep their JE and stay manually editable. Backfilled 76 existing 42101-deposit unlinked rows → not_required (13 tenants; reversible: set back to NULL). No frontend change needed — amber flag + unreconciled filter already respect not_required.
+
 ## Bank Statements page: expand chevrons + slide animations (frontend only)
 
 New `components/SlideOpen.tsx` — grid-template-rows 0fr↔1fr transition, self-managed mounting (double-rAF on open, delayed unmount on close; children render only while open/animating so closed instances cost nothing).
@@ -204,4 +208,4 @@ Auto bank→invoice matching now links ONE bank tx to MULTIPLE invoices (combine
 
 **Anomalies (minor):** spec test logs `invoice undefined` for group rows (it reads single-invoice fields that group rows don't have — engine output correct); first verify-script run hit a script bug parsing GET /transactions (`{data:[...]}` shape), fixed and re-run clean; wrangler 3.x deprecation warning during deploys (non-blocking).
 
-**Follow-up (same day):** hardened verify-onetomany-live.ts landed (a87d76b) �X PARTIAL=1 read-only mode, finally-unlink cleanup guarantee, strict reversion gate (invoices unpaid AND tx unmatched AND invoice_id NULL), exit-code gate; regression-tests/REGRESSION_SUITE.md now records the 3 multi-invoice checks + 1 split-payment case. Fresh PARTIAL=1 production run: exit 0, all 3 group suggestions correct.
+**Follow-up (same day):** hardened verify-onetomany-live.ts landed (a87d76b) �X PARTIAL=1 read-only mode, finally-unlink cleanup guarantee, strict reversion gate (invoices unpaid AND tx unmatched AND invoice_id NULL), exit-code gate; regression-tests/REGRESSION_SUITE.md now records the 3 multi-invoice checks + 1 split-payment case. Fresh PARTIAL=1 production run: exit 0, all 3 group suggestions correct.

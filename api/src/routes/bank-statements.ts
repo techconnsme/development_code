@@ -1175,14 +1175,17 @@ bank.put('/transactions/:id/posting', async (c) => {
   const body = await c.req.json().catch(() => ({}));
 
   const tx = await db.prepare(
-    `SELECT bt.id, bt.bank_statement_id AS stmt_id, bt.invoice_id, bt.match_status,
+    `SELECT bt.id, bt.bank_statement_id AS stmt_id, bt.invoice_id, bt.match_status, bt.account_code,
             bs.status AS stmt_status
      FROM bank_transactions bt
      JOIN bank_statements bs ON bs.id = bt.bank_statement_id
      WHERE bt.id = ? AND bt.user_id = ? AND bt.deleted_at IS NULL`
   ).bind(txId, tenantId).first<any>();
   if (!tx) return c.json({ error: 'Transaction not found' }, 404);
-  if (!body?.reset_to_auto && tx.match_status === 'not_required') {
+  // not_required blocks posting only for rows with no account (B/F opening
+  // balance). Engine-categorized rows (e.g. credit interest → 42101) carry a
+  // real JE and stay manually adjustable.
+  if (!body?.reset_to_auto && tx.match_status === 'not_required' && tx.account_code == null) {
     return c.json({ error: 'Opening-balance rows are not posted to the ledger' }, 400);
   }
   if (tx.invoice_id) {
@@ -1461,7 +1464,7 @@ bank.post('/:id/auto-categorize', async (c) => {
   // PUT /transactions/:id/posting always sets a non-null synced code, so user
   // multi-line splits are never touched here.
   const txs = await db.prepare(
-    'SELECT id, description, deposit_amount, withdrawal_amount FROM bank_transactions WHERE bank_statement_id = ? AND deleted_at IS NULL AND account_code IS NULL ORDER BY sort_order'
+    'SELECT id, description, deposit_amount, withdrawal_amount, invoice_id, match_status FROM bank_transactions WHERE bank_statement_id = ? AND deleted_at IS NULL AND account_code IS NULL ORDER BY sort_order'
   ).bind(stmtId).all();
 
   let categorized = 0;
@@ -1483,7 +1486,9 @@ bank.post('/:id/auto-categorize', async (c) => {
       continue;
     }
 
-    await db.prepare('UPDATE bank_transactions SET account_code = ? WHERE id = ? AND deleted_at IS NULL')
+    // Credit interest can never link to an invoice — auto-N/A the link when unmatched
+    const naLink = r.tag === 'interest_income' && !tx.invoice_id && (!tx.match_status || tx.match_status === 'unmatched');
+    await db.prepare(`UPDATE bank_transactions SET account_code = ?${naLink ? ", match_status = 'not_required'" : ''} WHERE id = ? AND deleted_at IS NULL`)
       .bind(r.code, tx.id).run();
     matchedCodes.add(r.code);
     results.push(`${tx.transaction_date?.slice(0,10)} | ${r.code} | ${desc.slice(0,50)}`);
