@@ -1,10 +1,46 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api } from '../lib/api';
+import { api, WORKER_API_BASE } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
 import { Eye, Trash2, AlertTriangle, CheckCircle, ChevronDown, ChevronRight, Pencil, FileText, CreditCard, Building2, Download } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
+
+/** Fetch an authenticated file as a blob URL (Authorization header, never query-string tokens). */
+async function authedBlobUrl(path: string): Promise<string> {
+  const headers: Record<string, string> = {};
+  const token = localStorage.getItem('token');
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  try {
+    const client = JSON.parse(localStorage.getItem('activeClient') || 'null');
+    if (client?.id) headers['X-Active-Client'] = client.id;
+  } catch { /* no active client */ }
+  const resp = await fetch(`${WORKER_API_BASE}${path}`, { headers, credentials: 'include' });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return URL.createObjectURL(await resp.blob());
+}
+
+async function openAuthed(path: string): Promise<void> {
+  try {
+    const url = await authedBlobUrl(path);
+    window.open(url, '_blank', 'noopener');
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch {
+    alert(tr('Could not open the file.', '無法開啟文件。', '无法打开文件。'));
+  }
+}
+
+async function downloadAuthed(path: string, filename: string): Promise<void> {
+  try {
+    const url = await authedBlobUrl(path);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch {
+    alert(tr('Could not download the file.', '無法下載文件。', '无法下载文件。'));
+  }
+}
 
 interface CardTransaction {
   id: string;
@@ -215,10 +251,10 @@ export default function CardStatements() {
                       <span className="text-xs text-blue-600 font-medium" title={tr('Manually corrected', '已手動修正', '已手动修正')}>✏</span>
                     )}
                     {s.file_name && (
-                      <a href={`/api/card-statements/${s.id}/file`} target="_blank" rel="noreferrer"
+                      <button onClick={(e) => { e.stopPropagation(); openAuthed(`/card-statements/${s.id}/file`); }}
                         className="p-1.5 rounded hover:bg-muted text-muted-foreground" title={tr('View original', '查看原文件', '查看原文件')}>
                         <Eye className="h-4 w-4" />
-                      </a>
+                      </button>
                     )}
                     <button onClick={(e) => { e.stopPropagation(); nav(`/card-statements/review/${s.id}`); }}
                       className="p-1.5 rounded hover:bg-muted text-muted-foreground" title={tr('Edit statement', '編輯月結單', '编辑月结单')}>
@@ -242,9 +278,10 @@ export default function CardStatements() {
                       {s.credit_limit != null && <span>Limit: ${fmt(s.credit_limit)}</span>}
                       {s.minimum_payment != null && <span>Min Pay: ${fmt(s.minimum_payment)}</span>}
                       {s.payment_due_date && <span>Due: {s.payment_due_date}</span>}
-                      <a href={`/api/card-statements/${s.id}/export-csv`} className="text-primary hover:underline">
+                      <button onClick={() => downloadAuthed(`/card-statements/${s.id}/export-csv`, `card-statement-${s.statement_year ?? ''}${String(s.statement_month ?? '').padStart(2, '0')}.csv`)}
+                        className="text-primary hover:underline">
                         <Download className="h-3 w-3 inline mr-0.5" />CSV
-                      </a>
+                      </button>
                       <button onClick={() => autoCatMut.mutate(s.id)}
                         className="text-primary hover:underline">
                         {tr('Auto-Categorize', '自動分類', '自动分类')}
