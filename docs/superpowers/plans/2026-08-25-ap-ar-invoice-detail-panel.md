@@ -563,10 +563,12 @@ test('TC-PANEL-04: action buttons do not toggle expansion', async ({ page }) => 
   await login(page);
   await page.goto(`${BASE}/ap`);
   await page.locator('tbody tr').first().waitFor({ timeout: 15000 });
-  // Clicking the edit (Pencil) button must NOT open the panel
-  await page.locator('tbody tr').first().locator('td').last().locator('button').nth(2).click();
+  // The Eye button has a stable title ("View" via tr()); clicking it must open the
+  // eye modal — never the inline detail panel
+  await page.locator('tbody tr').first().locator('button[title="View"]').click();
   await page.waitForTimeout(800);
-  await expect(page.getByTestId('invoice-detail-panel')).toHaveCount(0);
+  const panelCount = await page.getByTestId('invoice-detail-panel').count();
+  if (panelCount > 0) throw new Error('Row-click guard failed: panel opened from action button');
 });
 ```
 
