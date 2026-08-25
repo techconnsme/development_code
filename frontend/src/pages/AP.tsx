@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
 import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, CornerUpRight, Link2, FileText, Zap } from 'lucide-react';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
+import InvoiceDetailPanel from '../components/InvoiceDetailPanel';
+import SlideOpen from '../components/SlideOpen';
 import { tr } from '../lib/i18nHelpers';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
@@ -43,6 +45,11 @@ export default function AP() {
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const toggleExpand = (id: string, e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button,a,input,select')) return;
+    setExpandedId(prev => (prev === id ? null : id));
+  };
   const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
   const [bankMatchResults, setBankMatchResults] = useState<any[] | null>(null);
   const { startDate, endDate } = useDateFilter();
@@ -83,7 +90,7 @@ export default function AP() {
   });
 
   const { data: invoiceDetail } = useQuery({
-    queryKey: ['invoice-ap', viewId],
+    queryKey: ['invoice', viewId],
     queryFn: () => api(`/invoices/${viewId}`),
     enabled: !!viewId,
   });
@@ -257,7 +264,8 @@ export default function AP() {
             </thead>
             <tbody>
               {invoices.map((inv: any) => (
-                <tr key={inv.id} id={`inv-row-${inv.id}`} className="border-b hover:bg-muted/30">
+                <React.Fragment key={inv.id}>
+                  <tr id={`inv-row-${inv.id}`} className="border-b hover:bg-muted/30 cursor-pointer" onClick={(e) => toggleExpand(inv.id, e)}>
                   <td className="p-3 font-medium">
                     <span className="inline-flex items-center gap-1.5">
                       {inv.invoice_number}
@@ -303,6 +311,14 @@ export default function AP() {
                     <button onClick={() => { if (confirm(tr('Delete this item?', '確定刪除?', '确定删除?'))) deleteMut.mutate(inv.id); }} className="p-1 hover:bg-muted rounded text-destructive"><Trash2 className="h-4 w-4" /></button>
                   </td>
                 </tr>
+                <tr className="border-b">
+                  <td colSpan={7} className="p-0">
+                    <SlideOpen open={expandedId === inv.id}>
+                      <InvoiceDetailPanel invoiceId={inv.id} />
+                    </SlideOpen>
+                  </td>
+                </tr>
+                </React.Fragment>
               ))}
             </tbody>
           </table>
