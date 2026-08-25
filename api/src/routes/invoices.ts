@@ -118,7 +118,86 @@ invoices.get('/:id', async (c) => {
   ).bind(id, tenantId).first();
   if (!invoice) return c.json({ error: 'Invoice not found' }, 404);
   const items = await db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY sort_order').bind(id).all();
-  return c.json({ ...invoice, items: items.results });
+
+  // Linked bank transactions — both link paths:
+  //   direct: bank_transactions.invoice_id = this invoice (classic 1:1 match)
+  //   group:  bank_transaction_invoice_links junction row (1:N combined payment slice)
+  const links = await db.prepare(
+    `SELECT bt.id, bt.transaction_date, bt.description, bt.deposit_amount, bt.withdrawal_amount,
+            bt.match_status, bt.match_confidence, bs.bank_name,
+            NULL AS allocated_amount, 'direct' AS link_type
+     FROM bank_transactions bt
+     LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+     WHERE bt.invoice_id = ? AND bt.user_id = ? AND bt.deleted_at IS NULL
+     UNION ALL
+     SELECT bt.id, bt.transaction_date, bt.description, bt.deposit_amount, bt.withdrawal_amount,
+            bt.match_status, bt.match_confidence, bs.bank_name,
+            btil.allocated_amount, 'group' AS link_type
+     FROM bank_transaction_invoice_links btil
+     JOIN bank_transactions bt ON btil.transaction_id = bt.id
+     LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+     WHERE btil.invoice_id = ? AND bt.user_id = ? AND bt.deleted_at IS NULL`
+  ).bind(id, tenantId, id, tenantId).all();
+
+  const txIds: string[] = links.results.map((r: any) => r.id);
+
+  // Payment voucher numbers: the payment-leg JE per settling transaction
+  const paymentVouchers: Record<string, string> = {};
+  if (txIds.length > 0) {
+    const ph = txIds.map(() => '?').join(',');
+    const jes = await db.prepare(
+      `SELECT reference_id, entry_number FROM journal_entries
+       WHERE user_id = ? AND deleted_at IS NULL AND reference_type = 'payment' AND reference_id IN (${ph})`
+    ).bind(tenantId, ...txIds).all();
+    for (const je of jes.results as any[]) paymentVouchers[je.reference_id] = je.entry_number;
+  }
+
+  const linked_transactions = links.results.map((r: any) => ({
+    id: r.id,
+    transaction_date: r.transaction_date,
+    description: r.description,
+    bank_name: r.bank_name,
+    amount: r.deposit_amount > 0 ? r.deposit_amount : Math.abs(r.withdrawal_amount || 0),
+    allocated_amount: r.allocated_amount,
+    match_status: r.match_status,
+    match_confidence: r.match_confidence,
+    link_type: r.link_type,
+    payment_voucher_no: paymentVouchers[r.id] || null,
+  }));
+
+  // Live journal entries touching this invoice:
+  //   invoice leg: reference_type='invoice' AND reference_id=<invoice id>
+  //   payment leg: reference_type='payment' AND reference_id IN <linked tx ids>
+  const invoiceLegs = await db.prepare(
+    `SELECT id, entry_number, entry_date, description, reference_type, reference_id, status, entry_source
+     FROM journal_entries WHERE user_id = ? AND deleted_at IS NULL AND reference_type = 'invoice' AND reference_id = ?`
+  ).bind(tenantId, id).all();
+  let paymentLegs: any[] = [];
+  if (txIds.length > 0) {
+    const phTx = txIds.map(() => '?').join(',');
+    const res = await db.prepare(
+      `SELECT id, entry_number, entry_date, description, reference_type, reference_id, status, entry_source
+       FROM journal_entries WHERE user_id = ? AND deleted_at IS NULL AND reference_type = 'payment' AND reference_id IN (${phTx})`
+    ).bind(tenantId, ...txIds).all();
+    paymentLegs = res.results as any[];
+  }
+  const entries = [...(invoiceLegs.results as any[]), ...paymentLegs];
+
+  let journal_entries: any[] = [];
+  if (entries.length > 0) {
+    const ePh = entries.map(() => '?').join(',');
+    const linesRes = await db.prepare(
+      `SELECT entry_id, account_code, account_name, debit, credit FROM journal_lines WHERE entry_id IN (${ePh}) ORDER BY sort_order`
+    ).bind(...entries.map(e => e.id)).all();
+    const byEntry: Record<string, any[]> = {};
+    for (const l of linesRes.results as any[]) {
+      if (!byEntry[l.entry_id]) byEntry[l.entry_id] = [];
+      byEntry[l.entry_id].push(l);
+    }
+    journal_entries = entries.map(e => ({ ...e, lines: byEntry[e.id] || [] }));
+  }
+
+  return c.json({ ...invoice, items: items.results, linked_transactions, journal_entries });
 });
 
 const itemSchema = z.object({
