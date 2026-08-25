@@ -36,6 +36,9 @@ export default function InvoiceDetailPanel({ invoiceId }: { invoiceId: string })
     queryClient.invalidateQueries({ queryKey: ['invoice', invoiceId] });
     queryClient.invalidateQueries({ queryKey: ['entries'] });
     queryClient.invalidateQueries({ queryKey: ['bank-statements'] });
+    queryClient.invalidateQueries({ queryKey: ['invoices-ap'] });
+    queryClient.invalidateQueries({ queryKey: ['invoices-ar'] });
+    queryClient.invalidateQueries({ queryKey: ['invoices'] });
   };
 
   const confirmMut = useMutation({

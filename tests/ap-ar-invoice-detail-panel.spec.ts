@@ -39,6 +39,11 @@ test('TC-PANEL-02: AR row expands with all three sections', async ({ page }) => 
   await expect(panel.getByText(/Linked bank transactions|Not yet posted to GL|GL postings/).first()).toBeVisible();
 });
 
+// WAIVER: TC-PANEL-03 intentionally does not click Confirm/Unlink. Those
+// mutations write to the shared ground-truth test DB (confirm posts GL
+// entries + flips invoice status; unlink resets status for the whole
+// group). Endpoint behaviour is covered by BankStatements-page flows;
+// panel wiring was verified manually during development.
 test('TC-PANEL-03: linked transaction rows show status, and group slices show allocated amount', async ({ page }) => {
   await login(page);
   await page.goto(`${BASE}/ap`);
@@ -72,7 +77,9 @@ test('TC-PANEL-04: action buttons do not toggle expansion', async ({ page }) => 
   // The Eye button has a stable title ("View" via tr()); clicking it must open the
   // eye modal — never the inline detail panel
   await page.locator('tbody tr').first().locator('button[title="View"]').click();
-  await page.waitForTimeout(800);
-  const panelCount = await page.getByTestId('invoice-detail-panel').count();
-  if (panelCount > 0) throw new Error('Row-click guard failed: panel opened from action button');
+  // Positive assertion: the eye modal overlay actually opened (guards against a
+  // vacuous pass if the click did nothing at all)
+  await expect(page.locator('[role="dialog"], .fixed.inset-0').first()).toBeVisible({ timeout: 10000 });
+  // The inline detail panel must NOT have been toggled open by the action button
+  await expect(page.getByTestId('invoice-detail-panel')).toHaveCount(0);
 });
