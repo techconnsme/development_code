@@ -130,8 +130,13 @@ export default function AP() {
   });
 
   const confirmReceiptMatchMut = useMutation({
-    mutationFn: (body: { receipt_id: string; invoice_id: string }) => api('/invoices/confirm-receipt-match', { method: 'POST', body }),
+    mutationFn: (body: { receipt_id: string; invoice_id?: string; invoice_ids?: string[] }) =>
+      api('/invoices/confirm-receipt-match', {
+        method: 'POST',
+        body: body.invoice_ids?.length ? { receipt_id: body.receipt_id, invoice_ids: body.invoice_ids } : { receipt_id: body.receipt_id, invoice_id: body.invoice_id },
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices-ap'] }),
+    onError: (err: any) => toast.error(err?.error || err?.message || tr('Receipt match failed', '收據配對失敗', '收据配对失败')),
   });
 
   function addItem() {
@@ -561,8 +566,8 @@ export default function AP() {
       {receiptMatchResults && (
         <ReceiptMatchReviewModal
           matches={receiptMatchResults}
-          onConfirm={(receiptId, invoiceId) => {
-            confirmReceiptMatchMut.mutate({ receipt_id: receiptId, invoice_id: invoiceId });
+          onConfirm={(receiptId, invoiceIds) => {
+            confirmReceiptMatchMut.mutate({ receipt_id: receiptId, invoice_ids: invoiceIds });
           }}
           onClose={() => {
             setReceiptMatchResults(null);
@@ -578,9 +583,14 @@ export default function AP() {
 }
 
 // ── Receipt Match Review Modal (shared across AP, Invoices, AR) ──
+function receiptMatchInvoiceIds(m: any): string[] {
+  if (Array.isArray(m.invoice_ids) && m.invoice_ids.length) return m.invoice_ids.filter(Boolean);
+  return m.invoice_id ? [m.invoice_id] : [];
+}
+
 export function ReceiptMatchReviewModal({ matches, onConfirm, onClose }: {
   matches: any[];
-  onConfirm: (receiptId: string, invoiceId: string) => void;
+  onConfirm: (receiptId: string, invoiceIds: string[]) => void;
   onClose: () => void;
 }) {
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
@@ -616,47 +626,77 @@ export function ReceiptMatchReviewModal({ matches, onConfirm, onClose }: {
               <button
                 onClick={() => {
                   pending.forEach(m => {
-                    onConfirm(m.receipt_id, m.invoice_id);
+                    const ids = receiptMatchInvoiceIds(m);
+                    if (!ids.length) return;
+                    onConfirm(m.receipt_id, ids);
                     setConfirmed(prev => new Set(prev).add(m.receipt_id));
                   });
                 }}
                 className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700"
               >
-                {tr('Accept All', '全部接受', '全部接受')} ({pending.length})
+                {tr('Accept All', '全部接受', '全部接受')} ({pending.filter(m => receiptMatchInvoiceIds(m).length > 0).length})
               </button>
             </div>
             <div className="space-y-2 overflow-y-auto flex-1">
-              {pending.map(m => (
-                <div key={m.receipt_id} className="border rounded-lg p-3 flex items-center gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">
-                        {m.direction === 'outgoing' ? 'AR' : 'AP'}
-                      </span>
-                      <span className="text-sm font-medium">Receipt #{m.receipt_number}</span>
-                      <span className="text-xs text-muted-foreground">→</span>
-                      <span className="text-sm font-medium">Invoice #{m.invoice_number}</span>
+              {pending.map(m => {
+                const ids = receiptMatchInvoiceIds(m);
+                const canConfirm = ids.length > 0;
+                const combined = ids.length > 1;
+                const invoiceLabels = combined
+                  ? (Array.isArray(m.invoices) && m.invoices.length
+                      ? m.invoices.map((inv: any) => inv.invoice_number || String(inv.invoice_id || '').slice(-8))
+                      : ids.map((id: string) => String(id).slice(-8)))
+                  : [];
+                return (
+                  <div key={m.receipt_id} className="border rounded-lg p-3 flex items-center gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">
+                          {m.direction === 'outgoing' ? 'AR' : 'AP'}
+                        </span>
+                        <span className="text-sm font-medium">Receipt #{m.receipt_number}</span>
+                        <span className="text-xs text-muted-foreground">→</span>
+                        {!canConfirm ? (
+                          <span
+                            className="text-sm font-medium text-muted-foreground italic"
+                            title={tr('This suggestion has no target invoice and cannot be confirmed', '此建議沒有目標發票，無法確認', '此建议没有目标发票，无法确认')}
+                          >
+                            {tr('No target invoice', '沒有目標發票', '没有目标发票')}
+                          </span>
+                        ) : combined ? (
+                          <>
+                            <span className="text-sm font-medium">Invoice #{invoiceLabels.join(' + #')}</span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                              {tr('Combined', '合併付款', '合并付款')} · HKD {m.invoice_total?.toLocaleString()}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-sm font-medium">Invoice #{m.invoice_number}</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        HKD {m.receipt_total?.toLocaleString()} → HKD {m.invoice_total?.toLocaleString()}
+                        {m.receipt_vendor ? ` · ${m.receipt_vendor}` : ''}
+                      </p>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      HKD {m.receipt_total?.toLocaleString()} → HKD {m.invoice_total?.toLocaleString()}
-                      {m.receipt_vendor ? ` · ${m.receipt_vendor}` : ''}
-                    </p>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => {
+                        onConfirm(m.receipt_id, ids);
+                        setConfirmed(prev => new Set(prev).add(m.receipt_id));
+                      }}
+                        disabled={!canConfirm}
+                        title={canConfirm ? undefined : tr('This suggestion has no target invoice and cannot be confirmed', '此建議沒有目標發票，無法確認', '此建议没有目标发票，无法确认')}
+                        className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                        ✓ Confirm
+                      </button>
+                      <button onClick={() => setRejected(prev => new Set(prev).add(m.receipt_id))}
+                        className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-xs hover:bg-red-50">
+                        ✗ Reject
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => {
-                      onConfirm(m.receipt_id, m.invoice_id);
-                      setConfirmed(prev => new Set(prev).add(m.receipt_id));
-                    }}
-                      className="px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700">
-                      ✓ Confirm
-                    </button>
-                    <button onClick={() => setRejected(prev => new Set(prev).add(m.receipt_id))}
-                      className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-xs hover:bg-red-50">
-                      ✗ Reject
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </>
         )}

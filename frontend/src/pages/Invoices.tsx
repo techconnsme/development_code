@@ -104,8 +104,13 @@ export default function Invoices() {
   });
 
   const confirmReceiptMatchMut = useMutation({
-    mutationFn: (body: { receipt_id: string; invoice_id: string }) => api('/invoices/confirm-receipt-match', { method: 'POST', body }),
+    mutationFn: (body: { receipt_id: string; invoice_id?: string; invoice_ids?: string[] }) =>
+      api('/invoices/confirm-receipt-match', {
+        method: 'POST',
+        body: body.invoice_ids?.length ? { receipt_id: body.receipt_id, invoice_ids: body.invoice_ids } : { receipt_id: body.receipt_id, invoice_id: body.invoice_id },
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices'] }),
+    onError: (err: any) => toast.error(err?.error || err?.message || tr('Receipt match failed', '收據配對失敗', '收据配对失败')),
   });
 
   // Manual recovery path for invoices that have no GL entry. Invoices now post
@@ -671,8 +676,8 @@ export default function Invoices() {
       {receiptMatchResults && (
         <ReceiptMatchReviewModal
           matches={receiptMatchResults}
-          onConfirm={(receiptId, invoiceId) => {
-            confirmReceiptMatchMut.mutate({ receipt_id: receiptId, invoice_id: invoiceId });
+          onConfirm={(receiptId, invoiceIds) => {
+            confirmReceiptMatchMut.mutate({ receipt_id: receiptId, invoice_ids: invoiceIds });
           }}
           onClose={() => {
             setReceiptMatchResults(null);
