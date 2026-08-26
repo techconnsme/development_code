@@ -385,7 +385,7 @@ bookkeeping.patch('/entries/:id/status', bookkeeperMiddleware, async (c) => {
   return c.json({ success: true, status });
 });
 
-// Delete a journal entry (hard delete, cascades to journal_lines)
+// Tombstone a journal entry (soft-delete, voucher number retired)
 bookkeeping.delete('/entries/:id', bookkeeperMiddleware, async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
@@ -402,7 +402,7 @@ bookkeeping.delete('/entries/:id', bookkeeperMiddleware, async (c) => {
   ).bind(tenantId, (entry as any).entry_date, (entry as any).entry_date).first();
   if (closed) return c.json({ error: 'Cannot delete entry in a closed period' }, 400);
 
-  await db.prepare('DELETE FROM journal_entries WHERE id = ? AND user_id = ?')
+  await db.prepare("UPDATE journal_entries SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ?")
     .bind(id, tenantId).run();
   await auditLog(db, user.id, 'delete', 'journal_entry', id, { entry_number: (entry as any).entry_number });
   const entryId = id!;
@@ -419,8 +419,14 @@ bookkeeping.post('/entries/:id/reverse', bookkeeperMiddleware, async (c) => {
   const originalId = c.req.param('id');
 
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ? AND user_id = ?')
-    .bind(originalId, tenantId).first<{ id: string; entry_number: string; entry_date: string; description: string; user_id: string }>();
+    .bind(originalId, tenantId).first<{ id: string; entry_number: string; entry_date: string; description: string; user_id: string; deleted_at: string | null }>();
   if (!entry) return c.json({ error: 'Entry not found' }, 404);
+
+  if (entry.deleted_at) return c.json({ error: 'Cannot reverse a deleted entry' }, 409);
+
+  const revDate = new Date().toISOString().split('T')[0];
+  if (!(await checkPeriodOpen(db, tenantId, revDate)))
+    return c.json({ error: 'Cannot create reversal in a closed period' }, 400);
 
   const lines = await db.prepare('SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY sort_order')
     .bind(originalId).all();
@@ -429,9 +435,10 @@ bookkeeping.post('/entries/:id/reverse', bookkeeperMiddleware, async (c) => {
   const revNumber = `${entry.entry_number}-REV`;
 
   await db.prepare(
-    'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).bind(revId, tenantId, revNumber, new Date().toISOString().split('T')[0],
-    `Reversal: ${entry.description}`, 'journal', originalId).run();
+    'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id, entry_source, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(revId, tenantId, revNumber, revDate,
+    `Reversal: ${entry.description}`, 'journal', originalId, 'manual',
+    JSON.stringify({ id: user.id, name: user.name, email: user.email })).run();
 
   for (let i = 0; i < (lines.results as any[]).length; i++) {
     const line = (lines.results as any[])[i];
