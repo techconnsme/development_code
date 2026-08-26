@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
@@ -11,6 +11,7 @@ import SlideOpen from '../components/SlideOpen';
 import { tr } from '../lib/i18nHelpers';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
+import { useHighlightTarget } from '../hooks/useHighlightTarget';
 
 // Authenticated PDF download: fetches with Bearer token, opens as blob URL
 async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
@@ -55,8 +56,7 @@ export default function AP() {
   const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
   const [bankMatchResults, setBankMatchResults] = useState<any[] | null>(null);
   const { startDate, endDate } = useDateFilter();
-  const [searchParams] = useSearchParams();
-  const highlightId = searchParams.get('highlight') || null;
+  const highlightId = useHighlightTarget();
   // Deep-link highlight bypasses the fiscal-year date filter so the invoice is always found.
   const effStart = highlightId ? '' : startDate;
   const effEnd = highlightId ? '' : endDate;
@@ -163,7 +163,7 @@ export default function AP() {
 
   const invoices = data?.data || [];
 
-  // Deep-link highlight: jump to the page that holds the invoice, then scroll + ring it.
+  // Deep-link highlight: scroll + ring the target invoice row.
   const highlightFiredRef = useRef<string | null>(null);
   useEffect(() => {
     if (!highlightId || !data || highlightFiredRef.current === highlightId) return;
@@ -174,19 +174,17 @@ export default function AP() {
         const row = document.getElementById(`inv-row-${highlightId}`);
         if (row) {
           highlightFiredRef.current = highlightId;
+          setExpandedId(highlightId);
           row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          row.classList.add('ring-2', 'ring-blue-400');
-          setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
+          row.classList.add('bg-yellow-100', 'dark:bg-yellow-900/30', 'ring-2', 'ring-yellow-400');
+          setTimeout(() => row.classList.remove('bg-yellow-100', 'dark:bg-yellow-900/30', 'ring-2', 'ring-yellow-400'), 3000);
         } else if (retries > 0) {
           setTimeout(() => tryScroll(retries - 1), 150);
         }
       };
       tryScroll(5);
-    } else if (data.highlight_page && data.highlight_page !== page) {
-      setPage(data.highlight_page);
     }
-  }, [highlightId, data, page]);
-  // suppress exhaustive-deps: only re-run when the highlight param or page changes
+  }, [highlightId, data]);
 
   const statusLabel = (s: string) => {
     const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '應付', '应付'), paid: tr('Paid', '已付', '已付'), overdue: tr('Overdue', '逾期未付', '逾期未付'), cancelled: tr('Cancelled', '已取消', '已取消') };
