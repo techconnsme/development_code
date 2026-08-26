@@ -1,4 +1,5 @@
-const API_BASE = 'https://opcc-crm-api.ruhan-farhan.workers.dev/api';
+// Overridable for local e2e against `wrangler dev` (VITE_API_BASE=/api npm run dev)
+const API_BASE = ((import.meta as any).env?.VITE_API_BASE as string || '') || 'https://opcc-crm-api.ruhan-farhan.workers.dev/api';
 
 // Direct Worker URL for large payloads (bypasses Pages Function body size limits)
 export const WORKER_API_BASE = 'https://opcc-crm-api.ruhan-farhan.workers.dev/api';
