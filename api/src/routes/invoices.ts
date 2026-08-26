@@ -186,8 +186,13 @@ async function invoiceDetailPayload(db: any, tenantId: string, id: string) {
   if (entries.length > 0) {
     const ePh = entries.map(() => '?').join(',');
     const linesRes = await db.prepare(
-      `SELECT entry_id, account_code, account_name, debit, credit FROM journal_lines WHERE entry_id IN (${ePh}) ORDER BY sort_order`
-    ).bind(...entries.map(e => e.id)).all();
+      `SELECT jl.entry_id, jl.account_code, jl.account_name, jl.debit, jl.credit,
+              a.account_type AS account_type
+       FROM journal_lines jl
+       LEFT JOIN accounts a ON a.account_code = jl.account_code AND a.user_id = ?
+       WHERE jl.entry_id IN (${ePh})
+       ORDER BY jl.sort_order`
+    ).bind(tenantId, ...entries.map(e => e.id)).all();
     const byEntry: Record<string, any[]> = {};
     for (const l of linesRes.results as any[]) {
       if (!byEntry[l.entry_id]) byEntry[l.entry_id] = [];

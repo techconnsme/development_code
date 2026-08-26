@@ -1152,6 +1152,28 @@ bank.get('/:id', async (c) => {
       ORDER BY bt.sort_order`
   ).bind(c.req.param('id')).all();
 
+  // Lineage: settled invoices (both link paths) + live payment JE number per tx
+  const txIds = (txs.results as any[]).map(t => t.id);
+  const membersByTx = new Map<string, { invoice_id: string; invoice_number: string; allocated_amount: number | null }[]>();
+  const pmtByTx = new Map<string, string>();
+  if (txIds.length > 0) {
+    const ph = txIds.map(() => '?').join(',');
+    const grp = await c.env.DB.prepare(
+      `SELECT l.transaction_id, l.invoice_id, l.allocated_amount, i.invoice_number
+       FROM bank_transaction_invoice_links l JOIN invoices i ON l.invoice_id = i.id
+       WHERE l.transaction_id IN (${ph})`
+    ).bind(...txIds).all();
+    for (const r of grp.results as any[]) {
+      if (!membersByTx.has(r.transaction_id)) membersByTx.set(r.transaction_id, []);
+      membersByTx.get(r.transaction_id)!.push({ invoice_id: r.invoice_id, invoice_number: r.invoice_number, allocated_amount: r.allocated_amount });
+    }
+    const pmts = await c.env.DB.prepare(
+      `SELECT je.reference_id, je.entry_number FROM journal_entries je
+       WHERE je.reference_type = 'payment' AND je.reference_id IN (${ph}) AND ${jeLive('je')}`
+    ).bind(...txIds).all();
+    for (const r of pmts.results as any[]) pmtByTx.set(r.reference_id, r.entry_number);
+  }
+
   // True reconciliation flag: a bank_reconciliations row exists for this statement.
   // (balance_status='ok' only means the balance math checked out at import — the
   // frontend must NOT treat it as reconciled/locked. 2026-08-17)
@@ -1165,6 +1187,14 @@ bank.get('/:id', async (c) => {
   const transactions = (txs.results as any[]).map(tx => ({
     ...tx,
     posting: postings.get(tx.id) || null,
+    linked_invoices: (() => {
+      const list = membersByTx.get(tx.id) ? [...membersByTx.get(tx.id)!] : [];
+      if (tx.invoice_id && !list.some(m => m.invoice_id === tx.invoice_id)) {
+        list.unshift({ invoice_id: tx.invoice_id, invoice_number: tx.invoice_number, allocated_amount: null });
+      }
+      return list;
+    })(),
+    payment_entry_number: pmtByTx.get(tx.id) || null,
   }));
 
   return c.json({ ...stmt, transactions, is_reconciled: (recon?.n || 0) > 0 });
