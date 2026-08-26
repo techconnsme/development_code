@@ -209,7 +209,7 @@ test('TC-LIN-03: bank transaction opens popup chain with hops + lineage map', as
   await expect(modal.getByTestId('lineage-map').first()).toBeVisible({ timeout: 15000 });
 });
 
-test('TC-LIN-04: auto-link on unpaid invoice enters pending then settles with message (never confirms)', async ({ page }) => {
+test('TC-LIN-04: auto-link on unpaid invoice surfaces suggestions or honest empty result (never confirms)', async ({ page }) => {
   await login(page);
   await page.goto(`${BASE}/ap`);
   // Pick an UNPAID PnR AP bill at runtime: first visible row whose Status cell
@@ -242,23 +242,17 @@ test('TC-LIN-04: auto-link on unpaid invoice enters pending then settles with me
   const autoBtn = modal.getByTestId('auto-link-btn');
   // SUGGEST-ONLY: POST /bank-statements/auto-match writes nothing (waiver above).
   await autoBtn.click();
-  // Observe the transient pending ('…', disabled) OR the settled outcome —
-  // whichever lands first; the mutation itself decides which one we catch.
+  // Honest settled outcome ONLY: either suggestion rows render (each carrying a
+  // confirm-suggested-btn) or the explicit empty-result message renders. The old
+  // vacuous "pending OR any message" assertion is gone — an error message alone
+  // now fails the test.
   await expect(async () => {
-    const btnText = (((await autoBtn.textContent()) || '')).trim();
-    const msg = await modal.getByText(/Recommendations refreshed|Auto-link failed/i).count();
     const suggested = await modal.getByTestId('confirm-suggested-btn').count();
-    expect(btnText === '…' || msg > 0 || suggested > 0, 'neither pending nor settled state observed').toBeTruthy();
-  }).toPass({ timeout: 45000 });
-  // Settled state must materialise: success/error message renders, or suggested
-  // rows appear carrying confirm-suggested-btn.
-  await expect(async () => {
-    const msg = await modal.getByText(/Recommendations refreshed|Auto-link failed/i).count();
-    const suggested = await modal.getByTestId('confirm-suggested-btn').count();
-    expect(msg > 0 || suggested > 0, 'auto-link neither messaged nor produced suggestions').toBeTruthy();
+    const empty = await modal.getByText(/No matching transactions found/i).count();
+    expect(suggested > 0 || empty > 0, 'neither suggestion rows nor the empty-result message rendered').toBeTruthy();
   }).toPass({ timeout: 45000 });
   // WAIVER enforcement: any ✓ confirm button that surfaced stays UNCLICKED —
-  // asserting it merely exists (or not) and closing keeps the DB untouched.
+  // closing keeps the DB untouched (suggestions are never persisted by the scan).
   await modal.locator('button').first().click(); // header ✕ — no confirm, no Link
   await expect(modal).toBeHidden({ timeout: 5000 });
 });

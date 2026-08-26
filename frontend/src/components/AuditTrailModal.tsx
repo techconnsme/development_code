@@ -18,15 +18,25 @@ interface LinkedTx {
   payment_voucher_no: string | null;
 }
 interface InvoiceDetail {
-  id: string; invoice_number: string; total: number; currency: string;
+  id: string; invoice_number: string; total: number; currency: string; direction?: string;
   linked_transactions?: LinkedTx[]; journal_entries?: JournalEntry[];
   linked_receipt?: { id: string; invoice_number: string; total: number; issue_date: string } | null;
+}
+interface MatchSuggestion {
+  transaction_id: string;
+  invoice_id?: string | null;
+  invoice_ids?: string[];
+  invoices?: { invoice_number: string; total: number }[];
+  invoice_number?: string;
+  amount: number;
+  confidence?: string;
+  reason?: string;
 }
 
 export default function AuditTrailModal({ open, onClose, invoiceId, txContext }: {
   open: boolean; onClose: () => void;
   invoiceId?: string | null;
-  txContext?: { statementName: string | null; transactionDate: string; description: string; amount: number; matchStatus: string; invoiceIds: string[]; txId?: string } | null;
+  txContext?: { statementName: string | null; transactionDate: string; description: string; amount: number; matchStatus: string; invoiceIds: string[]; txId?: string; isDeposit: boolean } | null;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -50,9 +60,10 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
 
   const [autoLinking, setAutoLinking] = useState(false);
   const [autoLinkMsg, setAutoLinkMsg] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<MatchSuggestion[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ label: string; holding: string }>({ label: '', holding: '' });
-  useEffect(() => { if (!open) { setEditingId(null); setDraft({ label: '', holding: '' }); setAutoLinkMsg(null); } }, [open]);
+  useEffect(() => { if (!open) { setEditingId(null); setDraft({ label: '', holding: '' }); setAutoLinkMsg(null); setSuggestions([]); } }, [open]);
   const { data: accountsData } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => api('/bookkeeping/accounts'),
@@ -91,8 +102,17 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
   const ctxTxId = txContext?.txId || '';
 
   const autoLinkMut = useMutation({
-    mutationFn: () => api(`/bank-statements/auto-match?direction=${(invoiceCtx as any)?.direction || 'incoming'}`, { method: 'POST' }),
-    onSuccess: () => { refresh(); setAutoLinkMsg(tr('Recommendations refreshed — confirm a suggested match below', '建議已更新——請在下方確認配對', '建议已更新——请在下方确认配对')); },
+    mutationFn: () => api(`/bank-statements/auto-match?direction=${invoiceCtx?.direction || 'incoming'}`, { method: 'POST' }),
+    onSuccess: (res: any) => {
+      const invId = invoiceCtx?.id;
+      const mine: MatchSuggestion[] = invId ? ((res?.matched || []) as any[])
+        .filter((m: any) => m.invoice_id === invId || (m.invoice_ids || []).includes(invId)) : [];
+      setSuggestions(mine);
+      setAutoLinkMsg(mine.length === 0
+        ? tr('No matching transactions found', '未找到配對的銀行交易', '未找到配对的银行交易')
+        : tr(`${mine.length} match(es) found — confirm below`, `找到 ${mine.length} 筆配對建議——請在下方確認`, `找到 ${mine.length} 条配对建议——请在下方确认`));
+      refresh();
+    },
     onError: (e: any) => setAutoLinkMsg(e?.message || tr('Auto-link failed', '自動連結失敗', '自动连结失败')),
     onSettled: () => setAutoLinking(false),
   });
@@ -100,7 +120,8 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
   const confirmTxMut = useMutation({
     mutationFn: ({ txId, invoiceId }: { txId: string; invoiceId?: string }) =>
       api(`/bank-statements/transactions/${txId}/match`, { method: 'PATCH', body: { invoice_id: invoiceId, action: 'confirm' } }),
-    onSuccess: (_res, _vars) => {
+    onSuccess: (_res, vars) => {
+      setSuggestions(prev => prev.filter(s => s.transaction_id !== vars.txId));
       refresh();
       if (txContext) {
         toast.success(tr('Invoice linked', '發票已連結', '发票已链接'));
@@ -117,7 +138,8 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
 
   const candidates = useQuery({
     queryKey: ['link-candidates', ctxTxId],
-    queryFn: () => api('/invoices?status=draft,sent,overdue&q='),
+    // Deposits pay AR (outgoing invoices); withdrawals pay AP (incoming)
+    queryFn: () => api(`/invoices?status=draft,sent,overdue&q=&direction=${txContext?.isDeposit ? 'outgoing' : 'incoming'}`),
     enabled: open && !!ctxTxId && !details.isLoading && rows.length === 0,
   });
 
@@ -166,6 +188,36 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
             </div>
           )}
           {autoLinkMsg && <p className="text-[11px] text-muted-foreground">{autoLinkMsg}</p>}
+          {invoiceCtx && suggestions.length > 0 && (
+            <div className="space-y-1" data-testid="auto-link-suggestions">
+              {suggestions.map(s => {
+                const isGroup = (s.invoice_ids?.length ?? 0) >= 2;
+                return (
+                  <div key={s.transaction_id} className="flex flex-wrap items-center gap-2 text-xs" data-testid="suggested-match">
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                      s.confidence === 'high' ? 'bg-green-100 text-green-700'
+                      : s.confidence === 'medium' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
+                    }`}>{(s.confidence || 'LOW').toUpperCase()}</span>
+                    {isGroup && <span className="text-[10px] px-1 rounded bg-blue-100 text-blue-700">{tr('Group', '合併付款', '合并付款')}</span>}
+                    <span className="px-1.5 py-0.5 rounded bg-white border font-medium">
+                      {isGroup ? (s.invoices || []).map((i: any) => i.invoice_number).join(' + ') : s.invoice_number}
+                    </span>
+                    <span className="font-mono">{invoiceCtx.currency} {s.amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span className="text-muted-foreground truncate flex-1 min-w-[120px]">{s.reason}</span>
+                    <button data-testid="confirm-suggested-btn" onClick={() => confirmTxMut.mutate({ txId: s.transaction_id, invoiceId: invoiceCtx.id })} disabled={confirmTxMut.isPending}
+                      className="p-0.5 hover:bg-green-50 rounded text-green-600 disabled:opacity-40" title={tr('Confirm', '確認', '确认')}>
+                      ✓
+                    </button>
+                    <button onClick={() => setSuggestions(prev => prev.filter(x => x.transaction_id !== s.transaction_id))}
+                      disabled={confirmTxMut.isPending}
+                      className="p-0.5 hover:bg-red-50 rounded text-red-500 disabled:opacity-40" title={tr('Reject', '拒絕', '拒绝')}>
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           {rows.map(inv => {
             const txs = inv.linked_transactions || [];
             return (

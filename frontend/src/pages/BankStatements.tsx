@@ -57,7 +57,7 @@ export default function BankStatements() {
   const highlightStmtId = searchParams.get('highlight') || null;
   const activeFilter = searchParams.get('filter') || null;
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
-  const [auditTx, setAuditTx] = useState<{ statementName: string | null; transactionDate: string; description: string; amount: number; matchStatus: string; invoiceIds: string[]; txId: string } | null>(null);
+  const [auditTx, setAuditTx] = useState<{ statementName: string | null; transactionDate: string; description: string; amount: number; matchStatus: string; invoiceIds: string[]; txId: string; isDeposit: boolean } | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   // Frozen JSX per statement: while a statement slides shut, the shared detail
@@ -902,6 +902,7 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                                             matchStatus: tx.match_status || 'unmatched',
                                             invoiceIds: ((tx as any).linked_invoices || []).map((li: any) => li.invoice_id),
                                             txId: tx.id,
+                                            isDeposit: dep > 0,
                                           })} className="text-xs flex items-center gap-1 text-primary hover:underline">
                                             <Link2 className="h-3.5 w-3.5" /> {tr('View audit trail', '查看審計追蹤', '查看审计追踪')}
                                           </button>
