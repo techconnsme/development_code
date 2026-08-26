@@ -190,6 +190,16 @@ export default function AP() {
     const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '應付', '应付'), paid: tr('Paid', '已付', '已付'), overdue: tr('Overdue', '逾期未付', '逾期未付'), cancelled: tr('Cancelled', '已取消', '已取消') };
     return labels[s] || s;
   };
+  const statusTooltip = (s: string) => {
+    const tips: Record<string, string> = {
+      draft: tr('Invoice created but not yet sent to supplier', '帳單已建立但尚未發送給供應商', '账单已建立但尚未发送给供应商'),
+      sent: tr('Invoice sent to supplier, awaiting payment', '帳單已發送給供應商，等待付款', '账单已发送给供应商，等待付款'),
+      paid: tr('Payment has been made to supplier', '已向供應商付款', '已向供应商付款'),
+      overdue: tr('Payment is past the due date', '付款已過期', '付款已过期'),
+      cancelled: tr('Invoice has been cancelled', '帳單已取消', '账单已取消'),
+    };
+    return tips[s] || '';
+  };
   const statusBadge = (s: string) => {
     const colors: Record<string, string> = { draft: 'bg-gray-100 text-gray-700', sent: 'bg-orange-100 text-orange-700', paid: 'bg-green-100 text-green-700', overdue: 'bg-red-100 text-red-700', cancelled: 'bg-gray-100 text-gray-500' };
     return `px-2 py-0.5 rounded-full text-xs font-medium ${colors[s] || 'bg-gray-100'}`;
@@ -293,11 +303,11 @@ export default function AP() {
                   </td>
                   <td className="p-3 hidden md:table-cell">{inv.vendor_name || inv.supplier_name || inv.customer_name || '-'}</td>
                   <td className="p-3">
-                    <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-orange-100 text-orange-700">
+                    <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-orange-100 text-orange-700" title={tr('Accounts Payable — incoming invoice from a supplier', '應付帳款 — 供應商開給你的發票', '应付账款 — 供应商开给你的发票')}>
                       {tr('AP', '應付', '应付')}
                     </span>
                   </td>
-                  <td className="p-3"><span className={statusBadge(inv.status)}>{statusLabel(inv.status)}</span></td>
+                  <td className="p-3"><span className={statusBadge(inv.status)} title={statusTooltip(inv.status)}>{statusLabel(inv.status)}</span></td>
                   <td className="p-3 text-right hidden lg:table-cell">{inv.currency} {inv.total?.toLocaleString()}</td>
                   <td className="p-3 hidden lg:table-cell">{inv.issue_date}</td>
                   <td className="p-3 text-right">
