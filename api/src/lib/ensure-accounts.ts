@@ -23,6 +23,20 @@ export function getCodeType(code: string): string {
 }
 
 /**
+ * Resolve the canonical account_name for an account_code from the accounts table.
+ * Falls back to the COA template, then to a generic code-based name.
+ */
+export async function resolveAccountName(db: any, tenantId: string, accountCode: string): Promise<string> {
+  const row = await db.prepare(
+    'SELECT account_name FROM accounts WHERE user_id = ? AND account_code = ? LIMIT 1'
+  ).bind(tenantId, accountCode).first<{ account_name: string }>();
+  if (row?.account_name) return row.account_name;
+  const template = HK_COA_NAMES[accountCode];
+  if (template?.name) return template.name;
+  return accountCode;
+}
+
+/**
  * Create any of `codes` that the tenant's COA is missing, so a journal line can
  * reference them. `created` is a single-element counter the caller reads back.
  */

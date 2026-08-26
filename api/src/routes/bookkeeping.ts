@@ -1046,10 +1046,10 @@ bookkeeping.get('/trial-balance', async (c) => {
 
   // Get journal line totals
   const rows = await db.prepare(
-    `SELECT jl.account_code, jl.account_name, a.account_type, a.opening_balance, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
+    `SELECT jl.account_code, COALESCE(a.account_name, jl.account_name) as account_name, COALESCE(a.account_type, 'asset') as account_type, a.opening_balance, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
-     LEFT JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
-     WHERE je.user_id = ? AND je.entry_date <= ? AND ${jePosted()} AND ${jeNotOrphaned()} GROUP BY jl.account_code, jl.account_name ORDER BY jl.account_code`
+     LEFT JOIN accounts a ON jl.account_code = a.account_code AND a.user_id = je.user_id
+     WHERE je.user_id = ? AND je.entry_date <= ? AND ${jePosted()} AND ${jeNotOrphaned()} GROUP BY jl.account_code ORDER BY jl.account_code`
   ).bind(tenantId, asOf).all();
 
   // Compute ending balances: opening + debit - credit (for assets/expenses) or opening + credit - debit (for liabilities/equity/revenue)
@@ -1148,40 +1148,40 @@ bookkeeping.get('/income-statement', async (c) => {
 
   // Account-level breakdown for drill-down (journal-based)
   const revenueAccounts = await db.prepare(
-    `SELECT jl.account_code, a.account_name,
+    `SELECT jl.account_code, COALESCE(a.account_name, jl.account_name) as account_name,
             COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) as amount
      FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
-     JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+     LEFT JOIN accounts a ON jl.account_code = a.account_code AND a.user_id = je.user_id
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
-       AND a.account_type = 'revenue' AND ${jePosted()} AND ${jeNotOrphaned()}
-     GROUP BY jl.account_code, a.account_name
+       AND COALESCE(a.account_type, '') IN ('revenue') AND ${jePosted()} AND ${jeNotOrphaned()}
+     GROUP BY jl.account_code
      HAVING amount != 0
      ORDER BY jl.account_code`
   ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
 
   const expenseAccounts = await db.prepare(
-    `SELECT jl.account_code, a.account_name,
+    `SELECT jl.account_code, COALESCE(a.account_name, jl.account_name) as account_name,
             COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount
      FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
-     JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+     LEFT JOIN accounts a ON jl.account_code = a.account_code AND a.user_id = je.user_id
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
-       AND a.account_type = 'expense' AND ${jePosted()} AND ${jeNotOrphaned()}
-     GROUP BY jl.account_code, a.account_name
+       AND COALESCE(a.account_type, '') IN ('expense') AND ${jePosted()} AND ${jeNotOrphaned()}
+     GROUP BY jl.account_code
      HAVING amount != 0
      ORDER BY jl.account_code`
   ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
 
   const costAccounts = await db.prepare(
-    `SELECT jl.account_code, a.account_name,
+    `SELECT jl.account_code, COALESCE(a.account_name, jl.account_name) as account_name,
             COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) as amount
      FROM journal_lines jl
      JOIN journal_entries je ON jl.entry_id = je.id
-     JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+     LEFT JOIN accounts a ON jl.account_code = a.account_code AND a.user_id = je.user_id
      WHERE je.user_id = ? AND je.entry_date >= ? AND je.entry_date <= ?
-       AND a.account_type = 'cost' AND ${jePosted()} AND ${jeNotOrphaned()}
-     GROUP BY jl.account_code, a.account_name
+       AND COALESCE(a.account_type, '') IN ('cost') AND ${jePosted()} AND ${jeNotOrphaned()}
+     GROUP BY jl.account_code
      HAVING amount != 0
      ORDER BY jl.account_code`
   ).bind(tenantId, startDate, endDate).all<{ account_code: string; account_name: string; amount: number }>();
@@ -1356,11 +1356,11 @@ bookkeeping.get('/balance-sheet', async (c) => {
 
   // Get all journal lines up to as_of date
   const rows = await db.prepare(
-    `SELECT jl.account_code, jl.account_name, a.account_type, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
+    `SELECT jl.account_code, COALESCE(a.account_name, jl.account_name) as account_name, COALESCE(a.account_type, 'asset') as account_type, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
      FROM journal_lines jl JOIN journal_entries je ON jl.entry_id = je.id
-     LEFT JOIN accounts a ON jl.account_code = a.account_code AND je.user_id = a.user_id
+     LEFT JOIN accounts a ON jl.account_code = a.account_code AND a.user_id = je.user_id
      WHERE je.user_id = ? AND je.entry_date <= ? AND ${jePosted()} AND ${jeNotOrphaned()}
-     GROUP BY jl.account_code, jl.account_name
+     GROUP BY jl.account_code
      ORDER BY jl.account_code`
   ).bind(tenantId, asOf).all();
 
