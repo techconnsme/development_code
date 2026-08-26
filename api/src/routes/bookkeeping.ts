@@ -81,6 +81,78 @@ async function auditLog(db: any, userId: string, action: string, entityType: str
   ).bind(id, userId, action, entityType, entityId, changes ? JSON.stringify(changes) : null).run();
 }
 
+async function resolveLinks(db: any, entry: any): Promise<any> {
+  if (!entry.reference_type || !entry.reference_id) return null;
+
+  switch (entry.reference_type) {
+    case 'bank_transaction': {
+      const tx = await db.prepare(
+        `SELECT bt.id, bt.description, bt.deposit_amount, bt.withdrawal_amount, bt.match_status, bt.statement_id,
+                bs.statement_number, bs.file_name
+         FROM bank_transactions bt
+         LEFT JOIN bank_statements bs ON bt.statement_id = bs.id
+         WHERE bt.id = ?`
+      ).bind(entry.reference_id).first();
+      if (!tx) return { bank_transaction: { id: entry.reference_id, description: '(deleted)', amount: 0, match_status: 'deleted', statement_id: null, statement_number: null, file_name: null } };
+      return {
+        bank_statement: tx.statement_id ? { id: (tx as any).statement_id, statement_number: (tx as any).statement_number, file_name: (tx as any).file_name } : null,
+        bank_transaction: { id: (tx as any).id, description: (tx as any).description, amount: (tx as any).deposit_amount || (tx as any).withdrawal_amount, match_status: (tx as any).match_status, statement_id: (tx as any).statement_id },
+      };
+    }
+    case 'invoice': {
+      const inv = await db.prepare(
+        `SELECT id, invoice_number, direction, total, vendor_name, customer_name FROM invoices WHERE id = ?`
+      ).bind(entry.reference_id).first();
+      if (!inv) return { invoice: { id: entry.reference_id, invoice_number: '(deleted)', direction: 'incoming', total: 0, vendor_or_customer: '(deleted)' } };
+      return {
+        invoice: {
+          id: (inv as any).id,
+          invoice_number: (inv as any).invoice_number,
+          direction: (inv as any).direction,
+          total: (inv as any).total,
+          vendor_or_customer: (inv as any).vendor_name || (inv as any).customer_name || '',
+        },
+      };
+    }
+    case 'payment': {
+      const tx = await db.prepare(
+        `SELECT bt.id, bt.description, bt.deposit_amount, bt.withdrawal_amount, bt.match_status, bt.statement_id,
+                bs.statement_number, bs.file_name
+         FROM bank_transactions bt
+         LEFT JOIN bank_statements bs ON bt.statement_id = bs.id
+         WHERE bt.id = ?`
+      ).bind(entry.reference_id).first();
+      const linkedInvoices = await db.prepare(
+        `SELECT btil.invoice_id, btil.allocated_amount, i.invoice_number
+         FROM bank_transaction_invoice_links btil
+         LEFT JOIN invoices i ON btil.invoice_id = i.id
+         WHERE btil.transaction_id = ?`
+      ).bind(entry.reference_id).all();
+      const result: any = {
+        bank_statement: tx?.statement_id ? { id: (tx as any).statement_id, statement_number: (tx as any).statement_number, file_name: (tx as any).file_name } : null,
+        bank_transaction: tx ? { id: (tx as any).id, description: (tx as any).description, amount: (tx as any).deposit_amount || (tx as any).withdrawal_amount, match_status: (tx as any).match_status, statement_id: (tx as any).statement_id } : null,
+      };
+      if (linkedInvoices.results.length > 0) {
+        result.linked_invoices = (linkedInvoices.results as any[]).map(li => ({
+          id: li.invoice_id,
+          invoice_number: li.invoice_number || '(deleted)',
+          allocated_amount: li.allocated_amount,
+        }));
+      }
+      return result;
+    }
+    case 'journal': {
+      const rev = await db.prepare(
+        'SELECT id, entry_number, entry_date FROM journal_entries WHERE id = ?'
+      ).bind(entry.reference_id).first();
+      if (!rev) return { reversal: { id: entry.reference_id, entry_number: '(deleted)', entry_date: '' } };
+      return { reversal: { id: (rev as any).id, entry_number: (rev as any).entry_number, entry_date: (rev as any).entry_date } };
+    }
+    default:
+      return null;
+  }
+}
+
 bookkeeping.get('/entries', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
@@ -101,7 +173,15 @@ bookkeeping.get('/entries', async (c) => {
   params.push(limit, offset);
 
   const rows = await db.prepare(query).bind(...params).all();
-  return c.json({ data: rows.results, page, limit });
+
+  const entriesWithLinks = await Promise.all(
+    (rows.results as any[]).map(async (entry) => {
+      const resolved_links = await resolveLinks(db, entry);
+      return { ...entry, resolved_links };
+    })
+  );
+
+  return c.json({ data: entriesWithLinks, page, limit });
 });
 
 bookkeeping.get('/entries/:id', async (c) => {
