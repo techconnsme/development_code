@@ -12,6 +12,7 @@
 import { CategorizeResult, categorizeTransaction } from './transaction-categorizer';
 import { findBestInvoiceMatch } from './bank-matcher';
 import { jePosted, jeNotOrphaned } from './journal-filters';
+import { llmCompleteJson, llmKeysFromEnv, LlmKeys } from './llm-parse';
 
 export const REVIEW_EPS = 0.01;
 
@@ -145,16 +146,77 @@ export interface StatementReviewResult {
 }
 
 export interface BuildReviewOpts {
-  llmFn?: any;                 // Task 3: LlmReviewFn
+  llmFn?: typeof llmCompleteJson;
   env?: any;
-  llmKeys?: any;               // Task 3: LlmKeys
+  llmKeys?: LlmKeys;
+}
+
+/** One LLM call proposing adjusting entries for the unexplained residual. */
+async function aiSuggestions(
+  llmFn: typeof llmCompleteJson,
+  keys: LlmKeys,
+  candidates: any[],
+  accounts: { account_code: string; account_name: string }[],
+  residual: number,
+  bankCode: string,
+  nameOf: (code: string) => string,
+): Promise<ReviewItem[]> {
+  if (candidates.length === 0 || !accounts.length) return [];
+  const prompt = `You are a bookkeeping assistant reviewing a bank statement against a ledger.
+Unexplained residual: HKD ${residual.toFixed(2)}.
+Candidate transactions (JSON): ${JSON.stringify(candidates.map(c => ({ transaction_id: c.id, date: c.transaction_date, description: c.description, deposit_amount: c.deposit_amount, withdrawal_amount: c.withdrawal_amount })))}
+Chart of accounts (code|name): ${accounts.map(a => `${a.account_code}|${a.account_name}`).join('\n')}
+Return ONLY JSON: {"items":[{"transaction_id":"...","explanation":"...","account_code":"...","debit":0,"credit":0,"description":"..."}]}
+Rules: use only listed accounts; the single nonzero side must equal the transaction amount; omit anything you cannot justify.`;
+
+  try {
+    const timeout = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('llm timeout')), 8000));
+    const res = await Promise.race([
+      llmFn(keys, prompt, 'statement-review', { maxTokens: 1200 }),
+      timeout,
+    ]);
+    const parsedItems = res?.parsed?.items;
+    if (!Array.isArray(parsedItems)) return [];
+
+    const byId = new Map(candidates.map(c => [c.id, c]));
+    const validCodes = new Set(accounts.map(a => a.account_code));
+    const out: ReviewItem[] = [];
+    for (const p of parsedItems) {
+      const tx = byId.get(p?.transaction_id);
+      if (!tx || !validCodes.has(p?.account_code) || !p?.explanation) continue;
+      const d = Number(p.debit) || 0, c = Number(p.credit) || 0;
+      const amount = Math.abs(tx.deposit_amount > 0 ? tx.deposit_amount : tx.withdrawal_amount);
+      const nonzero = [d, c].filter(v => Math.abs(v) > REVIEW_EPS);
+      if (nonzero.length !== 1 || Math.abs(nonzero[0] - amount) > REVIEW_EPS) continue;
+
+      // Mirror ruleSuggestionFor line ordering: deposit ⇒ bank Dr first;
+      // withdrawal ⇒ contra Dr first, bank Cr last.
+      const dir: 'deposit' | 'withdrawal' = tx.deposit_amount > 0 ? 'deposit' : 'withdrawal';
+      const bankLine: JePrefillLine =
+        { account_code: bankCode, account_name: nameOf(bankCode), debit: dir === 'deposit' ? amount : 0, credit: dir === 'withdrawal' ? amount : 0 };
+      const contraLine: JePrefillLine =
+        { account_code: p.account_code, account_name: nameOf(p.account_code), debit: dir === 'withdrawal' ? d : 0, credit: dir === 'deposit' ? c : 0 };
+      const lines = dir === 'deposit' ? [bankLine, contraLine] : [contraLine, bankLine];
+
+      out.push({
+        id: nextId(), kind: 'adjusting_je', source: 'ai', transaction_id: tx.id,
+        confidence: 'low',
+        explanation: String(p.explanation),
+        prefill: { lines, description: String(p.description || p.explanation) },
+      });
+    }
+    return out;
+  } catch {
+    return []; // AI is best-effort — never fail the review
+  }
 }
 
 export async function buildStatementReview(
   db: DbLike,
   tenantId: string,
   stmtId: string,
-  _opts?: BuildReviewOpts,
+  opts?: BuildReviewOpts,
 ): Promise<StatementReviewResult> {
   // 1. Statement + lock state
   const stmt = await db.prepare(
@@ -244,8 +306,25 @@ export async function buildStatementReview(
     }
   }
 
-  // 5. Decompose; surface unexplained residual (AI pass hooks in later)
-  const { projected_difference, unexplained_residual } = decomposeGap(difference, items, bankCode);
+  // 5. Decompose; conditional AI pass for whatever rules/matcher left unexplained
+  let { projected_difference, unexplained_residual } = decomposeGap(difference, items, bankCode);
+
+  const hasAi = !!(opts?.llmKeys || opts?.env) && !!opts?.llmFn;
+  if (unexplained_residual >= REVIEW_EPS && hasAi) {
+    const handled = new Set(items.map(i => i.transaction_id).filter(Boolean));
+    const candidates = txRows.filter(tx =>
+      !(tx.invoice_id || tx.match_status === 'confirmed') && !handled.has(tx.id));
+    if (candidates.length > 0) {
+      const keys = opts!.llmKeys ?? llmKeysFromEnv(opts!.env);
+      const aiItems = await aiSuggestions(
+        opts!.llmFn!, keys, candidates.slice(0, 20), acctRows, unexplained_residual, bankCode, nameOf);
+      if (aiItems.length > 0) {
+        items.push(...aiItems);
+        ({ projected_difference, unexplained_residual } = decomposeGap(difference, items, bankCode));
+      }
+    }
+  }
+
   if (unexplained_residual >= REVIEW_EPS) {
     items.push({
       id: nextId(), kind: 'info', source: 'rule',
