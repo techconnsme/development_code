@@ -100,7 +100,13 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
   const confirmTxMut = useMutation({
     mutationFn: ({ txId, invoiceId }: { txId: string; invoiceId?: string }) =>
       api(`/bank-statements/transactions/${txId}/match`, { method: 'PATCH', body: { invoice_id: invoiceId, action: 'confirm' } }),
-    onSuccess: () => refresh(),
+    onSuccess: (_res, _vars) => {
+      refresh();
+      if (txContext) {
+        toast.success(tr('Invoice linked', '發票已連結', '发票已链接'));
+        onClose();
+      }
+    },
     onError: (e: any) => toast.error(e?.message || tr('Confirm failed', '確認失敗', '确认失败')),
   });
   const unlinkTxMut = useMutation({
@@ -112,7 +118,7 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
   const candidates = useQuery({
     queryKey: ['link-candidates', ctxTxId],
     queryFn: () => api('/invoices?status=draft,sent,overdue&q='),
-    enabled: open && !!ctxTxId && rows.length === 0,
+    enabled: open && !!ctxTxId && !details.isLoading && rows.length === 0,
   });
 
   if (!open) return null;
