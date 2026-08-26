@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Pencil, RotateCcw, X } from 'lucide-react';
 import { useToast } from './Toast';
@@ -39,14 +39,18 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
   const details = useQuery({
     queryKey: ['audit-trail', ids],
     queryFn: async () => {
-      const rows = await Promise.all(ids.map(id => api(`/invoices/${id}`)));
-      return rows as InvoiceDetail[];
+      const results = await Promise.allSettled(ids.map(id => api(`/invoices/${id}`)));
+      return {
+        invoices: results.filter(r => r.status === 'fulfilled').map(r => (r as PromiseFulfilledResult<any>).value as InvoiceDetail),
+        missing: results.filter(r => r.status === 'rejected').length,
+      };
     },
     enabled: open && ids.length > 0,
   });
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ label: string; holding: string }>({ label: '', holding: '' });
+  useEffect(() => { if (!open) { setEditingId(null); setDraft({ label: '', holding: '' }); } }, [open]);
   const { data: accountsData } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => api('/bookkeeping/accounts'),
@@ -80,7 +84,7 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
   });
 
   if (!open) return null;
-  const rows = details.data || [];
+  const rows = details.data?.invoices || [];
 
   const statusChip = (s: string) => (
     <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded ${
@@ -109,14 +113,23 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
               {statusChip(txContext.matchStatus)}
             </div>
           )}
+          {details.data && details.data.missing > 0 && (
+            <p className="text-xs text-amber-600">
+              {tr(`${details.data.missing} document(s) no longer available`, `${details.data.missing} 份文件已不存在`, `${details.data.missing} 份文件已不存在`)}
+            </p>
+          )}
           {rows.map(inv => {
             const txs = inv.linked_transactions || [];
             return (
               <div key={inv.id} className="space-y-1">
-                {!txContext && txs.map(tx => (
+                {txs.map(tx => (
                   <div key={`${inv.id}-${tx.id}-${tx.link_type}`} className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="px-1.5 py-0.5 rounded bg-white border">{tx.bank_name || tr('Bank statement', '銀行月結單', '银行月结单')}</span>
-                    <span className="text-muted-foreground">→</span>
+                    {!txContext && (
+                      <>
+                        <span className="px-1.5 py-0.5 rounded bg-white border">{tx.bank_name || tr('Bank statement', '銀行月結單', '银行月结单')}</span>
+                        <span className="text-muted-foreground">→</span>
+                      </>
+                    )}
                     <span className="px-1.5 py-0.5 rounded bg-white border">
                       <span className="font-mono">{tx.transaction_date}</span> · {tx.description} · <span className="font-mono">{(tx.allocated_amount ?? tx.amount)?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                     </span>
