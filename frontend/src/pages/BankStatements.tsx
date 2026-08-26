@@ -343,6 +343,18 @@ export default function BankStatements() {
   useEffect(() => {
     if (!highlightId) return;
     highlightTargetRef.current = highlightId;
+    // If it's a statement ID (bs-), expand it directly
+    if (highlightId.startsWith('bs-')) {
+      setExpandedId(highlightId);
+      setTimeout(() => {
+        const el = document.getElementById(`stmt-row-${highlightId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('highlight-pulse');
+          setTimeout(() => el.classList.remove('highlight-pulse'), 5000);
+        }
+      }, 300);
+    }
   }, [highlightId]);
 
   const detail = detailQuery.data as any;
@@ -360,15 +372,21 @@ export default function BankStatements() {
   // Scroll to highlighted transaction after detail loads (deep-link from P&L drill-down or useHighlightTarget)
   React.useEffect(() => {
     const activeTxId = highlightTxRef.current || highlightTargetRef.current;
-    if (activeTxId && detail && !detailQuery.isLoading) {
+    if (!activeTxId) return;
+    // If it's a statement ID, it was already handled above
+    if (activeTxId.startsWith('bs-')) {
+      highlightTxRef.current = null;
+      highlightTargetRef.current = null;
+      return;
+    }
+    // For transaction IDs, we need to find the parent statement and expand it
+    if (detail && !detailQuery.isLoading) {
       const txId = activeTxId;
-      // Small delay to let DOM render
       setTimeout(() => {
         const el = document.getElementById(`tx-row-${txId}`);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           el.classList.add('highlight-pulse');
-          // Clear highlight after 5 seconds
           setTimeout(() => {
             el.classList.remove('highlight-pulse');
           }, 5000);
