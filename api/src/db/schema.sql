@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS journal_entries (
   -- multi-line posting via PUT /transactions/:id/posting. Manual entries are
   -- never overwritten by automation.
   entry_source TEXT NOT NULL DEFAULT 'auto',
+  created_by TEXT,
   UNIQUE(user_id, entry_number)
 );
 
@@ -179,6 +180,13 @@ CREATE TABLE IF NOT EXISTS journal_lines (
   credit REAL NOT NULL DEFAULT 0,
   project TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS journal_entry_files (
+  entry_id        TEXT NOT NULL REFERENCES journal_entries(id) ON DELETE CASCADE,
+  file_record_id  TEXT NOT NULL REFERENCES file_records(id),
+  attached_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (entry_id, file_record_id)
 );
 
 -- Chart of Accounts
@@ -244,6 +252,7 @@ CREATE INDEX IF NOT EXISTS idx_quotations_status ON quotations(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_journal_entries_user ON journal_entries(user_id);
 CREATE INDEX IF NOT EXISTS idx_journal_entries_date ON journal_entries(user_id, entry_date);
 CREATE INDEX IF NOT EXISTS idx_journal_entries_active ON journal_entries(user_id, deleted_at, status);
+CREATE INDEX IF NOT EXISTS idx_jef_file ON journal_entry_files(file_record_id);
 CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
 -- ═══════════════════════════════════════════
