@@ -14,9 +14,9 @@ interface PnlFormulaBannerProps {
 
 function Term({ label, value, color }: { label: string; value: number; color: string }) {
   return (
-    <div className="flex flex-col items-center px-3 py-2 rounded-lg bg-background border">
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
-      <span className={`text-sm font-mono font-semibold ${value < 0 ? 'text-red-600' : color}`}>
+    <div className="flex flex-col items-center px-4 py-3 rounded-lg bg-background border">
+      <span className="text-xs uppercase tracking-wide text-muted-foreground">{label}</span>
+      <span className={`text-lg font-mono font-semibold ${value < 0 ? 'text-red-600' : color}`}>
         {(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
       </span>
     </div>
@@ -32,14 +32,14 @@ function FormulaRow({ left, op, right, resultLabel, resultValue, color }: {
   color: string;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-3">
       <Term label={left.label} value={left.value} color={color} />
-      <span className="text-lg font-bold text-muted-foreground">{op}</span>
+      <span className="text-2xl font-bold text-muted-foreground">{op}</span>
       <Term label={right.label} value={right.value} color={color} />
-      <span className="text-lg font-bold text-muted-foreground">=</span>
-      <div className="flex flex-col items-center px-3 py-2 rounded-lg bg-background border border-primary/30">
-        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{resultLabel}</span>
-        <span className={`text-sm font-mono font-bold ${resultValue < 0 ? 'text-red-600' : color}`}>
+      <span className="text-2xl font-bold text-muted-foreground">=</span>
+      <div className="flex flex-col items-center px-4 py-3 rounded-lg bg-background border border-primary/30">
+        <span className="text-xs uppercase tracking-wide text-muted-foreground">{resultLabel}</span>
+        <span className={`text-lg font-mono font-bold ${resultValue < 0 ? 'text-red-600' : color}`}>
           {(resultValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
         </span>
       </div>
@@ -50,7 +50,7 @@ function FormulaRow({ left, op, right, resultLabel, resultValue, color }: {
 export default function PnlFormulaBanner({ data }: PnlFormulaBannerProps) {
   return (
     <div className="space-y-3 p-4 bg-card border rounded-xl">
-      <p className="text-xs font-medium text-muted-foreground">
+      <p className="text-sm font-medium text-muted-foreground">
         {tr('Formula', '公式', '公式')}
       </p>
       <FormulaRow
