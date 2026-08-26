@@ -64,7 +64,9 @@ export async function api(path: string, options: ApiOptions = {}) {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(err.error || 'Request failed');
+      const e: any = new Error(err.error || 'Request failed');
+      e.body = err;
+      throw e;
     }
 
     const contentType = res.headers.get('content-type');
