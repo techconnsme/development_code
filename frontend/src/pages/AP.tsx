@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
 import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, CornerUpRight, Link2, FileText, Zap } from 'lucide-react';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
+import AuditTrailModal from '../components/AuditTrailModal';
 import InvoiceDetailPanel from '../components/InvoiceDetailPanel';
 import SlideOpen from '../components/SlideOpen';
 import { tr } from '../lib/i18nHelpers';
@@ -45,6 +46,7 @@ export default function AP() {
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
+  const [auditId, setAuditId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const toggleExpand = (id: string, e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('button,a,input,select')) return;
@@ -300,6 +302,9 @@ export default function AP() {
                       <button onClick={() => navigate(`/file-storage?highlight=${inv.file_id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View file in File Storage', '在文件庫查看檔案', '在文件库查看文件')}><CornerUpRight className="h-4 w-4" /></button>
                     )}
                     <button onClick={() => setViewId(inv.id)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View', '查看', '查看')}><Eye className="h-4 w-4" /></button>
+                    <button data-testid="audit-trail-btn" onClick={() => setAuditId(inv.id)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Audit Trail', '審計追蹤', '审计追踪')}>
+                      <Link2 className="h-4 w-4" />
+                    </button>
                     <button onClick={() => navigate(`/invoices/review/${inv.id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Edit', '編輯', '编辑')}><Pencil className="h-4 w-4" /></button>
                     <button onClick={() => downloadInvoicePDF(inv.id, inv.invoice_number)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Download PDF', '下載 PDF', '下载 PDF')}><Download className="h-4 w-4" /></button>
                     {inv.status === 'draft' && (
@@ -563,6 +568,9 @@ export default function AP() {
           }}
         />
       )}
+
+      {/* Audit Trail Modal */}
+      <AuditTrailModal open={!!auditId} onClose={() => setAuditId(null)} invoiceId={auditId} />
     </div>
   );
 }

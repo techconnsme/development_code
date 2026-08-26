@@ -10,6 +10,7 @@ import { useDateFilter } from '../contexts/DateFilterContext';
 import { useAuth } from '../contexts/AuthContext';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
+import AuditTrailModal from '../components/AuditTrailModal';
 import { tr } from '../lib/i18nHelpers';
 import { buildCoaTree, CoaNode } from '../lib/coa-hierarchy';
 import TxPostingPanel, { PostingLine } from '../components/TxPostingPanel';
@@ -56,6 +57,7 @@ export default function BankStatements() {
   const highlightStmtId = searchParams.get('highlight') || null;
   const activeFilter = searchParams.get('filter') || null;
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
+  const [auditTx, setAuditTx] = useState<{ statementName: string | null; transactionDate: string; description: string; amount: number; matchStatus: string; invoiceIds: string[] } | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   // Frozen JSX per statement: while a statement slides shut, the shared detail
@@ -891,6 +893,20 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                                             )}
                                           </div>
                                         )}
+                                        {!!(tx as any).linked_invoices?.length && (
+                                          <div className="px-4 py-1.5">
+                                            <button data-testid="audit-trail-btn" onClick={() => setAuditTx({
+                                              statementName: (detail as any)?.file_name || null,
+                                              transactionDate: tx.transaction_date,
+                                              description: tx.description,
+                                              amount: dep > 0 ? dep : wit,
+                                              matchStatus: tx.match_status || 'unmatched',
+                                              invoiceIds: (tx as any).linked_invoices.map((li: any) => li.invoice_id),
+                                            })} className="text-xs flex items-center gap-1 text-primary hover:underline">
+                                              <Link2 className="h-3.5 w-3.5" /> {tr('View audit trail', '查看審計追蹤', '查看审计追踪')}
+                                            </button>
+                                          </div>
+                                        )}
                                         <TxPostingPanel
                                           key={(tx as any).posting?.entry_id || 'auto'}
                                           kind="bank"
@@ -1074,6 +1090,9 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
           </div>
         </div>
       )}
+
+      {/* Audit Trail Modal */}
+      <AuditTrailModal open={!!auditTx} onClose={() => setAuditTx(null)} txContext={auditTx} />
 
       {supModal?.show && (
         <SupervisorPasswordModal
