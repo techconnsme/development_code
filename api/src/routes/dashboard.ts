@@ -304,11 +304,13 @@ dashboard.get('/link-stats', async (c) => {
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
 
-  // Bank transactions: total + linked to invoice
+  // Bank transactions: total + linked to invoice (direct OR via junction table)
   const bankStats = await db.prepare(
     `SELECT COUNT(*) as total,
-     COALESCE(SUM(CASE WHEN invoice_id IS NOT NULL THEN 1 ELSE 0 END), 0) as linked
-     FROM bank_transactions WHERE user_id = ? AND deleted_at IS NULL`
+     COALESCE(SUM(CASE WHEN invoice_id IS NOT NULL THEN 1
+       WHEN EXISTS (SELECT 1 FROM bank_transaction_invoice_links l WHERE l.transaction_id = bt.id AND l.user_id = bt.user_id) THEN 1
+       ELSE 0 END), 0) as linked
+     FROM bank_transactions bt WHERE bt.user_id = ? AND bt.deleted_at IS NULL`
   ).bind(tenantId).first() as any;
 
   // Invoices (non-receipt): total + linked to a receipt via linked_invoice_id
@@ -318,19 +320,30 @@ dashboard.get('/link-stats', async (c) => {
      FROM invoices WHERE user_id = ? AND receipt_number IS NULL AND deleted_at IS NULL`
   ).bind(tenantId).first() as any;
 
-  // Full chain: bank transaction → invoice → receipt
+  // Full chain: bank transaction → invoice → receipt (direct OR junction-linked)
   const chainStats = await db.prepare(
-    `SELECT COUNT(*) as full_chain
+    `SELECT COUNT(DISTINCT bt.id) as full_chain
      FROM bank_transactions bt
      WHERE bt.user_id = ? AND bt.deleted_at IS NULL
-     AND bt.invoice_id IS NOT NULL
      AND EXISTS (
-       SELECT 1 FROM invoices i2
-       WHERE i2.id = bt.invoice_id AND i2.deleted_at IS NULL
+       -- Path A: bt.invoice_id set directly
+       SELECT 1 FROM invoices i_direct
+       WHERE i_direct.id = bt.invoice_id AND i_direct.deleted_at IS NULL
        AND EXISTS (
-         SELECT 1 FROM invoices r
-         WHERE r.id = i2.linked_invoice_id
-         AND r.receipt_number IS NOT NULL AND r.deleted_at IS NULL
+         SELECT 1 FROM invoices r1
+         WHERE r1.id = i_direct.linked_invoice_id
+         AND r1.receipt_number IS NOT NULL AND r1.deleted_at IS NULL
+       )
+       UNION ALL
+       -- Path B: linked via junction table (group match)
+       SELECT 1 FROM bank_transaction_invoice_links l
+       JOIN invoices i_link ON i_link.id = l.invoice_id
+       WHERE l.transaction_id = bt.id AND l.user_id = bt.user_id
+       AND i_link.deleted_at IS NULL
+       AND EXISTS (
+         SELECT 1 FROM invoices r2
+         WHERE r2.id = i_link.linked_invoice_id
+         AND r2.receipt_number IS NOT NULL AND r2.deleted_at IS NULL
        )
      )`
   ).bind(tenantId).first() as any;
