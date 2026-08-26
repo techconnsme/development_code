@@ -242,7 +242,8 @@ dashboard.get('/', async (c) => {
         `SELECT COUNT(*) as cnt FROM bank_transactions WHERE user_id=? AND deleted_at IS NULL AND transaction_date>=? AND transaction_date<=?`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
       const pBankLinked = (await db.prepare(
-        `SELECT COUNT(*) as cnt FROM bank_transactions WHERE user_id=? AND deleted_at IS NULL AND invoice_id IS NOT NULL AND transaction_date>=? AND transaction_date<=?`
+        `SELECT COUNT(*) as cnt FROM bank_transactions bt WHERE bt.user_id=? AND bt.deleted_at IS NULL AND bt.transaction_date>=? AND bt.transaction_date<=?
+         AND (bt.invoice_id IS NOT NULL OR EXISTS (SELECT 1 FROM bank_transaction_invoice_links l WHERE l.transaction_id=bt.id AND l.user_id=bt.user_id))`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
       const pInvTotal = (await db.prepare(
         `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND receipt_number IS NULL AND issue_date>=? AND issue_date<=?`
@@ -251,10 +252,18 @@ dashboard.get('/', async (c) => {
         `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND receipt_number IS NULL AND linked_invoice_id IS NOT NULL AND issue_date>=? AND issue_date<=?`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
       const pChainCount = (await db.prepare(
-        `SELECT COUNT(*) as cnt FROM bank_transactions bt
-         JOIN invoices inv ON bt.invoice_id = inv.id AND inv.deleted_at IS NULL
-         JOIN invoices rec ON inv.linked_invoice_id = rec.id AND rec.receipt_number IS NOT NULL AND rec.deleted_at IS NULL
-         WHERE bt.user_id=? AND bt.deleted_at IS NULL AND bt.transaction_date>=? AND bt.transaction_date<=?`
+        `SELECT COUNT(DISTINCT bt.id) as cnt FROM bank_transactions bt
+         WHERE bt.user_id=? AND bt.deleted_at IS NULL AND bt.transaction_date>=? AND bt.transaction_date<=?
+         AND EXISTS (
+           SELECT 1 FROM invoices i_direct
+           WHERE i_direct.id = bt.invoice_id AND i_direct.deleted_at IS NULL
+           AND EXISTS (SELECT 1 FROM invoices r1 WHERE r1.id=i_direct.linked_invoice_id AND r1.receipt_number IS NOT NULL AND r1.deleted_at IS NULL)
+           UNION ALL
+           SELECT 1 FROM bank_transaction_invoice_links l
+           JOIN invoices i_link ON i_link.id=l.invoice_id
+           WHERE l.transaction_id=bt.id AND l.user_id=bt.user_id AND i_link.deleted_at IS NULL
+           AND EXISTS (SELECT 1 FROM invoices r2 WHERE r2.id=i_link.linked_invoice_id AND r2.receipt_number IS NOT NULL AND r2.deleted_at IS NULL)
+         )`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
 
       const pPct = (n: number, d: number) => d > 0 ? Math.round(n / d * 1000) / 10 : 0;
