@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -12,6 +12,7 @@ import AuditTrailModal from '../components/AuditTrailModal';
 import InvoiceDetailPanel from '../components/InvoiceDetailPanel';
 import SlideOpen from '../components/SlideOpen';
 import { ReceiptMatchReviewModal } from './AP';
+import { useHighlightTarget } from '../hooks/useHighlightTarget';
 
 // Authenticated PDF download: fetches with Bearer token, opens as blob URL
 async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
@@ -61,7 +62,7 @@ export default function AR() {
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
   const { startDate, endDate } = useDateFilter();
   const [searchParams] = useSearchParams();
-  const highlightId = searchParams.get('highlight') || null;
+  const highlightId = useHighlightTarget();
   // Deep-link highlight bypasses the fiscal-year date filter so the invoice is always found.
   const effStart = highlightId ? '' : startDate;
   const effEnd = highlightId ? '' : endDate;
@@ -164,30 +165,17 @@ export default function AR() {
 
   const invoices = data?.data || [];
 
-  // Deep-link highlight: jump to the page that holds the invoice, then scroll + ring it.
-  const highlightFiredRef = useRef<string | null>(null);
+  // Auto-expand and scroll to highlighted invoice
   useEffect(() => {
-    if (!highlightId || !data || highlightFiredRef.current === highlightId) return;
-    const rows = (data.data || []) as any[];
-    const found = rows.find((r: any) => r.id === highlightId);
-    if (found) {
-      const tryScroll = (retries: number) => {
-        const row = document.getElementById(`inv-row-${highlightId}`);
-        if (row) {
-          highlightFiredRef.current = highlightId;
-          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          row.classList.add('ring-2', 'ring-blue-400');
-          setTimeout(() => row.classList.remove('ring-2', 'ring-blue-400'), 3000);
-        } else if (retries > 0) {
-          setTimeout(() => tryScroll(retries - 1), 150);
-        }
-      };
-      tryScroll(5);
-    } else if (data.highlight_page && data.highlight_page !== page) {
-      setPage(data.highlight_page);
+    if (!highlightId || !invoices?.data) return;
+    const inv = invoices.data.find((i: any) => i.id === highlightId);
+    if (inv) {
+      setExpandedId(highlightId);
+      setTimeout(() => {
+        document.getElementById(`invoice-row-${highlightId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 200);
     }
-  }, [highlightId, data, page]);
-  // suppress exhaustive-deps: only re-run when the highlight param or page changes
+  }, [highlightId, invoices?.data]);
 
   const statusLabel = (s: string) => {
     const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '應收', '应收'), paid: tr('Paid', '已收', '已收'), overdue: tr('Overdue', '逾期未收', '逾期未收'), cancelled: tr('Cancelled', '已取消', '已取消') };
@@ -273,7 +261,7 @@ export default function AR() {
             <tbody>
               {invoices.map((inv: any) => (
                 <React.Fragment key={inv.id}>
-                  <tr id={`inv-row-${inv.id}`} className="border-b hover:bg-muted/30 cursor-pointer" onClick={(e) => toggleExpand(inv.id, e)}>
+                  <tr id={`invoice-row-${inv.id}`} className={`border-b hover:bg-muted/30 cursor-pointer ${highlightId === inv.id ? 'bg-yellow-100 dark:bg-yellow-900/30 ring-2 ring-yellow-400' : ''}`} onClick={(e) => toggleExpand(inv.id, e)}>
                   <td className="p-3 font-medium">
                     <span className="inline-flex items-center gap-1.5">
                       {inv.invoice_number}
