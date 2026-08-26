@@ -940,7 +940,7 @@ invoices.post('/confirm-receipt-match', async (c) => {
       : db.prepare("UPDATE invoices SET status = 'paid', paid_date = ?, linked_invoice_id = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL")
           .bind(paidDate, receiptId, inv.id, tenantId)),
     db.prepare('UPDATE invoices SET linked_invoice_id = ? WHERE id = ? AND user_id = ?')
-      .bind(ids.join(','), receiptId, tenantId),
+      .bind(ids[0], receiptId, tenantId),
   ];
   await db.batch(stmts);
 

@@ -253,7 +253,7 @@ dashboard.get('/', async (c) => {
       const pChainCount = (await db.prepare(
         `SELECT COUNT(*) as cnt FROM bank_transactions bt
          JOIN invoices inv ON bt.invoice_id = inv.id AND inv.deleted_at IS NULL
-         JOIN invoices rec ON rec.linked_invoice_id = inv.id AND rec.receipt_number IS NOT NULL AND rec.deleted_at IS NULL
+         JOIN invoices rec ON inv.linked_invoice_id = rec.id AND rec.receipt_number IS NOT NULL AND rec.deleted_at IS NULL
          WHERE bt.user_id=? AND bt.deleted_at IS NULL AND bt.transaction_date>=? AND bt.transaction_date<=?`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
 
@@ -325,9 +325,13 @@ dashboard.get('/link-stats', async (c) => {
      WHERE bt.user_id = ? AND bt.deleted_at IS NULL
      AND bt.invoice_id IS NOT NULL
      AND EXISTS (
-       SELECT 1 FROM invoices r
-       WHERE r.linked_invoice_id = bt.invoice_id
-       AND r.receipt_number IS NOT NULL AND r.deleted_at IS NULL
+       SELECT 1 FROM invoices i2
+       WHERE i2.id = bt.invoice_id AND i2.deleted_at IS NULL
+       AND EXISTS (
+         SELECT 1 FROM invoices r
+         WHERE r.id = i2.linked_invoice_id
+         AND r.receipt_number IS NOT NULL AND r.deleted_at IS NULL
+       )
      )`
   ).bind(tenantId).first() as any;
 
