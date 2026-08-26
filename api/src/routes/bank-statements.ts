@@ -14,6 +14,7 @@ import { findParentAccountError, isNumericCoaCode } from '../lib/account-guard';
 import { generateStatementJournalEntries } from '../lib/bank-journal';
 import { getStatementPostings, replaceTransactionPosting, resetTransactionToAuto, validatePostingLines } from '../lib/bank-journal';
 import { restoreInvoiceJournal, purgeInvoiceJournal } from '../lib/invoice-journal';
+import { buildStatementReview } from '../lib/statement-review';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -1600,6 +1601,25 @@ bank.post('/:id/import-csv', async (c) => {
   }
 
   return c.json({ updated, created, total: lines.length - 1 });
+});
+
+// ── Review vs Ledger (read-only month-end analysis) ──
+// Decomposes statement-vs-ledger gap into rule/AI suggestions. Writes nothing
+// except an audit-log entry. Suggestions are pre-fill only; users save via the
+// existing posting/match flows.
+bank.post('/:id/review', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  try {
+    const result = await buildStatementReview(c.env.DB, tenantId, c.req.param('id'), { env: c.env });
+    await auditLog(c.env.DB, user.id, 'review_statement', 'bank_statement', c.req.param('id'),
+      { difference: result.balance_summary.difference });
+    return c.json(result);
+  } catch (e: any) {
+    if (/not found/i.test(e?.message || '')) return c.json({ error: 'Statement not found' }, 404);
+    console.error('review failed:', e);
+    return c.json({ error: 'Review failed' }, 500);
+  }
 });
 
 // ── Bank Reconciliation ──
