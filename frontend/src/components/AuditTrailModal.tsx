@@ -26,7 +26,7 @@ interface InvoiceDetail {
 export default function AuditTrailModal({ open, onClose, invoiceId, txContext }: {
   open: boolean; onClose: () => void;
   invoiceId?: string | null;
-  txContext?: { statementName: string | null; transactionDate: string; description: string; amount: number; matchStatus: string; invoiceIds: string[] } | null;
+  txContext?: { statementName: string | null; transactionDate: string; description: string; amount: number; matchStatus: string; invoiceIds: string[]; txId?: string } | null;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -48,9 +48,11 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
     enabled: open && ids.length > 0,
   });
 
+  const [autoLinking, setAutoLinking] = useState(false);
+  const [autoLinkMsg, setAutoLinkMsg] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ label: string; holding: string }>({ label: '', holding: '' });
-  useEffect(() => { if (!open) { setEditingId(null); setDraft({ label: '', holding: '' }); } }, [open]);
+  useEffect(() => { if (!open) { setEditingId(null); setDraft({ label: '', holding: '' }); setAutoLinkMsg(null); } }, [open]);
   const { data: accountsData } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => api('/bookkeeping/accounts'),
@@ -83,8 +85,37 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
     onError: (err: any) => toast.error(err?.message || tr('Reset failed', '重設失敗', '重设失败')),
   });
 
+  const rows: InvoiceDetail[] = details.data?.invoices || [];
+  const invoiceCtx = rows[0] || null;
+  const noTxs = !txContext && !!invoiceCtx && !(invoiceCtx.linked_transactions || []).length;
+  const ctxTxId = txContext?.txId || '';
+
+  const autoLinkMut = useMutation({
+    mutationFn: () => api(`/bank-statements/auto-match?direction=${(invoiceCtx as any)?.direction || 'incoming'}`, { method: 'POST' }),
+    onSuccess: () => { refresh(); setAutoLinkMsg(tr('Recommendations refreshed — confirm a suggested match below', '建議已更新——請在下方確認配對', '建议已更新——请在下方确认配对')); },
+    onError: (e: any) => setAutoLinkMsg(e?.message || tr('Auto-link failed', '自動連結失敗', '自动连结失败')),
+    onSettled: () => setAutoLinking(false),
+  });
+
+  const confirmTxMut = useMutation({
+    mutationFn: ({ txId, invoiceId }: { txId: string; invoiceId?: string }) =>
+      api(`/bank-statements/transactions/${txId}/match`, { method: 'PATCH', body: { invoice_id: invoiceId, action: 'confirm' } }),
+    onSuccess: () => refresh(),
+    onError: (e: any) => toast.error(e?.message || tr('Confirm failed', '確認失敗', '确认失败')),
+  });
+  const unlinkTxMut = useMutation({
+    mutationFn: (txId: string) => api(`/bank-statements/transactions/${txId}/match`, { method: 'PATCH', body: { action: 'unlink' } }),
+    onSuccess: () => refresh(),
+    onError: (e: any) => toast.error(e?.message || tr('Unlink failed', '解除連結失敗', '解除链接失败')),
+  });
+
+  const candidates = useQuery({
+    queryKey: ['link-candidates', ctxTxId],
+    queryFn: () => api('/invoices?status=draft,sent,overdue&q='),
+    enabled: open && !!ctxTxId && rows.length === 0,
+  });
+
   if (!open) return null;
-  const rows = details.data?.invoices || [];
 
   const statusChip = (s: string) => (
     <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded ${
@@ -119,6 +150,16 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
               {tr(`${details.data.missing} document(s) no longer available`, `${details.data.missing} 份文件已不存在`, `${details.data.missing} 份文件已不存在`)}
             </p>
           )}
+          {noTxs && (
+            <div className="flex items-center gap-2">
+              <button data-testid="auto-link-btn" onClick={() => { setAutoLinking(true); setAutoLinkMsg(null); autoLinkMut.mutate(); }}
+                disabled={autoLinking} className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:opacity-90 disabled:opacity-40">
+                {autoLinking ? '…' : tr('Auto-link', '自動連結', '自动连结')}
+              </button>
+              <span className="text-[11px] text-muted-foreground">{tr('Find matching bank transactions', '尋找配對的銀行交易', '寻找配对的银行交易')}</span>
+            </div>
+          )}
+          {autoLinkMsg && <p className="text-[11px] text-muted-foreground">{autoLinkMsg}</p>}
           {rows.map(inv => {
             const txs = inv.linked_transactions || [];
             return (
@@ -136,6 +177,18 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
                     </span>
                     {statusChip(tx.match_status)}
                     {tx.link_type === 'group' && <span className="text-[10px] px-1 rounded bg-blue-100 text-blue-700">{tr('Group', '合併付款', '合并付款')}</span>}
+                    {tx.match_status === 'suggested' && !txContext && (
+                      <>
+                        <button data-testid="confirm-suggested-btn" onClick={() => confirmTxMut.mutate({ txId: tx.id, invoiceId: invoiceCtx?.id })} disabled={confirmTxMut.isPending}
+                          className="p-0.5 hover:bg-green-50 rounded text-green-600 disabled:opacity-40" title={tr('Confirm', '確認', '确认')}>
+                          ✓
+                        </button>
+                        <button onClick={() => unlinkTxMut.mutate(tx.id)} disabled={unlinkTxMut.isPending}
+                          className="p-0.5 hover:bg-red-50 rounded text-red-500 disabled:opacity-40" title={tr('Reject', '拒絕', '拒绝')}>
+                          ✕
+                        </button>
+                      </>
+                    )}
                   </div>
                 ))}
                 <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -155,6 +208,22 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
             );
           })}
           {details.isLoading && <p className="text-xs text-muted-foreground">{tr('Loading...', '載入中...', '载入中...')}</p>}
+          {ctxTxId && rows.length === 0 && (
+            <div className="space-y-1" data-testid="link-candidates">
+              <p className="text-[11px] text-muted-foreground">{tr('Candidate invoices to link', '可連結的發票候選', '可连结的发票候选')}:</p>
+              {((candidates.data as any)?.data || []).slice(0, 8).map((c: any) => (
+                <div key={c.id} className="flex items-center gap-2 text-xs" data-testid="link-candidate">
+                  <span className="font-medium">{c.invoice_number}</span>
+                  <span className="text-muted-foreground truncate flex-1">{c.vendor_name || c.customer_name || c.supplier_name || '-'}</span>
+                  <span className="font-mono">{c.currency} {c.total?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  <button onClick={() => confirmTxMut.mutate({ txId: ctxTxId, invoiceId: c.id })} disabled={confirmTxMut.isPending}
+                    className="px-2 py-0.5 border rounded text-[11px] hover:bg-muted disabled:opacity-40">
+                    {tr('Link', '連結', '链接')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* GL legs + editor per invoice */}
