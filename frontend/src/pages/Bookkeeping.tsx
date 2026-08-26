@@ -10,6 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import { filterLeafAccounts, stemOfCode } from '../lib/coa-hierarchy';
 import DropdownSelect from '../components/DropdownSelect';
+import SlideOpen from '../components/SlideOpen';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import PnlFormulaBanner from '../components/PnlFormulaBanner';
 
@@ -445,10 +446,10 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                     </div>
                   </td>
                 </tr>
-                {expandedId === e.id && (
-                  <tr key={`${e.id}-detail`} className="bg-muted/20 border-b animate-slide-down">
-                    <td colSpan={8} className="p-0">
-                      <div className="px-8 py-3">
+                <tr className="border-b">
+                  <td colSpan={8} className="p-0">
+                    <SlideOpen open={expandedId === e.id}>
+                      <div className="px-8 py-3 bg-muted/20">
                         {loadingDetail === e.id ? (
                           <div className="flex justify-center py-4"><div className="animate-spin h-5 w-5 border-2 border-primary border-t-transparent rounded-full" /></div>
                         ) : (entryDetails[e.id] || []).length === 0 ? (
@@ -590,9 +591,9 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                           )}
                         </div>
                       </div>
-                    </td>
-                  </tr>
-                )}
+                    </SlideOpen>
+                  </td>
+                </tr>
                 </React.Fragment>
               ))}
               {(!entries?.data || entries.data.length === 0) && (
