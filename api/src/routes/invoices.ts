@@ -201,7 +201,19 @@ async function invoiceDetailPayload(db: any, tenantId: string, id: string) {
     journal_entries = entries.map(e => ({ ...e, lines: byEntry[e.id] || [] }));
   }
 
-  return { ...invoice, items: items.results, linked_transactions, journal_entries };
+  // Receipt link: linked_invoice_id points at a receipt row (binary link, no status)
+  let linked_receipt: { id: string; invoice_number: string; total: number; issue_date: string } | null = null;
+  if (invoice.linked_invoice_id) {
+    const rid = String(invoice.linked_invoice_id).split(',')[0].trim();
+    const r = await db.prepare(
+      `SELECT id, invoice_number, total, issue_date FROM invoices
+       WHERE id = ? AND user_id = ? AND deleted_at IS NULL
+         AND (receipt_number IS NOT NULL OR invoice_number LIKE 'REC-%')`
+    ).bind(rid, tenantId).first() as { id: string; invoice_number: string; total: number; issue_date: string } | null;
+    if (r) linked_receipt = r;
+  }
+
+  return { ...invoice, items: items.results, linked_transactions, journal_entries, linked_receipt };
 }
 
 invoices.get('/:id', async (c) => {
