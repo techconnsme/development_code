@@ -38,6 +38,8 @@ interface Transaction {
   cs_statement_year?: number | null;
   cs_statement_month?: number | null;
   cs_closing_balance?: number | null;
+  linked_invoices?: { invoice_id: string; invoice_number: string; allocated_amount: number | null }[] | null;
+  payment_entry_number?: string | null;
 }
 
 export default function BankStatements() {
@@ -50,7 +52,7 @@ export default function BankStatements() {
   const { startDate, endDate } = useDateFilter();
   const [supModal, setSupModal] = useState<{ show: boolean; onConfirm: () => void } | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const highlightStmtId = searchParams.get('highlight') || null;
   const activeFilter = searchParams.get('filter') || null;
   const [matchTxId, setMatchTxId] = useState<string | null>(null);
@@ -71,7 +73,6 @@ export default function BankStatements() {
   const [autoMatchResults, setAutoMatchResults] = useState<any[] | null>(null);
   const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
 
-  const [searchParams, setSearchParams] = useSearchParams();
   const highlightTxRef = React.useRef<string | null>(null);
 
   // Auto-expand statement and highlight transaction from query params
@@ -257,6 +258,9 @@ export default function BankStatements() {
 
   const highlightFiredRef = useRef<string | null>(null);
   useEffect(() => {
+    // ?statement=&highlight=<txId> deep-links (P&L drill-down) are handled by the
+    // tx-level effect below — the statement-level highlight must not hijack them.
+    if (searchParams.has('statement')) return;
     if (!highlightStmtId || highlightFiredRef.current === highlightStmtId) return;
     setExpandedId(highlightStmtId);
     const tryScroll = (retries: number) => {
@@ -871,6 +875,22 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                                   <tr>
                                     <td colSpan={detail?.accounts?.length > 1 ? 10 : 9} className={`p-0 ${expandedTxId === tx.id ? 'border-b border-muted/50' : ''}`}>
                                       <SlideOpen open={expandedTxId === tx.id}>
+                                        {!!(tx as any).linked_invoices?.length && (
+                                          <div className="bg-blue-50/60 border-b border-blue-100 px-4 py-2 flex flex-wrap items-center gap-2 text-xs" data-testid="settles-strip">
+                                            <span className="text-muted-foreground">{tr('Settles', '結算', '结算')}:</span>
+                                            {(tx as any).linked_invoices.map((li: any) => (
+                                              <span key={li.invoice_id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white border">
+                                                <span className="font-medium">{li.invoice_number}</span>
+                                                {li.allocated_amount != null && (
+                                                  <span className="text-muted-foreground font-mono">{li.allocated_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                                )}
+                                              </span>
+                                            ))}
+                                            {(tx as any).payment_entry_number && (
+                                              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-muted">{(tx as any).payment_entry_number}</span>
+                                            )}
+                                          </div>
+                                        )}
                                         <TxPostingPanel
                                           key={(tx as any).posting?.entry_id || 'auto'}
                                           kind="bank"
