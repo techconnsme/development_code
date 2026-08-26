@@ -5,6 +5,7 @@ import { useToast } from './Toast';
 import { api } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
 import { buildCoaTree, CoaNode } from '../lib/coa-hierarchy';
+import LineageMap from './LineageMap';
 
 interface LinkedTx {
   id: string;
@@ -93,6 +94,9 @@ export default function InvoiceDetailPanel({ invoiceId }: { invoiceId: string })
   const invoiceJe = journalEntries.find(e => e.reference_type === 'invoice') || null;
   const holdingLine = invoiceJe?.lines.find(l => l.account_type === 'asset' || l.account_type === 'liability') || null;
   const labelLine = invoiceJe?.lines.find(l => l.account_type === 'revenue' || l.account_type === 'expense') || null;
+  const paymentEntries = journalEntries
+    .filter(e => e.reference_type === 'payment')
+    .map(je => ({ je, tx: linkedTxs.find(t => t.id === (je as any).reference_id) }));
 
   return (
     <div className="bg-muted/20 border-t border-border px-4 py-3 space-y-4" data-testid="invoice-detail-panel">
@@ -216,6 +220,15 @@ export default function InvoiceDetailPanel({ invoiceId }: { invoiceId: string })
             </button>
           )}
         </div>
+        {journalEntries.length > 0 && (
+          <LineageMap
+            invoiceNumber={data.invoice_number}
+            total={data.total}
+            currency={data.currency}
+            invoiceJe={invoiceJe}
+            paymentEntries={paymentEntries}
+          />
+        )}
         {journalEntries.length === 0 ? (
           <p className="text-xs text-muted-foreground">{tr('Not yet posted to GL', '尚未過賬至總賬', '尚未过账至总账')}</p>
         ) : editing && invoiceJe ? (
