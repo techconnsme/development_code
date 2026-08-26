@@ -350,6 +350,8 @@ bank.post('/auto-match', async (c) => {
      LEFT JOIN suppliers supp ON i.supplier_id = supp.id
      WHERE i.user_id = ?
      AND i.status != 'cancelled'
+     AND i.receipt_number IS NULL
+     AND i.invoice_number NOT LIKE 'REC-%'
      AND NOT EXISTS (
        SELECT 1 FROM bank_transactions b2
        LEFT JOIN bank_transaction_invoice_links l2 ON l2.transaction_id = b2.id
