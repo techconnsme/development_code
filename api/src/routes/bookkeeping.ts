@@ -13,6 +13,7 @@ import { categorizeTransaction, resolveBankAccountCode } from '../lib/transactio
 import { findParentAccountError } from '../lib/account-guard';
 import { getTemporaryAccount } from '../lib/coa-temporary';
 import { checkPeriodOpen } from '../lib/period-guard';
+import { createSnapshot, getLatestSnapshot } from '../lib/journal-snapshots';
 
 // Re-exported for backward compatibility with anything importing them from here.
 export { HK_COA_NAMES, getCodeType };
@@ -168,6 +169,7 @@ bookkeeping.post('/entries', bookkeeperMiddleware, zValidator('json', entrySchem
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(id).first();
   const lines = await db.prepare('SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY sort_order').bind(id).all();
   await auditLog(db, user.id, 'create', 'journal_entry', id, { entry_number: data.entry_number, description: data.description, lines: data.lines.length });
+  await createSnapshot(db, tenantId, id, 'create');
   return c.json({ ...entry, lines: lines.results }, 201);
 });
 
@@ -188,6 +190,9 @@ bookkeeping.patch('/entries/:id/status', bookkeeperMiddleware, async (c) => {
   await db.prepare("UPDATE journal_entries SET status = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?")
     .bind(status, c.req.param('id'), tenantId).run();
   await auditLog(db, user.id, 'update_status', 'journal_entry', c.req.param('id'), { status });
+  const entryId = c.req.param('id')!;
+  const prevSnap = await getLatestSnapshot(db, entryId);
+  await createSnapshot(db, tenantId, entryId, 'status_change', prevSnap);
   return c.json({ success: true, status });
 });
 
@@ -211,6 +216,9 @@ bookkeeping.delete('/entries/:id', bookkeeperMiddleware, async (c) => {
   await db.prepare('DELETE FROM journal_entries WHERE id = ? AND user_id = ?')
     .bind(id, tenantId).run();
   await auditLog(db, user.id, 'delete', 'journal_entry', id, { entry_number: (entry as any).entry_number });
+  const entryId = id!;
+  const prevSnap = await getLatestSnapshot(db, entryId);
+  await createSnapshot(db, tenantId, entryId, 'delete', prevSnap);
   return c.json({ success: true });
 });
 
@@ -247,6 +255,7 @@ bookkeeping.post('/entries/:id/reverse', bookkeeperMiddleware, async (c) => {
   const revEntry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(revId).first();
   const revLines = await db.prepare('SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY sort_order').bind(revId).all();
   await auditLog(db, user.id, 'reverse', 'journal_entry', originalId, { reversal_id: revId, reversal_number: revNumber });
+  await createSnapshot(db, tenantId, revId, 'create');
   return c.json({ ...revEntry, lines: revLines.results }, 201);
 });
 
