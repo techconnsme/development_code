@@ -500,7 +500,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                                   className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300"
                                 >
                                   <ExternalLink className="h-3 w-3" />
-                                  {tr('Statement', '結單', '结单')}: {e.resolved_links.bank_statement.statement_number || e.resolved_links.bank_statement.id}
+                                  {tr('Statement', '結單', '结单')}: {e.resolved_links.bank_statement.statement_label || e.resolved_links.bank_statement.file_name || e.resolved_links.bank_statement.id}
                                 </button>
                               )}
                               {e.resolved_links.bank_transaction && (

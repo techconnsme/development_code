@@ -89,14 +89,15 @@ async function resolveLinks(db: any, entry: any): Promise<any> {
     case 'bank_transaction': {
       const tx = await db.prepare(
         `SELECT bt.id, bt.description, bt.deposit_amount, bt.withdrawal_amount, bt.match_status, bt.bank_statement_id,
-                bs.statement_number, bs.file_name
+                bs.file_name, bs.bank_name, bs.period_start, bs.period_end
          FROM bank_transactions bt
          LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
          WHERE bt.id = ?`
       ).bind(entry.reference_id).first();
-      if (!tx) return { bank_transaction: { id: entry.reference_id, description: '(deleted)', amount: 0, match_status: 'deleted', statement_id: null, statement_number: null, file_name: null } };
+      if (!tx) return { bank_transaction: { id: entry.reference_id, description: '(deleted)', amount: 0, match_status: 'deleted', statement_id: null, statement_label: null, file_name: null } };
+      const stmtLabel = (tx as any).bank_name ? `${(tx as any).bank_name} ${(tx as any).period_start || ''}`.trim() : (tx as any).file_name || null;
       return {
-        bank_statement: tx.bank_statement_id ? { id: (tx as any).bank_statement_id, statement_number: (tx as any).statement_number, file_name: (tx as any).file_name } : null,
+        bank_statement: tx.bank_statement_id ? { id: (tx as any).bank_statement_id, statement_label: stmtLabel, file_name: (tx as any).file_name } : null,
         bank_transaction: { id: (tx as any).id, description: (tx as any).description, amount: (tx as any).deposit_amount || (tx as any).withdrawal_amount, match_status: (tx as any).match_status, statement_id: (tx as any).bank_statement_id },
       };
     }
@@ -118,7 +119,7 @@ async function resolveLinks(db: any, entry: any): Promise<any> {
     case 'payment': {
       const tx = await db.prepare(
         `SELECT bt.id, bt.description, bt.deposit_amount, bt.withdrawal_amount, bt.match_status, bt.bank_statement_id,
-                bs.statement_number, bs.file_name
+                bs.file_name, bs.bank_name, bs.period_start, bs.period_end
          FROM bank_transactions bt
          LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
          WHERE bt.id = ?`
@@ -129,8 +130,9 @@ async function resolveLinks(db: any, entry: any): Promise<any> {
          LEFT JOIN invoices i ON btil.invoice_id = i.id
          WHERE btil.transaction_id = ?`
       ).bind(entry.reference_id).all();
+      const stmtLabel = tx ? ((tx as any).bank_name ? `${(tx as any).bank_name} ${(tx as any).period_start || ''}`.trim() : (tx as any).file_name || null) : null;
       const result: any = {
-        bank_statement: tx?.bank_statement_id ? { id: (tx as any).bank_statement_id, statement_number: (tx as any).statement_number, file_name: (tx as any).file_name } : null,
+        bank_statement: tx?.bank_statement_id ? { id: (tx as any).bank_statement_id, statement_label: stmtLabel, file_name: (tx as any).file_name } : null,
         bank_transaction: tx ? { id: (tx as any).id, description: (tx as any).description, amount: (tx as any).deposit_amount || (tx as any).withdrawal_amount, match_status: (tx as any).match_status, statement_id: (tx as any).bank_statement_id } : null,
       };
       if (linkedInvoices.results.length > 0) {
@@ -149,6 +151,7 @@ async function resolveLinks(db: any, entry: any): Promise<any> {
       if (!rev) return { reversal: { id: entry.reference_id, entry_number: '(deleted)', entry_date: '' } };
       return { reversal: { id: (rev as any).id, entry_number: (rev as any).entry_number, entry_date: (rev as any).entry_date } };
     }
+    case 'depreciation':
     default:
       return null;
   }
@@ -188,6 +191,59 @@ bookkeeping.get('/entries', async (c) => {
   );
 
   return c.json({ data: entriesWithLinks, page, limit });
+});
+
+bookkeeping.get('/entries/manual', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const startDate = c.req.query('start_date');
+  const endDate = c.req.query('end_date');
+
+  let query = `SELECT je.*, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
+    FROM journal_entries je LEFT JOIN journal_lines jl ON je.id = jl.entry_id
+    WHERE je.user_id = ? AND ${jeLive()} AND je.entry_source = 'manual' AND je.reference_type IS NULL`;
+  const params: any[] = [tenantId];
+  if (startDate) { query += ' AND je.entry_date >= ?'; params.push(startDate); }
+  if (endDate) { query += ' AND je.entry_date <= ?'; params.push(endDate); }
+  query += ' GROUP BY je.id ORDER BY je.entry_date DESC, je.created_at DESC LIMIT 500';
+
+  const rows = await db.prepare(query).bind(...params).all();
+  const entries = rows.results as any[];
+
+  for (const e of entries) {
+    try { e.created_by = e.created_by ? JSON.parse(e.created_by) : null; } catch { e.created_by = null; }
+  }
+
+  const ids = entries.map(e => e.id);
+  const filesByEntry: Record<string, { id: string; filename: string }[]> = {};
+  const reversedSet = new Set<string>();
+  if (ids.length > 0) {
+    const ph = ids.map(() => '?').join(',');
+    const fRows = await db.prepare(
+      `SELECT jef.entry_id, fr.id, fr.filename FROM journal_entry_files jef
+       JOIN file_records fr ON fr.id = jef.file_record_id
+       WHERE jef.entry_id IN (${ph})`
+    ).bind(...ids).all();
+    for (const r of fRows.results as any[]) {
+      if (!filesByEntry[r.entry_id]) filesByEntry[r.entry_id] = [];
+      filesByEntry[r.entry_id].push({ id: r.id, filename: r.filename });
+    }
+    const rRows = await db.prepare(
+      `SELECT reference_id FROM journal_entries
+       WHERE user_id = ? AND reference_type = 'journal' AND deleted_at IS NULL AND reference_id IN (${ph})`
+    ).bind(tenantId, ...ids).all();
+    for (const r of rRows.results as any[]) reversedSet.add(r.reference_id);
+  }
+
+  return c.json({ data: entries.map(e => ({ ...e, files: filesByEntry[e.id] || [], reversed: reversedSet.has(e.id) })) });
+});
+
+bookkeeping.get('/entries/next-number', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const date = c.req.query('date') || new Date().toISOString().split('T')[0];
+  return c.json({ entry_number: await nextManualVoucherNumber(c.env.DB, tenantId, date) });
 });
 
 bookkeeping.get('/entries/:id', async (c) => {
