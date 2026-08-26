@@ -15,12 +15,14 @@ import { tryPostInvoiceToGl } from '../lib/post-invoice';
 import { wsBroadcast } from './ws';
 import { generateReceiptNumber, detectOwnNumber } from '../lib/numbering';
 import { processBankStatement, extractCompanyInfo, extractBankInfo } from '../lib/bank-ocr';
-import { fuzzyMatchCompany, matchBankName } from '../lib/company-matcher';
+import { fuzzyMatchCompany, matchBankName, resolveStatementBankName } from '../lib/company-matcher';
 import { resolveDirection, extractAcName } from '../lib/direction-resolver';
 import { extractPrintedTotal } from '../lib/printed-total';
 import { buildTextFromItems } from '../lib/pdf-layout';
 import { reconcileDirections } from '../lib/balance-reconcile';
 import { generateStatementJournalEntries } from '../lib/bank-journal';
+import { llmCompleteJson, llmKeysFromEnv, hasLlmKey, type LlmKeys } from '../lib/llm-parse';
+import { buildFileLinks } from '../lib/manual-booking';
 
 // Audit logging helper
 async function auditLog(db: any, userId: string, action: string, entityType: string, entityId: string | null, changes?: object) {
@@ -52,8 +54,8 @@ function inferAccountNumber(ocrText: string | null | undefined): string | null {
 
 // Shared import: file_record → bank_statement + bank_transactions
 async function importStatementFromFile(
-  fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, deepseekKey: string, glmApiKey?: string,
-): Promise<{ success: boolean; statement_id?: string; error?: string; transactions_count?: number; parsed_via_ai?: boolean; ocr_failed?: boolean; duplicate_info?: { type?: string; bank_name: string | null; period: string | null; file_name: string | null }; usage?: any; glm_usage?: any; deepseek_raw?: string | null; ocr_source?: string; is_duplicate?: boolean; duplicate_status?: string | null; duplicate_existing_id?: string | null; duplicate_blocked?: boolean; needs_review?: boolean; balance_check?: any; balance_status?: string }> {
+  fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, llmKeys: LlmKeys, glmApiKey?: string,
+): Promise<{ success: boolean; statement_id?: string; error?: string; transactions_count?: number; parsed_via_ai?: boolean; parse_failed?: boolean; ai_provider?: string | null; ocr_failed?: boolean; duplicate_info?: { type?: string; bank_name: string | null; period: string | null; file_name: string | null }; usage?: any; glm_usage?: any; deepseek_raw?: string | null; ocr_source?: string; is_duplicate?: boolean; duplicate_status?: string | null; duplicate_existing_id?: string | null; duplicate_blocked?: boolean; needs_review?: boolean; balance_check?: any; balance_status?: string }> {
   let glmUsage: any = null; // hoisted above the GLM fallback (TDZ fix 2026-08-17)
 
   const fileRow = await db.prepare(
@@ -174,20 +176,18 @@ async function importStatementFromFile(
     };
   }
 
-  // Parse with DeepSeek AI — with GLM-OCR retry on balance failure
+  // Parse via the Qwen-first LLM chain (was DeepSeek-only — the DeepSeek balance
+  // ran out 2026-08-26 and its silent failures created empty statements) —
+  // with GLM-OCR retry on balance failure
   let parsed: any = null;
   let usage: any = null;
+  let parseProvider: string | null = null;
   let ocrSource: 'tomarkdown' | 'glm-ocr' | 'pdf-text' = 'tomarkdown';
 
-  const tryDeepSeekParse = async (inputOcrText: string, ocrLabel: string): Promise<any> => {
-    if (!deepseekKey) return null;
-    console.log(`[DS-BANK|${ocrLabel}] Sending to DeepSeek, OCR text length: ${inputOcrText.length}`);
-    const resp = await fetch('https://api.deepseek.com/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages: [{ role: 'user', content: `Parse the following bank statement OCR text into structured JSON. Extract:
+  const tryLlmParse = async (inputOcrText: string, ocrLabel: string): Promise<any> => {
+    if (!hasLlmKey(llmKeys)) return null;
+    console.log(`[PARSE-BANK|${ocrLabel}] Sending to LLM chain, OCR text length: ${inputOcrText.length}`);
+    const prompt = `Parse the following bank statement OCR text into structured JSON. Extract:
 - bank_name: the bank name
 - account_number: account number if visible
 - currency: default "HKD"
@@ -217,16 +217,10 @@ IMPORTANT — deciding whether a line's amount is a deposit or a withdrawal:
 Return ONLY valid JSON, no explanation. If you can't parse something, use null.
 
 OCR TEXT:
-${inputOcrText.slice(0, 8000)}` }],
-        max_tokens: 4000,
-      }),
-    });
-    const data = await resp.json() as any;
-    const raw = data.choices?.[0]?.message?.content || '';
-    console.log(`[DS-BANK|${ocrLabel}] Raw response:`, raw.slice(0, 2000));
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (m) return JSON.parse(m[0]);
-    return null;
+${inputOcrText.slice(0, 8000)}`;
+    const result = await llmCompleteJson(llmKeys, prompt, `bank:${ocrLabel}`);
+    if (result.parsed) parseProvider = result.provider;
+    return result.parsed;
   };
 
   // ── Dual-path: try both stored OCR + toMarkdown (pdftotext gated for future) ──
@@ -234,9 +228,9 @@ ${inputOcrText.slice(0, 8000)}` }],
   // set ENABLE_PDFTOTEXT_DUAL_PATH to true to activate dual-path comparison.
   const ENABLE_PDFTOTEXT_DUAL_PATH = true;
   let pdftotextOcrText = '';
-  if (ENABLE_PDFTOTEXT_DUAL_PATH && deepseekKey) {
+  if (ENABLE_PDFTOTEXT_DUAL_PATH && hasLlmKey(llmKeys)) {
     // Path A: the existing stored OCR text (could be pdftotext from Docker worker, or toMarkdown)
-    try { parsed = await tryDeepSeekParse(ocrText, 'tomarkdown'); } catch {}
+    try { parsed = await tryLlmParse(ocrText, 'tomarkdown'); } catch {}
     if (parsed) usage = (parsed as any)._usage;
 
     // Path B (if available): check if file has pdftotext output from Docker worker.
@@ -252,7 +246,7 @@ ${inputOcrText.slice(0, 8000)}` }],
           const mdResult = await (ai as any).toMarkdown([{ name: fileRow.original_name || 'file.pdf', blob: new Blob([buffer], { type: 'application/pdf' }) }]);
           const tmText = Array.isArray(mdResult) ? mdResult.map((r: any) => r?.data || r?.content || '').join('\n') : String(mdResult || '');
           if (tmText.length > 20) pdftotextOcrText = ocrText; // save pdftotext for reference
-          const tmParsed = await tryDeepSeekParse(tmText, 'tomarkdown-dualpath');
+          const tmParsed = await tryLlmParse(tmText, 'tomarkdown-dualpath');
           if (tmParsed?.transactions?.length > 0) {
             // Quick balance check to compare paths
             const origTxs = parsed.transactions || [];
@@ -338,7 +332,7 @@ ${inputOcrText.slice(0, 8000)}` }],
 
             if (glmFormatted.length > 20) {
               console.log('[RETRY|GLM-OCR] Formatted positional output, length:', glmFormatted.length);
-              const retryParsed = await tryDeepSeekParse(glmFormatted, 'glm-ocr');
+              const retryParsed = await tryLlmParse(glmFormatted, 'glm-ocr');
               if (retryParsed?.transactions?.length > 0) {
                 // Re-validate balance on retry
                 const retryTxs = retryParsed.transactions || [];
@@ -372,10 +366,14 @@ ${inputOcrText.slice(0, 8000)}` }],
   const deepseekRaw = parsed ? JSON.stringify(parsed).slice(0, 3000) : null;
 
   const stmtId = `bs-${uuidv4().slice(0, 8)}`;
-  // Bank name: prefer AI parse, else infer from OCR text + filename (Lily #1, #9)
-  const bankName = parsed?.bank_name
-    || inferBankName(ocrText, fileRow.original_name || fileRow.filename)
-    || null;
+  // Bank name: prefer AI parse, else infer from OCR text + filename (Lily #1, #9).
+  // Canonicalized so every statement of the same account stores ONE name
+  // ('HSBC Business Direct' / full legal name / 'HSBC' all → 'HSBC').
+  const bankName = resolveStatementBankName(
+    parsed?.bank_name,
+    ocrText,
+    fileRow.original_name || fileRow.filename,
+  );
   // Account number: prefer AI parse, else infer from OCR text (Lily #6)
   const accountNumber = parsed?.account_number
     || inferAccountNumber(ocrText)
@@ -446,8 +444,11 @@ ${inputOcrText.slice(0, 8000)}` }],
     balanceMismatch = { expected: computedClosing, actual: closingBal, diff: closingBal - computedClosing };
   }
 
-  // Update status and balance info after transactions are in
-  const finalStatus = (!balanceOk && txCount > 0) ? 'draft' : 'active';
+  // Update status and balance info after transactions are in.
+  // Defense-in-depth: a TOTAL parse failure used to silently create an ACTIVE
+  // statement with zero transactions (eStatement202603 incident, 2026-08-26) —
+  // now it lands as a draft the user can review/enter manually.
+  const finalStatus = (parsed == null || (!balanceOk && txCount > 0)) ? 'draft' : 'active';
   console.log(`[IMPORT-BANK] stmtId=${stmtId} userId=${userId} txCount=${txCount} openingBal=${openingBal} closingBal=${closingBal} computedClosing=${computedClosing} balanceOk=${balanceOk} finalStatus=${finalStatus} ocrSource=${ocrSource}`);
   await db.prepare(
     `UPDATE bank_statements SET status = ?, balance_status = ?, balance_check = ?, updated_at = datetime('now')
@@ -569,6 +570,8 @@ ${inputOcrText.slice(0, 8000)}` }],
     skipped_transfers: skippedTransfers,
     journal_entries_created: created,
     parsed_via_ai: !!parsed,
+    parse_failed: parsed == null,
+    ai_provider: parseProvider,
     usage,
     glm_usage: glmUsage,
     deepseek_raw: deepseekRaw,
@@ -1140,9 +1143,9 @@ function extractTextFromGlmOcr(glmData: any): string {
 
 // Shared import: file_record → invoice + invoice_items
 async function importInvoiceFromFile(
-  fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, deepseekKey: string, glmApiKey?: string,
+  fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, llmKeys: LlmKeys, glmApiKey?: string,
   directionOverride?: string | null,
-): Promise<{ success: boolean; invoice_id?: string; error?: string; items_count?: number; ocr_failed?: boolean; parsed?: any; folder?: string; is_receipt?: boolean; receipt_number?: string | null; needs_direction_review?: boolean; company_not_detected?: boolean; total_mismatch?: any; discount_amount?: number; discount_description?: string; ocr_source?: string; usage?: any; glm_usage?: any; deepseek_raw?: string | null; is_duplicate?: boolean; duplicate_status?: string | null; duplicate_existing_id?: string | null; auto_linked_invoice_id?: string | null; new_counterparty?: boolean; direction?: string; duplicate_info?: any; needs_review?: boolean }> {
+): Promise<{ success: boolean; invoice_id?: string; error?: string; items_count?: number; ocr_failed?: boolean; parsed?: any; parse_failed?: boolean; ai_provider?: string | null; folder?: string; is_receipt?: boolean; receipt_number?: string | null; needs_direction_review?: boolean; company_not_detected?: boolean; total_mismatch?: any; discount_amount?: number; discount_description?: string; ocr_source?: string; usage?: any; glm_usage?: any; deepseek_raw?: string | null; is_duplicate?: boolean; duplicate_status?: string | null; duplicate_existing_id?: string | null; auto_linked_invoice_id?: string | null; new_counterparty?: boolean; direction?: string; duplicate_info?: any; needs_review?: boolean }> {
   const fileRow = await db.prepare(
     'SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_text_source, ocr_status, category, direction FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
   ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_text_source: string | null; ocr_status: string; category: string; direction: string }>();
@@ -1284,7 +1287,8 @@ async function importInvoiceFromFile(
 
   let parsed: any = null;
   let usage: any = null;
-  if (deepseekKey) {
+  let parseProvider: string | null = null;
+  if (hasLlmKey(llmKeys)) {
     try {
       const promptForReceipt = `Parse this PAYMENT RECEIPT into structured JSON. Extract:
 - receipt_number: the receipt number (look for "RECEIPT #:" or "Receipt No:")
@@ -1352,21 +1356,9 @@ Return ONLY valid JSON, no explanation. Use null for missing values.
 OCR TEXT:
 ${ocrText.slice(0, 8000)}`;
 
-      const resp = await fetch('https://api.deepseek.com/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [{ role: 'user', content: isReceipt ? promptForReceipt : promptForInvoice }],
-          max_tokens: 4000,
-        }),
-      });
-      const data = await resp.json() as any;
-      const raw = data.choices?.[0]?.message?.content || '';
-      usage = data.usage || null;
-      console.log('[DS-INVOICE|tomarkdown] Raw response:', raw.slice(0, 2000));
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+      const result = await llmCompleteJson(llmKeys, isReceipt ? promptForReceipt : promptForInvoice, 'invoice:tomarkdown');
+      parsed = result.parsed;
+      parseProvider = result.provider;
     } catch {}
   }
   const deepseekRaw = parsed ? JSON.stringify(parsed).slice(0, 3000) : null;
@@ -1513,15 +1505,8 @@ ${ocrText.slice(0, 8000)}`;
             const hints = metaAuthor ? `HINT: PDF Author="${metaAuthor}" — likely the vendor.\n` : '';
             const retryPrompt = `${hints}Parse this invoice OCR into JSON. Fields: vendor_name (issuer/supplier), customer_name (party being billed), invoice_number, issue_date, due_date, total. IMPORTANT: Positional format with [L]=top/left (letterhead/vendor), [M]=middle (client/customer), HTML tables have column headers. Return ONLY valid JSON.\n\nOCR:\n${glmFormatted.slice(0, 8000)}`;
 
-            const retryResp = await fetch('https://api.deepseek.com/chat/completions', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
-              body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'user', content: retryPrompt }], max_tokens: 2000 }),
-            });
-            const retryData = await retryResp.json() as any;
-            const retryRaw = retryData.choices?.[0]?.message?.content || '';
-            const retryMatch = retryRaw.match(/\{[\s\S]*\}/);
-            let retryParsed: any = null;
-            if (retryMatch) try { retryParsed = JSON.parse(retryMatch[0]); } catch {}
+            const retryResult = await llmCompleteJson(llmKeys, retryPrompt, 'invoice:glm-ocr', { maxTokens: 2000 });
+            let retryParsed: any = retryResult.parsed;
 
             if (retryParsed) {
               // Re-check direction with GLM-OCR result (same resolver, so the
@@ -1540,6 +1525,7 @@ ${ocrText.slice(0, 8000)}`;
                   retryParsed = { ...retryParsed, vendor_name: realVendor, customer_name: retryParsed.vendor_name };
                 }
                 parsed = retryParsed;
+                parseProvider = retryResult.provider;
                 isIncoming = retryDirection.isIncoming;
                 counterpartyName = retryDirection.counterpartyName;
                 needsDirectionReview = false;
@@ -1804,25 +1790,92 @@ ${ocrText.slice(0, 8000)}`;
   // Clean imports → 'active' (auto-confirmed). Needs-review imports → 'pending_review'.
   const invStatus = needsReview ? 'pending_review' : 'active';
   await db.prepare(
-    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref, discount_amount, tax_rate, tax_amount, ocr_source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(invId, userId, invNumber, customerId, supplierId || null, invStatus, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef, llmDiscount || 0, parsed?.tax_rate || 0, (parsed?.tax_amount || parsed?.tax) || 0, ocrSource).run();
+    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref, discount_amount, tax_rate, tax_amount, ocr_source, payer_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(invId, userId, invNumber, customerId, supplierId || null, invStatus, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef, llmDiscount || 0, parsed?.tax_rate || 0, (parsed?.tax_amount || parsed?.tax) || 0, ocrSource, isReceipt ? (parsed?.payer_name || null) : null).run();
   console.log('[INVOICE-CREATED] id:', invId, '| direction:', direction, '| status:', invStatus, '| needsReview:', needsReview, '| vendor:', customerName, '| total:', total, '| currency:', parsed?.currency || 'HKD', '| ocrSource:', ocrSource);
 
-  // Auto-link: if this is a receipt, try to find a matching invoice by amount
-  // Receipt = proof of payment. Links to AR (customer paid us) or AP (we paid supplier)
+  // Auto-link: if this is a receipt, try to find its invoice.
+  // Receipt = proof of payment. Links to AR (customer paid us) or AP (we paid
+  // supplier). Fixed 2026-08-26 (was amount-only + status-blind):
+  //  - 'active'/'overdue' invoices are now eligible (clean imports land as
+  //    'active'; the old status list never saw them), while 'pending_review'
+  //    is excluded so a receipt can't silently pay an invoice nobody reviewed.
+  //  - Direction preference from the payer name: payer = own company → AP
+  //    receipt (incoming invoices); otherwise AR receipt (outgoing invoices).
+  //  - Counterparty fuzzy match preferred; with several equal-amount
+  //    candidates and no corroborating signal, do NOT auto-link (the old
+  //    ORDER BY tie-break once linked a receipt to a leftover duplicate).
   let linkedInvoiceId: string | null = null;
   if (isReceipt && total > 0) {
-    const match = await db.prepare(
-      `SELECT id, invoice_number, total, direction FROM invoices
-       WHERE user_id = ? AND status IN ('sent', 'draft', 'pending_review') AND deleted_at IS NULL
-       AND ABS(total - ?) < 0.02 AND linked_invoice_id IS NULL AND receipt_number IS NULL
-       ORDER BY ABS(total - ?) LIMIT 1`
-    ).bind(userId, total, total).first<{ id: string; invoice_number: string; total: number; direction: string }>();
-    if (match) {
-      linkedInvoiceId = match.id;
+    const ownRow = await db.prepare(
+      'SELECT name, legal_name, short_name FROM company_settings WHERE user_id = ?'
+    ).bind(userId).first<{ name: string | null; legal_name: string | null; short_name: string | null }>();
+    const ownNames = [ownRow?.name, ownRow?.legal_name, ownRow?.short_name].filter((s): s is string => !!s?.trim());
+    if (ownNames.length === 0) {
+      const u = await db.prepare('SELECT company_name FROM users WHERE id = ?').bind(userId).first<{ company_name: string | null }>();
+      if (u?.company_name?.trim()) ownNames.push(u.company_name);
+    }
+    // Direction preference cascade (2026-08-26 v3 — v2 broke when the AI put
+    // the ISSUER into payer_name, e.g. FP Receipt 000175F: "payer"=Smart City):
+    //   payer  ≈ own → we paid               → AP (incoming)
+    //   issuer ≈ own → we issued the receipt → AR (outgoing)
+    //   neither  own → third party issued it → AP (incoming)
+    //   (payer-only / issuer-only variants follow the same own-vs-other logic)
+    const nameScoreVsOwn = (n: string | null | undefined) =>
+      n && ownNames.length > 0 ? (fuzzyMatchCompany(n, ownNames, { topN: 1, minScore: 50 })?.best?.score ?? 0) : 0;
+    const receiptPayer = parsed?.payer_name || null;
+    const receiptIssuer = parsed?.customer_name || null;
+    const payerIsOwn = nameScoreVsOwn(receiptPayer) >= 70;
+    const issuerIsOwn = nameScoreVsOwn(receiptIssuer) >= 70;
+    let prefDirection: 'incoming' | 'outgoing' | null = null;
+    if (payerIsOwn) prefDirection = 'incoming';
+    else if (issuerIsOwn) prefDirection = 'outgoing';
+    else if (receiptIssuer || receiptPayer) prefDirection = 'incoming';
+    // Counterparty = the non-own name on the receipt (used to rank candidates)
+    const receiptCounterparty = payerIsOwn ? receiptIssuer
+      : issuerIsOwn ? receiptPayer
+      : (receiptIssuer || receiptPayer);
+
+    // D1 reads can lag the invoice INSERT by a couple of seconds (same
+    // eventual-consistency pattern as the file-row retry above) — retry empty
+    // results before concluding there is nothing to link.
+    const fetchCandidates = () => db.prepare(
+      `SELECT i.id, i.invoice_number, i.total, i.direction, i.issue_date,
+              cust.name AS customer_name, supp.name AS supplier_name
+       FROM invoices i
+       LEFT JOIN customers cust ON i.customer_id = cust.id
+       LEFT JOIN suppliers supp ON i.supplier_id = supp.id
+       WHERE i.user_id = ? AND i.status NOT IN ('paid', 'cancelled')
+         AND i.deleted_at IS NULL AND i.receipt_number IS NULL AND i.linked_invoice_id IS NULL
+         AND ABS(i.total - ?) < 0.02
+       ORDER BY i.issue_date DESC LIMIT 20`
+    ).bind(userId, total).all<{ id: string; invoice_number: string; total: number; direction: string; issue_date: string; customer_name: string | null; supplier_name: string | null }>();
+    let candidates = (await fetchCandidates()).results || [];
+    for (let attempt = 0; candidates.length === 0 && attempt < 2; attempt++) {
+      await new Promise((r) => setTimeout(r, 1200));
+      candidates = (await fetchCandidates()).results || [];
+    }
+
+    const scored = candidates
+      .map((c) => {
+        const counterparty = c.direction === 'incoming' ? (c.supplier_name || c.customer_name) : (c.customer_name || c.supplier_name);
+        const nameScore = receiptCounterparty && counterparty
+          ? (fuzzyMatchCompany(receiptCounterparty, [counterparty], { topN: 1, minScore: 50 })?.best?.score ?? 0)
+          : 0;
+        return { c, dirOk: (c.direction || 'outgoing') === prefDirection, nameScore };
+      })
+      .sort((a, b) => Number(b.dirOk) - Number(a.dirOk) || b.nameScore - a.nameScore || (b.c.issue_date || '').localeCompare(a.c.issue_date || ''));
+
+    const top = scored[0];
+    const dirOkCount = scored.filter((s) => s.dirOk).length;
+    // Link only when the direction-preferred set is unambiguous: either a
+    // counterparty-corroborated candidate or a single direction-ok candidate.
+    const safe = !!top && top.dirOk && (top.nameScore >= 70 || dirOkCount === 1);
+    if (safe) {
+      linkedInvoiceId = top.c.id;
       await db.prepare("UPDATE invoices SET status = 'paid', linked_invoice_id = ? WHERE id = ?")
-        .bind(invId, match.id).run();
+        .bind(invId, top.c.id).run();
     }
   }
 
@@ -1878,6 +1931,8 @@ ${ocrText.slice(0, 8000)}`;
     usage,
     glm_usage: glmUsage,
     deepseek_raw: deepseekRaw,
+    parse_failed: parsed == null,
+    ai_provider: parseProvider,
     is_duplicate: isDuplicate,
     duplicate_status: duplicateStatus,
     duplicate_existing_id: duplicateExistingId,
@@ -2031,6 +2086,37 @@ files.get('/issues', async (c) => {
   return c.json({ issues: row?.count || 0 });
 });
 
+files.get('/:id/linked-records', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const id = c.req.param('id');
+
+  const fr = await db.prepare(
+    `SELECT fr.id, fr.filename,
+      i.id as invoice_id, i.invoice_number, i.total as invoice_total, i.vendor_name,
+      cust.name as customer_name,
+      bs.id as statement_id, bs.bank_name as stmt_bank_name,
+      cs.id as card_statement_id, cs.card_issuer
+    FROM file_records fr
+    LEFT JOIN invoices i ON i.file_id = fr.id AND i.user_id = fr.user_id AND i.deleted_at IS NULL
+    LEFT JOIN customers cust ON i.customer_id = cust.id
+    LEFT JOIN bank_statements bs ON bs.r2_key = fr.r2_key AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
+    LEFT JOIN card_statements cs ON cs.r2_key = fr.r2_key AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
+    WHERE fr.id = ? AND fr.user_id = ? AND fr.deleted_at IS NULL`
+  ).bind(id, tenantId).first();
+
+  if (!fr) return c.json({ error: 'File not found' }, 404);
+
+  const jeRows = await db.prepare(
+    `SELECT je.id, je.entry_number, je.entry_date FROM journal_entry_files jef
+     JOIN journal_entries je ON je.id = jef.entry_id
+     WHERE jef.file_record_id = ? AND je.deleted_at IS NULL`
+  ).bind(id).all();
+
+  return c.json({ file_id: id, links: buildFileLinks(fr, jeRows.results as any[]) });
+});
+
 // Check if a file with the same name already exists
 files.get('/check-duplicate', async (c) => {
   const user = c.get('user');
@@ -2147,7 +2233,7 @@ files.post('/upload', async (c) => {
           .bind(id).run();
 
         // Path A: Import using pdftotext OCR
-        const importResult = await importStatementFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+        const importResult = await importStatementFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY);
 
         // Path B: Run GLM-OCR in background for cross-validation
         if (importResult.success && c.env.GLM_API_KEY) {
@@ -2272,7 +2358,7 @@ files.post('/upload', async (c) => {
         // importInvoiceFromFile has its own OCR fallback and creates an
         // empty draft when the file is truly unreadable.
         try {
-          const importResult = await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+          const importResult = await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY);
           if (importResult.success && importResult.invoice_id) {
             await c.env.DB.prepare("UPDATE file_records SET invoice_id = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
               .bind(importResult.invoice_id, id).run();
@@ -2381,7 +2467,7 @@ files.post('/upload', async (c) => {
             ).bind(id).run();
             // Re-run as invoice import
             try {
-              const invResult = await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+              const invResult = await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY);
               if (invResult.success && invResult.invoice_id) {
                 await c.env.DB.prepare("UPDATE file_records SET invoice_id = ? WHERE id = ?")
                   .bind(invResult.invoice_id, id).run();
@@ -2398,7 +2484,7 @@ files.post('/upload', async (c) => {
         // importStatementFromFile has its own OCR fallback and creates an
         // empty draft when the file is truly unreadable.
         try {
-          const stmtResult = await importStatementFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+          const stmtResult = await importStatementFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY);
           if (stmtResult.success && stmtResult.statement_id) {
             await c.env.DB.prepare("UPDATE file_records SET statement_id = ?, ocr_status = 'completed', updated_at = datetime('now') WHERE id = ?")
               .bind(stmtResult.statement_id, id).run();
@@ -2473,7 +2559,7 @@ files.post('/upload-batch', async (c) => {
     // The frontend calls /:id/import-document after upload which handles both statements and invoices.
     if (false && classification.category === 'bank_statement') {
       c.executionCtx.waitUntil(
-        importStatementFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY)
+        importStatementFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY)
       );
     }
 
@@ -2505,7 +2591,7 @@ files.post('/upload-batch', async (c) => {
             }
           }
         } catch {}
-        await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+        await importInvoiceFromFile(id, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY);
       })());
     }
   }
@@ -2780,12 +2866,12 @@ files.post('/:id/ocr-result', async (c) => {
   const updatedOcrStatus = ocr_status || (row as any)?.ocr_status || '';
   if (false && (updatedCategory === 'bank_statement' || updatedCategory === 'bank') && updatedOcrStatus === 'completed') {
     c.executionCtx.waitUntil(
-      importStatementFromFile(id, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY)
+      importStatementFromFile(id, tenantId, db, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY)
     );
   }
   if (false && updatedCategory === 'invoice' && updatedOcrStatus === 'completed') {
     c.executionCtx.waitUntil(
-      importInvoiceFromFile(id, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY)
+      importInvoiceFromFile(id, tenantId, db, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY)
     );
   }
 
@@ -2797,7 +2883,7 @@ files.post('/:id/import-statement', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const result = await importStatementFromFile(
-    c.req.param('id'), tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+    c.req.param('id'), tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY
   );
   if (!result.success) {
     const status = result.error === 'File not found' ? 404 : result.error === 'Statement already imported' ? 409 : 422;
@@ -2811,7 +2897,7 @@ files.post('/:id/import-invoice', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const result = await importInvoiceFromFile(
-    c.req.param('id'), tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+    c.req.param('id'), tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY
   );
   if (!result.success) {
     const status = result.error === 'File not found' ? 404 : result.error?.includes('already exists') || result.error?.includes('already been imported') ? 409 : 422;
@@ -2972,10 +3058,10 @@ files.post('/:id/glm-ocr', async (c) => {
   }
 });
 
-// ── Card Statement import: OCR + DeepSeek AI parsing ──
+// ── Card Statement import: OCR + Qwen-first LLM chain parsing ──
 async function importCardStatementFromFile(
-  fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, deepseekKey: string, glmApiKey?: string,
-): Promise<{ success: boolean; statement_id?: string; error?: string; transactions_count?: number; ocr_failed?: boolean; duplicate_info?: any; parsed_via_ai?: boolean; usage?: any; glm_usage?: any; ocr_source?: string; needs_review?: boolean; balance_check?: any; balance_status?: string; is_duplicate?: boolean; duplicate_status?: string | null }> {
+  fileId: string, userId: string, db: D1Database, fileBucket: R2Bucket, ai: any, llmKeys: LlmKeys, glmApiKey?: string,
+): Promise<{ success: boolean; statement_id?: string; error?: string; transactions_count?: number; ocr_failed?: boolean; duplicate_info?: any; parsed_via_ai?: boolean; parse_failed?: boolean; ai_provider?: string | null; usage?: any; glm_usage?: any; ocr_source?: string; needs_review?: boolean; balance_check?: any; balance_status?: string; is_duplicate?: boolean; duplicate_status?: string | null }> {
   const fileRow = await db.prepare(
     'SELECT id, r2_key, filename, original_name, file_type, ocr_text, ocr_status FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
   ).bind(fileId, userId).first<{ id: string; r2_key: string; filename: string; original_name: string; file_type: string; ocr_text: string; ocr_status: string }>();
@@ -3025,16 +3111,13 @@ async function importCardStatementFromFile(
     return { success: true, statement_id: emptyId, ocr_failed: true, error: 'Could not read this file automatically.' };
   }
 
-  // Parse with DeepSeek AI
+  // Parse via the Qwen-first LLM chain (was DeepSeek-only)
   let parsed: any = null;
   let usage: any = null;
-  if (deepseekKey) {
+  let parseProvider: string | null = null;
+  if (hasLlmKey(llmKeys)) {
     try {
-      const parseResp = await fetch('https://api.deepseek.com/chat/completions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [{ role: 'user', content: `Parse this credit card statement OCR text into structured JSON:
+      const cardPrompt = `Parse this credit card statement OCR text into structured JSON:
 
 {
   "card_issuer": "HSBC / Standard Chartered / Hang Seng / Amex / etc",
@@ -3080,18 +3163,11 @@ Rules:
 - Return valid JSON only, no markdown
 
 OCR text:
-${ocrText.slice(0, 12000)}` }],
-          temperature: 0.1, max_tokens: 4000,
-        }),
-      });
-      if (parseResp.ok) {
-        const data = await parseResp.json() as any;
-        const content = data.choices?.[0]?.message?.content || '';
-        usage = data.usage || null;
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-      }
-    } catch (e: any) { console.log('[DS-CARD|tomarkdown] Error:', e.message); }
+${ocrText.slice(0, 12000)}`;
+      const result = await llmCompleteJson(llmKeys, cardPrompt, 'card:tomarkdown');
+      parsed = result.parsed;
+      parseProvider = result.provider;
+    } catch (e: any) { console.log('[PARSE-CARD|tomarkdown] Error:', e.message); }
   }
 
   // ── GLM-OCR retry on balance mismatch ──
@@ -3142,15 +3218,9 @@ ${ocrText.slice(0, 12000)}` }],
             const glmFormatted = parts.join('\n').trim();
 
             if (glmFormatted.length > 20) {
-              const retryResp = await fetch('https://api.deepseek.com/chat/completions', {
-                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
-                body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'user', content: `Parse this card statement OCR into JSON. Fields: card_issuer, card_network, card_number_last4, cardholder_name, currency, statement_year, statement_month, period_start, period_end (YYYY-MM-DD), credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date, transactions: [{ transaction_date, posting_date, description, amount, transaction_type }]. IMPORTANT: Positional format [L/M/R] and HTML tables preserve column alignment. Return ONLY valid JSON.\n\nOCR:\n${glmFormatted.slice(0, 8000)}` }], max_tokens: 4000 }),
-              });
-              const retryData = await retryResp.json() as any;
-              const retryRaw = retryData.choices?.[0]?.message?.content || '';
-              const retryMatch = retryRaw.match(/\{[\s\S]*\}/);
-              let retryParsed: any = null;
-              if (retryMatch) try { retryParsed = JSON.parse(retryMatch[0]); } catch {}
+              const cardRetryPrompt = `Parse this card statement OCR into JSON. Fields: card_issuer, card_network, card_number_last4, cardholder_name, currency, statement_year, statement_month, period_start, period_end (YYYY-MM-DD), credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date, transactions: [{ transaction_date, posting_date, description, amount, transaction_type }]. IMPORTANT: Positional format [L/M/R] and HTML tables preserve column alignment. Return ONLY valid JSON.\n\nOCR:\n${glmFormatted.slice(0, 8000)}`;
+              const retryResult = await llmCompleteJson(llmKeys, cardRetryPrompt, 'card:glm-ocr');
+              let retryParsed: any = retryResult.parsed;
 
               if (retryParsed?.transactions?.length > 0) {
                 const rtTxs = retryParsed.transactions || [];
@@ -3161,8 +3231,9 @@ ${ocrText.slice(0, 12000)}` }],
                 }, 0);
                 const rtComputed = (retryParsed.opening_balance ?? 0) + rtChange;
                 if (retryParsed.closing_balance == null || Math.abs(rtComputed - retryParsed.closing_balance) <= 0.01) {
-                  console.log('[DS-CARD|glm-ocr] Balance passed, using retry result');
+                  console.log('[PARSE-CARD|glm-ocr] Balance passed, using retry result');
                   parsed = retryParsed;
+                  parseProvider = retryResult.provider;
                   glmUsage = glmUsageData;
                   ocrText = glmFormatted;
                   ocrSource = 'glm-ocr';
@@ -3225,8 +3296,10 @@ ${ocrText.slice(0, 12000)}` }],
     }
   }
 
-  // Update status based on balance validation
-  const csFinalStatus = !csBalanceOk ? 'draft' : 'active';
+  // Update status based on balance validation.
+  // Defense-in-depth (same as bank statements): a total parse failure lands
+  // as a draft instead of a silently-ACTIVE zero-transaction statement.
+  const csFinalStatus = (parsed == null || !csBalanceOk) ? 'draft' : 'active';
   await db.prepare(
     `UPDATE card_statements SET status = ?, balance_status = ?, balance_check = ?, updated_at = datetime('now')
      WHERE id = ? AND user_id = ?`
@@ -3234,7 +3307,7 @@ ${ocrText.slice(0, 12000)}` }],
     csBalanceMismatch ? JSON.stringify(csBalanceMismatch) : null,
     stmtId, userId).run();
 
-  return { success: true, statement_id: stmtId, transactions_count: txCount, parsed_via_ai: !!parsed, usage, glm_usage: glmUsage,
+  return { success: true, statement_id: stmtId, transactions_count: txCount, parsed_via_ai: !!parsed, parse_failed: parsed == null, ai_provider: parseProvider, usage, glm_usage: glmUsage,
     ocr_source: ocrSource, needs_review: !csBalanceOk, balance_check: csBalanceMismatch, balance_status: csBalanceOk ? 'ok' : 'mismatch' };
 }
 
@@ -3437,13 +3510,13 @@ files.post('/:id/import-document', async (c) => {
     if (forcedType) {
       if (forcedType === 'card_statement') {
         const result = await importCardStatementFromFile(
-          fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+          fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY
         );
         return c.json({ type: 'card_statement', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice, cardScore: 0 } }, result.success ? 201 : 422 as any);
       }
       if (forcedType === 'invoice') {
         const result = await importInvoiceFromFile(
-          fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY, directionOverride
+          fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY, directionOverride
         );
         return c.json({ type: 'invoice', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice }, pdf_text_diag: pdfTextDiag }, result.success ? 201 : 422 as any);
       }
@@ -3451,7 +3524,7 @@ files.post('/:id/import-document', async (c) => {
     } else if (filenameInvoice > filenameBank) {
       // Let importInvoiceFromFile handle the empty invoice draft
       const result = await importInvoiceFromFile(
-        fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY, directionOverride
+        fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY, directionOverride
       );
       return c.json({ type: 'invoice', ...result, scores: { bankScore: filenameBank, invoiceScore: filenameInvoice }, pdf_text_diag: pdfTextDiag }, result.success ? 201 : 422 as any);
     }
@@ -3564,7 +3637,7 @@ files.post('/:id/import-document', async (c) => {
 
   if (type === 'card_statement') {
     const result = await importCardStatementFromFile(
-      fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+      fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY
     );
     if (!result.success) {
       const status = result.error === 'File not found' ? 404 : result.error === 'Statement already imported' ? 409 : 422;
@@ -3584,7 +3657,7 @@ files.post('/:id/import-document', async (c) => {
 
   if (type === 'bank_statement') {
     const result = await importStatementFromFile(
-      fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY
+      fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY
     );
     if (!result.success) {
       const status = result.error === 'File not found' ? 404 : result.error === 'Statement already imported' ? 409 : 422;
@@ -3604,7 +3677,7 @@ files.post('/:id/import-document', async (c) => {
       needs_review: !!(forcedType || result.needs_review) }, 201);
   } else {
     const result = await importInvoiceFromFile(
-      fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY, directionOverride
+      fileId, tenantId, db, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY, directionOverride
     );
     if (!result.success) {
       const status = result.error === 'File not found' ? 404 : result.error?.includes('already exists') || result.error?.includes('already been imported') ? 409 : 422;
@@ -3670,9 +3743,9 @@ files.post('/:id/try-decrypt', async (c) => {
   // Re-trigger import based on category
   let importResult: any = { success: false };
   if (fileRow.category === 'bank_statement') {
-    importResult = await importStatementFromFile(fileId, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+    importResult = await importStatementFromFile(fileId, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY);
   } else if (fileRow.category === 'invoice') {
-    importResult = await importInvoiceFromFile(fileId, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, c.env.DEEPSEEK_API_KEY, c.env.GLM_API_KEY);
+    importResult = await importInvoiceFromFile(fileId, tenantId, c.env.DB, c.env.FILE_BUCKET, c.env.AI, llmKeysFromEnv(c.env), c.env.GLM_API_KEY);
   }
 
   return c.json({
@@ -3696,7 +3769,6 @@ files.post('/debug-pipeline', authMiddleware, async (c) => {
   const db = c.env.DB;
   const fileBucket = c.env.FILE_BUCKET;
   const ai = c.env.AI;
-  const deepseekKey = c.env.DEEPSEEK_API_KEY;
   const glmApiKey = c.env.GLM_API_KEY;
 
   const fileRow = await db.prepare(
@@ -3723,14 +3795,9 @@ IMPORTANT — deciding whether a line's amount is a deposit or a withdrawal:
 OCR TEXT:
 ${text.slice(0, 8000)}`;
 
-    const dsResp = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
-      body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'user', content: dsPrompt }], max_tokens: 4000 }),
-    });
-    const dsData = await dsResp.json() as any;
-    const raw = dsData.choices?.[0]?.message?.content || '';
-    const result: any = { raw_response: raw, usage: dsData.usage || null };
+    const llmResult = await llmCompleteJson(llmKeysFromEnv(c.env), dsPrompt, `debug:${label}`);
+    const raw = llmResult.raw;
+    const result: any = { raw_response: raw, usage: null, provider: llmResult.provider };
 
     const m = raw.match(/\{[\s\S]*\}/);
     if (m) {
