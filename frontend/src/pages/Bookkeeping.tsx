@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, X } from 'lucide-react';
+import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, X, ExternalLink } from 'lucide-react';
+import { useHighlightTarget } from '../hooks/useHighlightTarget';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
 import { filterLeafAccounts, stemOfCode } from '../lib/coa-hierarchy';
@@ -31,6 +32,10 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [entryDetails, setEntryDetails] = useState<Record<string, any[]>>({});
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
+  const [entryAuditTrail, setEntryAuditTrail] = useState<Record<string, any[]>>({});
+  const [loadingAudit, setLoadingAudit] = useState<string | null>(null);
+  const highlightId = useHighlightTarget();
+  const bookkeepingNavigate = useNavigate();
   const [expandedPL, setExpandedPL] = useState<Record<string, boolean>>({ cost: true });
   const [selectedPLAccount, setSelectedPLAccount] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -97,6 +102,19 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     }
   }, [entryParam, tab, entries?.data]);
   // suppress exhaustive-deps: only re-run when the entry param actually changes
+
+  // Auto-expand from highlight navigation
+  useEffect(() => {
+    if (!highlightId || tab !== 'entries' || !entries?.data) return;
+    const inTable = entries.data.find((e: any) => e.id === highlightId);
+    if (inTable) {
+      setExpandedId(highlightId);
+      toggleEntryDetail(highlightId);
+      setTimeout(() => {
+        document.getElementById(`entry-row-${highlightId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+    }
+  }, [highlightId, entries?.data, tab]);
 
   const { data: accounts } = useQuery({
     queryKey: ['accounts'],
@@ -233,19 +251,35 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     });
   }, [showEntryForm]);
 
-  // Lazy-fetch journal entry detail lines
-  async function toggleEntryDetail(id: string) {
-    if (expandedId === id) { setExpandedId(null); return; }
+  const toggleEntryDetail = async (id: string) => {
+    if (expandedId === id) {
+      setExpandedId(null);
+      return;
+    }
     setExpandedId(id);
     if (!entryDetails[id]) {
       setLoadingDetail(id);
       try {
-        const d = await api(`/bookkeeping/entries/${id}`);
-        setEntryDetails(prev => ({ ...prev, [id]: d.lines || [] }));
-      } catch { /* leave empty */ }
-      finally { setLoadingDetail(null); }
+        const data = await api(`/bookkeeping/entries/${id}`);
+        setEntryDetails(prev => ({ ...prev, [id]: data.lines || [] }));
+      } catch (err) {
+        console.error('Failed to load entry details', err);
+      } finally {
+        setLoadingDetail(null);
+      }
     }
-  }
+    if (!entryAuditTrail[id]) {
+      setLoadingAudit(id);
+      try {
+        const trail = await api(`/bookkeeping/entries/${id}/audit-trail`);
+        setEntryAuditTrail(prev => ({ ...prev, [id]: trail }));
+      } catch (err) {
+        console.error('Failed to load audit trail', err);
+      } finally {
+        setLoadingAudit(null);
+      }
+    }
+  };
 
   // 'stale' is no longer a status — deleted entries carry deleted_at instead and
   // are filtered out server-side, so they never reach this table.
@@ -452,6 +486,109 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                             </tfoot>
                           </table>
                         )}
+                        {/* Linked Items Section */}
+                        {e.resolved_links && (
+                          <div className="mt-4 border-t pt-3">
+                            <h4 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">
+                              {tr('Linked Items', '關聯項目', '关联项目')}
+                            </h4>
+                            <div className="flex flex-wrap gap-2">
+                              {e.resolved_links.bank_statement && (
+                                <button
+                                  onClick={() => bookkeepingNavigate('/bank-statements', { state: { highlight: e.resolved_links.bank_statement.id } })}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                  {tr('Statement', '結單', '结单')}: {e.resolved_links.bank_statement.statement_number || e.resolved_links.bank_statement.id}
+                                </button>
+                              )}
+                              {e.resolved_links.bank_transaction && (
+                                <button
+                                  onClick={() => {
+                                    const stmtId = e.resolved_links.bank_transaction.statement_id;
+                                    if (stmtId) bookkeepingNavigate(`/bank-statements/review/${stmtId}`, { state: { highlight: e.resolved_links.bank_transaction.id } });
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border border-green-200 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-800 dark:bg-green-950 dark:text-green-300"
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                  {tr('Transaction', '交易', '交易')}: {e.resolved_links.bank_transaction.description || e.resolved_links.bank_transaction.id}
+                                </button>
+                              )}
+                              {e.resolved_links.invoice && (
+                                <button
+                                  onClick={() => {
+                                    const target = e.resolved_links.invoice.direction === 'incoming' ? '/ap' : '/ar';
+                                    bookkeepingNavigate(target, { state: { highlight: e.resolved_links.invoice.id } });
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-300"
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                  {e.resolved_links.invoice.direction === 'incoming' ? tr('Bill', '帳單', '账单') : tr('Invoice', '發票', '发票')}: {e.resolved_links.invoice.invoice_number}
+                                  {e.resolved_links.invoice.vendor_or_customer ? ` (${e.resolved_links.invoice.vendor_or_customer})` : ''}
+                                </button>
+                              )}
+                              {e.resolved_links.linked_invoices?.map((li: any) => (
+                                <button
+                                  key={li.id}
+                                  onClick={() => bookkeepingNavigate('/ap', { state: { highlight: li.id } })}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-300"
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                  {tr('Bill', '帳單', '账单')}: {li.invoice_number} (${li.allocated_amount.toFixed(2)})
+                                </button>
+                              ))}
+                              {e.resolved_links.reversal && (
+                                <button
+                                  onClick={() => bookkeepingNavigate('/GJE', { state: { highlight: e.resolved_links.reversal.id } })}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                  {tr('Reversed by', '反轉由', '反转由')}: {e.resolved_links.reversal.entry_number}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {/* Audit Trail Section */}
+                        <div className="mt-4 border-t pt-3">
+                          <h4 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">
+                            {tr('Audit Trail', '審計軌跡', '审计轨迹')}
+                          </h4>
+                          {loadingAudit === e.id ? (
+                            <div className="flex justify-center py-2"><div className="animate-spin h-4 w-4 border-2 border-primary border-t-transparent rounded-full" /></div>
+                          ) : (entryAuditTrail[e.id] || []).length === 0 ? (
+                            <p className="text-xs text-muted-foreground">{tr('No audit history', '暫無審計歷史', '暂无审计历史')}</p>
+                          ) : (
+                            <div className="space-y-2 max-h-60 overflow-y-auto">
+                              {(entryAuditTrail[e.id] || []).map((trail: any) => (
+                                <div key={trail.id} className="text-xs border-l-2 border-muted pl-3 py-1">
+                                  <div className="flex items-center gap-2 text-muted-foreground">
+                                    <span className="font-mono">{new Date(trail.created_at).toLocaleString()}</span>
+                                    <span className="text-foreground font-medium">{trail.user_email}</span>
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted">
+                                      {trail.action}
+                                    </span>
+                                  </div>
+                                  {trail.changes?.filter((c: any) => !c.field.startsWith('_')).map((change: any, ci: number) => (
+                                    <div key={ci} className="mt-0.5 text-muted-foreground">
+                                      <span className="font-medium">{change.field}</span>: {JSON.stringify(change.old)} → {JSON.stringify(change.new)}
+                                    </div>
+                                  ))}
+                                  {trail.action === 'create' && (
+                                    <div className="mt-0.5 text-green-600 dark:text-green-400">
+                                      {tr('Entry created', '分錄已建立', '分录已建立')}
+                                    </div>
+                                  )}
+                                  {trail.action === 'delete' && (
+                                    <div className="mt-0.5 text-red-600 dark:text-red-400">
+                                      {tr('Entry deleted', '分錄已刪除', '分录已删除')}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </td>
                   </tr>
