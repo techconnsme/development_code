@@ -220,7 +220,7 @@ export default function InvoiceDetailPanel({ invoiceId }: { invoiceId: string })
             </button>
           )}
         </div>
-        {journalEntries.length > 0 && (
+        {(journalEntries.length > 0 || linkedTxs.length > 0) && (
           <LineageMap
             invoiceNumber={data.invoice_number}
             total={data.total}

@@ -223,27 +223,24 @@ async function payingTransactionIds(db: any, tenantId: string, invoiceId: string
 }
 
 /**
- * Regenerate confirmed payment legs after a holding-account change. With
- * fromCode set, only transactions whose current payment JE references that
- * code are rebuilt; with null (reset path) all payers are rebuilt. Reuses the
- * idempotent posters: tombstone the live payment JE, then re-run postPaymentToGl.
+ * Regenerate confirmed payment legs after a holding-account change. Every
+ * confirmed payer of this invoice is rebuilt. Reuses the idempotent posters:
+ * tombstone the live payment JE, then re-run postPaymentToGl.
  */
-async function propagateHoldingChange(db: any, tenantId: string, invoiceId: string, fromCode: string | null): Promise<void> {
+async function propagateHoldingChange(db: any, tenantId: string, invoiceId: string): Promise<void> {
   const txIds = await payingTransactionIds(db, tenantId, invoiceId);
   for (const txId of txIds) {
     const je = await db.prepare(
-      `SELECT je.id, jl.account_code FROM journal_entries je
-       LEFT JOIN journal_lines jl ON jl.entry_id = je.id
-       WHERE je.reference_type = 'payment' AND je.reference_id = ? AND je.user_id = ? AND ${jeLive('je')}
-       ORDER BY CASE WHEN jl.debit > 0 THEN jl.debit ELSE jl.credit END DESC LIMIT 1`
-    ).bind(txId, tenantId).first() as { id: string; account_code: string | null } | null;
-    if (fromCode && je?.account_code && je.account_code !== fromCode) continue;
+      `SELECT je.id FROM journal_entries je
+       WHERE je.reference_type = 'payment' AND je.reference_id = ? AND je.user_id = ? AND ${jeLive('je')}`
+    ).bind(txId, tenantId).first() as { id: string } | null;
     if (je) {
       await db.prepare(
         `UPDATE journal_entries SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ?`
       ).bind(je.id, tenantId).run();
     }
-    await postPaymentToGl(db, tenantId, txId);
+    const repost = await postPaymentToGl(db, tenantId, txId);
+    if (repost.error) console.error(`[invoice-posting] failed to rebuild payment leg for tx ${txId}: ${repost.error}`);
   }
 }
 
@@ -268,6 +265,10 @@ invoices.put('/:id/posting', async (c) => {
   ).bind(id, tenantId).first<{ id: string; entry_number: string; entry_date: string; description: string }>();
   if (!live) return c.json({ error: 'Invoice is not posted to GL yet' }, 409);
 
+  if (!(await checkPeriodOpen(db, tenantId, live.entry_date))) {
+    return c.json({ error: 'Cannot change posting in a closed period' }, 409);
+  }
+
   if (body.reset_to_auto === true) {
     // Pre-validate EVERY confirmed paying transaction's parent statement BEFORE writing anything.
     const resetTxIds = await payingTransactionIds(db, tenantId, id);
@@ -287,7 +288,7 @@ invoices.put('/:id/posting', async (c) => {
     if (repost.error || repost.not_postable || repost.already_posted) {
       return c.json({ error: repost.error || `Cannot re-post (status ${repost.not_postable})` }, 409);
     }
-    await propagateHoldingChange(db, tenantId, id, /*oldHolding*/ null); // null = re-resolve per member
+    await propagateHoldingChange(db, tenantId, id);
     await db.prepare('INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)')
       .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'reset_posting', 'invoice', id, JSON.stringify({ previous_entry: live.entry_number })).run();
     return c.json({ ok: true });
@@ -317,10 +318,6 @@ invoices.put('/:id/posting', async (c) => {
     || (await findParentAccountError(db, tenantId, holdingCode));
   if (leafErr) return c.json({ error: leafErr }, 400);
 
-  if (!(await checkPeriodOpen(db, tenantId, live.entry_date))) {
-    return c.json({ error: 'Cannot change posting in a closed period' }, 409);
-  }
-
   const prevHolding = await resolveInvoiceHoldingAccount(db, tenantId, id);
   const prevLabelRow = await db.prepare(
     `SELECT jl.account_code FROM journal_lines jl
@@ -344,12 +341,7 @@ invoices.put('/:id/posting', async (c) => {
     }
   }
 
-  // Tombstone + fresh manual JE (new -R suffix: UNIQUE(user_id, entry_number) holds for tombstoned rows)
-  await db.prepare(
-    `UPDATE journal_entries SET deleted_at = datetime('now'), updated_at = datetime('now')
-     WHERE id = ? AND user_id = ?`
-  ).bind(live.id, tenantId).run();
-
+  // Fresh manual JE (new -R suffix: UNIQUE(user_id, entry_number) holds for tombstoned rows)
   const baseNum = `JE-INV-${inv.invoice_number}`;
   const numRows = await db.prepare(
     `SELECT entry_number FROM journal_entries WHERE user_id = ? AND entry_number LIKE ?`
@@ -363,8 +355,12 @@ invoices.put('/:id/posting', async (c) => {
   const jeNum = `${baseNum}-R${maxR + 1}`;
   const lineIns = 'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)';
   const isIncoming = inv.direction === 'incoming';
-  // One D1 batch = entry + both lines land atomically
+  // One D1 batch = tombstone + entry + both lines land atomically
   await db.batch([
+    db.prepare(
+      `UPDATE journal_entries SET deleted_at = datetime('now'), updated_at = datetime('now')
+       WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+    ).bind(live.id, tenantId),
     db.prepare(
       'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id, entry_source) VALUES (?,?,?,?,?,?,?,?)'
     ).bind(jeId, tenantId, jeNum, live.entry_date, live.description || '', 'invoice', id, 'manual'),
@@ -376,7 +372,7 @@ invoices.put('/:id/posting', async (c) => {
       : db.prepare(lineIns).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, labelCode, label.account_name, inv.invoice_number, 0, inv.total, 1),
   ]);
 
-  if (holdingChanged) await propagateHoldingChange(db, tenantId, id, prevHolding.code);
+  if (holdingChanged) await propagateHoldingChange(db, tenantId, id);
 
   await db.prepare('INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'update_posting', 'invoice', id, JSON.stringify({
