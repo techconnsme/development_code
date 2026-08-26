@@ -66,7 +66,7 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
   };
 
   const savePostingMut = useMutation({
-    mutationFn: () => api(`/invoices/${editingId}/posting`, {
+    mutationFn: (id: string) => api(`/invoices/${id}/posting`, {
       method: 'PUT',
       body: { label_account_code: draft.label, holding_account_code: draft.holding },
     }),
@@ -74,7 +74,7 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
     onError: (err: any) => toast.error(err?.message || tr('Update failed', '更新失敗', '更新失败')),
   });
   const resetPostingMut = useMutation({
-    mutationFn: () => api(`/invoices/${editingId}/posting`, { method: 'PUT', body: { reset_to_auto: true } }),
+    mutationFn: (id: string) => api(`/invoices/${id}/posting`, { method: 'PUT', body: { reset_to_auto: true } }),
     onSuccess: () => { setEditingId(null); refresh(); toast.info(tr('Reset to auto classification', '已重設為自動分類', '已重设为自动分类')); },
     onError: (err: any) => toast.error(err?.message || tr('Reset failed', '重設失敗', '重设失败')),
   });
@@ -164,7 +164,7 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
                     </button>
                   )}
                   {invoiceJe?.entry_source === 'manual' && !editing && (
-                    <button data-testid="reset-posting" onClick={() => resetPostingMut.mutate()} disabled={resetPostingMut.isPending}
+                    <button data-testid="reset-posting" onClick={() => resetPostingMut.mutate(inv.id)} disabled={resetPostingMut.isPending}
                       className="p-1 hover:bg-muted rounded text-amber-600" title={tr('Reset to auto', '重設為自動', '重设为自动')}>
                       <RotateCcw className="h-3.5 w-3.5" />
                     </button>
@@ -184,7 +184,7 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
                   )}
                   <div className="flex items-center justify-end gap-2">
                     <button onClick={() => setEditingId(null)} className="px-3 py-1 text-xs border rounded hover:bg-muted">{tr('Cancel', '取消', '取消')}</button>
-                    <button onClick={() => savePostingMut.mutate()} disabled={savePostingMut.isPending || !draft.label || !draft.holding || draft.label === draft.holding}
+                    <button onClick={() => savePostingMut.mutate(inv.id)} disabled={savePostingMut.isPending || !draft.label || !draft.holding || draft.label === draft.holding}
                       className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded hover:opacity-90 disabled:opacity-30">
                       {savePostingMut.isPending ? '…' : tr('Save posting', '儲存分錄', '储存分录')}
                     </button>
