@@ -422,11 +422,11 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             <tbody>
               {(entries?.data || []).map((e: any) => (
                 <React.Fragment key={e.id}>
-                <tr id={`entry-row-${e.id}`} className={`border-b hover:bg-muted/30 ${expandedId === e.id ? 'bg-muted/40' : ''} ${e.status === 'draft' ? 'bg-amber-50 dark:bg-amber-950/20' : ''}`}>
+                <tr id={`entry-row-${e.id}`} onClick={() => toggleEntryDetail(e.id)} className={`border-b hover:bg-muted/30 cursor-pointer ${expandedId === e.id ? 'bg-muted/40' : ''} ${e.status === 'draft' ? 'bg-amber-50 dark:bg-amber-950/20' : ''}`}>
                   <td className="p-3">
-                    <button onClick={() => toggleEntryDetail(e.id)} className="p-0.5 hover:bg-muted rounded">
+                    <span className="p-0.5 inline-flex">
                       {expandedId === e.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                    </button>
+                    </span>
                   </td>
                   <td className="p-3 font-medium font-mono text-xs">{e.entry_number}</td>
                   <td className="p-3">{e.entry_date}</td>
@@ -435,14 +435,14 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                   <td className="p-3 text-right font-mono">{e.total_credit > 0 ? '$' + fmtMoney(e.total_credit) : ''}</td>
                   <td className="p-3">{statusBadge(e.status)}</td>
                   <td className="p-3 text-center">
-                    {!isStaff && (
-                      <button onClick={() => {
-                        if (!confirm(tr('Confirm delete? This action cannot be undone.', '確定要刪除此分錄嗎？此操作不可撤銷。', '确定要删除此分录吗？此操作不可撤销。'))) return;
-                        api(`/bookkeeping/entries/${e.id}`, { method: 'DELETE' }).then(() => {
-                          queryClient.invalidateQueries({ queryKey: ['entries'] });
-                        }).catch(err => toast.info(tr('Delete failed: ', '刪除失敗：', '删除失败：') + (err.message || '')));
-                      }} className="text-destructive text-xs hover:underline">{tr('Delete', '刪除', '删除')}</button>
-                    )}
+                    <div className="flex items-center justify-center gap-2">
+                      <button onClick={(ev) => { ev.stopPropagation(); toggleEntryDetail(e.id); }} className="text-primary text-xs hover:underline" title={tr('View details & audit trail', '查看詳情及審計軌跡', '查看详情及审计轨迹')}>
+                        {expandedId === e.id ? tr('Hide', '隱藏', '隐藏') : tr('View', '查看', '查看')}
+                      </button>
+                      {!isStaff && (
+                        <button onClick={(ev) => { ev.stopPropagation(); if (!confirm(tr('Confirm delete? This action cannot be undone.', '確定要刪除此分錄嗎？此操作不可撤銷。', '确定要删除此分录吗？此操作不可撤销。'))) return; api(`/bookkeeping/entries/${e.id}`, { method: 'DELETE' }).then(() => { queryClient.invalidateQueries({ queryKey: ['entries'] }); }).catch(err => toast.info(tr('Delete failed: ', '刪除失敗：', '删除失败：') + (err.message || ''))); }} className="text-destructive text-xs hover:underline">{tr('Delete', '刪除', '删除')}</button>
+                      )}
+                    </div>
                   </td>
                 </tr>
                 {expandedId === e.id && (
