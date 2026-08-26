@@ -100,7 +100,7 @@ export default function BankStatements() {
   const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
 
   const highlightTxRef = React.useRef<string | null>(null);
-  const highlightId = useHighlightTarget();
+  const { highlight: highlightId, highlightTx } = useHighlightTarget();
   const highlightTargetRef = React.useRef<string | null>(null);
 
   // Auto-expand statement and highlight transaction from query params
@@ -341,11 +341,11 @@ export default function BankStatements() {
 
   // Auto-expand and scroll to highlighted transaction from useHighlightTarget
   useEffect(() => {
-    if (!highlightId) return;
-    highlightTargetRef.current = highlightId;
+    if (!highlightId && !highlightTx) return;
     // If it's a statement ID (bs-), expand it directly
-    if (highlightId.startsWith('bs-')) {
+    if (highlightId && highlightId.startsWith('bs-')) {
       setExpandedId(highlightId);
+      highlightTargetRef.current = highlightTx || highlightId;
       setTimeout(() => {
         const el = document.getElementById(`stmt-row-${highlightId}`);
         if (el) {
@@ -354,8 +354,11 @@ export default function BankStatements() {
           setTimeout(() => el.classList.remove('highlight-pulse'), 5000);
         }
       }, 300);
+    } else if (highlightId) {
+      // It's a transaction ID - store it for when detail loads
+      highlightTargetRef.current = highlightId;
     }
-  }, [highlightId]);
+  }, [highlightId, highlightTx]);
 
   const detail = detailQuery.data as any;
   const transactions = detail?.transactions || [];
@@ -379,7 +382,7 @@ export default function BankStatements() {
       highlightTargetRef.current = null;
       return;
     }
-    // For transaction IDs, we need to find the parent statement and expand it
+    // For transaction IDs, wait for detail to load then scroll
     if (detail && !detailQuery.isLoading) {
       const txId = activeTxId;
       setTimeout(() => {

@@ -35,7 +35,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const [entryAuditTrail, setEntryAuditTrail] = useState<Record<string, any[]>>({});
   const [loadingAudit, setLoadingAudit] = useState<string | null>(null);
-  const highlightId = useHighlightTarget();
+  const { highlight: highlightId } = useHighlightTarget();
   const bookkeepingNavigate = useNavigate();
   const [expandedPL, setExpandedPL] = useState<Record<string, boolean>>({ cost: true });
   const [selectedPLAccount, setSelectedPLAccount] = useState<string | null>(null);
@@ -496,7 +496,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                             <div className="flex flex-wrap gap-2">
                               {e.resolved_links.bank_statement && (
                                 <button
-                                  onClick={() => bookkeepingNavigate('/bank-statements', { state: { highlight: e.resolved_links.bank_statement.id } })}
+                                  onClick={() => bookkeepingNavigate('/bank-statements', { state: { highlight: e.resolved_links.bank_statement.id, highlightTx: e.resolved_links.bank_transaction?.id } })}
                                   className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300"
                                 >
                                   <ExternalLink className="h-3 w-3" />

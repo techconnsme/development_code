@@ -56,7 +56,7 @@ export default function AP() {
   const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
   const [bankMatchResults, setBankMatchResults] = useState<any[] | null>(null);
   const { startDate, endDate } = useDateFilter();
-  const highlightId = useHighlightTarget();
+  const { highlight: highlightId } = useHighlightTarget();
   // Deep-link highlight bypasses the fiscal-year date filter so the invoice is always found.
   const effStart = highlightId ? '' : startDate;
   const effEnd = highlightId ? '' : endDate;

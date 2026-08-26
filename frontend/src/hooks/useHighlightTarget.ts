@@ -2,18 +2,23 @@
 import { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 
-export function useHighlightTarget(durationMs = 3000): string | null {
+interface HighlightState {
+  highlight: string | null;
+  highlightTx: string | null;
+}
+
+export function useHighlightTarget(durationMs = 3000): HighlightState {
   const location = useLocation();
-  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [state, setState] = useState<HighlightState>({ highlight: null, highlightTx: null });
 
   useEffect(() => {
-    const state = location.state as any;
-    if (state?.highlight) {
-      setHighlightId(state.highlight);
-      const timer = setTimeout(() => setHighlightId(null), durationMs);
+    const locState = location.state as any;
+    if (locState?.highlight || locState?.highlightTx) {
+      setState({ highlight: locState.highlight || null, highlightTx: locState.highlightTx || null });
+      const timer = setTimeout(() => setState({ highlight: null, highlightTx: null }), durationMs);
       return () => clearTimeout(timer);
     }
   }, [location.state, durationMs]);
 
-  return highlightId;
+  return state;
 }

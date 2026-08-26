@@ -62,7 +62,7 @@ export default function AR() {
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
   const { startDate, endDate } = useDateFilter();
   const [searchParams] = useSearchParams();
-  const highlightId = useHighlightTarget();
+  const { highlight: highlightId } = useHighlightTarget();
   // Deep-link highlight bypasses the fiscal-year date filter so the invoice is always found.
   const effStart = highlightId ? '' : startDate;
   const effEnd = highlightId ? '' : endDate;
