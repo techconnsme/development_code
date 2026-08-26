@@ -16,6 +16,7 @@ import { buildCoaTree, CoaNode } from '../lib/coa-hierarchy';
 import TxPostingPanel, { PostingLine } from '../components/TxPostingPanel';
 import SlideOpen from '../components/SlideOpen';
 import { isTemporaryAccount } from '../lib/coa-hierarchy';
+import { useHighlightTarget } from '../hooks/useHighlightTarget';
 
 function PreFillButton({ item, bankCode, onPrefillJe, onPrefillMatch }: {
   item: any;
@@ -99,6 +100,8 @@ export default function BankStatements() {
   const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
 
   const highlightTxRef = React.useRef<string | null>(null);
+  const highlightId = useHighlightTarget();
+  const highlightTargetRef = React.useRef<string | null>(null);
 
   // Auto-expand statement and highlight transaction from query params
   React.useEffect(() => {
@@ -336,6 +339,12 @@ export default function BankStatements() {
     }
   }, [activeFilter, statements]);
 
+  // Auto-expand and scroll to highlighted transaction from useHighlightTarget
+  useEffect(() => {
+    if (!highlightId) return;
+    highlightTargetRef.current = highlightId;
+  }, [highlightId]);
+
   const detail = detailQuery.data as any;
   const transactions = detail?.transactions || [];
 
@@ -348,13 +357,14 @@ export default function BankStatements() {
     : transactions;
   const displayTransactions = activeFilter === 'unmatched' ? filteredTransactions : transactions;
 
-  // Scroll to highlighted transaction after detail loads (deep-link from P&L drill-down)
+  // Scroll to highlighted transaction after detail loads (deep-link from P&L drill-down or useHighlightTarget)
   React.useEffect(() => {
-    if (highlightTxRef.current && detail && !detailQuery.isLoading) {
-      const txId = highlightTxRef.current;
+    const activeTxId = highlightTxRef.current || highlightTargetRef.current;
+    if (activeTxId && detail && !detailQuery.isLoading) {
+      const txId = activeTxId;
       // Small delay to let DOM render
       setTimeout(() => {
-        const el = document.getElementById(`tx-${txId}`);
+        const el = document.getElementById(`tx-row-${txId}`);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           el.classList.add('highlight-pulse');
@@ -364,6 +374,7 @@ export default function BankStatements() {
           }, 5000);
         }
         highlightTxRef.current = null;
+        highlightTargetRef.current = null;
       }, 300);
     }
   }, [detail, detailQuery.isLoading]);
@@ -628,7 +639,7 @@ export default function BankStatements() {
 
                                 return (
                                   <React.Fragment key={tx.id}>
-                                <tr id={`tx-${tx.id}`} onClick={() => { if (!editMode) setExpandedTxId(expandedTxId === tx.id ? null : tx.id); }}
+                                <tr id={`tx-row-${tx.id}`} onClick={() => { if (!editMode) setExpandedTxId(expandedTxId === tx.id ? null : tx.id); }}
                                   className={`cursor-pointer border-b border-muted/50 hover:bg-muted/20 ${dirty ? 'bg-blue-50 dark:bg-blue-950/20' : ''} ${
                                   tx.match_status === 'suggested' ? 'bg-yellow-50 dark:bg-yellow-950/20' :
                                   tx.match_status === 'confirmed' ? 'bg-green-50 dark:bg-green-950/20' : ''
@@ -637,7 +648,7 @@ export default function BankStatements() {
                                   tx.match_status !== 'confirmed' && tx.match_status !== 'skipped' &&
                                   tx.match_status !== 'not_required'
                                     ? 'border-l-4 border-l-amber-400' : ''
-                                }`}>
+                                } ${highlightId === tx.id ? 'bg-yellow-100 dark:bg-yellow-900/30 ring-2 ring-yellow-400' : ''}`}>
                                   <td className="py-1.5 pr-3 whitespace-nowrap">
                                     {/* Flag: unlinked + not skipped → needs attention */}
                                     {!editMode && !tx.invoice_number && !tx.card_statement_id && tx.match_status !== 'suggested' && tx.match_status !== 'skipped' && tx.match_status !== 'not_required' && (
