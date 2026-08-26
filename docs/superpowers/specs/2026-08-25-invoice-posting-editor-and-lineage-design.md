@@ -115,3 +115,32 @@ House convention (no unit framework):
 2. Frontend build clean.
 3. Playwright, **non-mutating**: editor opens on a posted invoice; picking a parent (non-leaf) account surfaces the validation error; Cancel restores; lineage map renders on a known paid PnR invoice; "Settles" strip renders on a known matched transaction.
 4. Manual checks (fixtures, shared DB — same waiver rationale as the panel feature): director-bill scenario end-to-end (edit holding → Director's Current Account → confirm bank payment → payment JE uses Director's account); reset-to-auto restores defaults; group-payment slice shows correct allocated amounts in lineage after a holding edit on one member.
+
+## 7. Revision 2 (2026-08-25, approved in review): UX restructure - minimal inline + Audit Trail popup
+
+User feedback after live review: the inline lineage duplicated the GL card for unpaid invoices and buried the story. This revision supersedes the PLACEMENT parts of section 3.4 (editor moves out of the panel) and section 4 (lineage moves into the popup). Backend sections 3.2/3.3/4.3 remain in force unchanged.
+
+### 7.1 Inline AP/AR panel (simplified)
+
+- GL postings section renders ONLY the invoice's own Dr/Cr pair (its live invoice JE = Entry 1), static. LineageMap and the inline editor are removed from the panel.
+- Line items + linked bank transactions sections unchanged.
+- New Audit Trail action on each AP/AR invoice row (actions cell, link icon) opens the popup (7.2) with that invoice as context.
+
+### 7.2 Audit Trail popup (AuditTrailModal.tsx)
+
+One modal, two entry points: AP/AR invoice rows, and Bank Statements expanded transaction rows (button beside the settles strip). Contents:
+
+1. Chain - Bank Statement -> Transaction(s) -> Invoice(s) -> Receipt(s) with per-hop status: bank match (confirmed / suggested / unmatched, group slices with allocated amounts); receipt link (linked / not linked - the receipt system is binary, no richer status exists). Group payments fan out to N invoice chains under one transaction.
+2. GL legs - the Entry 1 -> pivot -> Entry 2 flow: the existing LineageMap component, mounted in the modal (Not-yet-posted / Entry-1-only states preserved for unpaid invoices).
+3. Edit posting - the editor (label/holding dropdowns, Save / Cancel / Reset-to-auto, cascade via the existing PUT /invoices/:id/posting) moves into the modal, targeting the invoice in context. For a transaction with multiple invoices, each invoice chain segment exposes its own editor.
+
+Data strategy (no new endpoints beyond 7.3): the modal receives either { invoiceId } or { txContext, invoiceIds[] }; it fetches GET /invoices/:id per invoice (React Query cache shared with the panel) for legs, linked transactions (incl. bank names), and the new linked_receipt.
+
+### 7.3 Backend addition (small)
+
+GET /invoices/:id payload gains linked_receipt: { id, invoice_number, total, issue_date } | null - resolves linked_invoice_id when it points at a receipt row (receipt_number IS NOT NULL OR invoice_number LIKE 'REC-%', soft-delete clean). Read-only; everything else reuses shipped backend.
+
+### 7.4 Testing (delta)
+
+- Playwright updates: lineage testids now live inside the modal (open via the new action button); inline GL shows a single pair; editor assertions move to modal context; settles-strip test extended to open the popup from the bank side.
+- Manual checks unchanged (director scenario + group slice), executed through the popup.
