@@ -1,11 +1,8 @@
-import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Check, X, Pencil, RotateCcw } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import { useToast } from './Toast';
 import { api } from '../lib/api';
 import { tr } from '../lib/i18nHelpers';
-import { buildCoaTree, CoaNode } from '../lib/coa-hierarchy';
-import LineageMap from './LineageMap';
 
 interface LinkedTx {
   id: string;
@@ -44,12 +41,6 @@ export default function InvoiceDetailPanel({ invoiceId }: { invoiceId: string })
     queryClient.invalidateQueries({ queryKey: ['invoices'] });
   };
 
-  const refreshLists = () => {
-    queryClient.invalidateQueries({ queryKey: ['invoices-ap'] });
-    queryClient.invalidateQueries({ queryKey: ['invoices-ar'] });
-    queryClient.invalidateQueries({ queryKey: ['invoices'] });
-  };
-
   const confirmMut = useMutation({
     mutationFn: (tx: LinkedTx) =>
       api(`/bank-statements/transactions/${tx.id}/match`, {
@@ -66,37 +57,12 @@ export default function InvoiceDetailPanel({ invoiceId }: { invoiceId: string })
     onError: (err: any) => toast.error(err?.error || err?.message || tr('Unlink failed', '解除連結失敗', '解除链接失败')),
   });
 
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<{ label: string; holding: string }>({ label: '', holding: '' });
-  const { data: accountsData } = useQuery({ queryKey: ['accounts'], queryFn: () => api('/bookkeeping/accounts'), enabled: editing });
-  const accounts: any[] = accountsData?.data || [];
-  const coaTree: CoaNode[] = useMemo(() => buildCoaTree(accounts), [accounts]);
-
-  const savePostingMut = useMutation({
-    mutationFn: () => api(`/invoices/${invoiceId}/posting`, {
-      method: 'PUT',
-      body: { label_account_code: draft.label, holding_account_code: draft.holding },
-    }),
-    onSuccess: () => { setEditing(false); refresh(); toast.success(tr('Posting updated', '分錄已更新', '分录已更新')); refreshLists(); },
-    onError: (err: any) => toast.error(err?.message || tr('Update failed', '更新失敗', '更新失败')),
-  });
-  const resetPostingMut = useMutation({
-    mutationFn: () => api(`/invoices/${invoiceId}/posting`, { method: 'PUT', body: { reset_to_auto: true } }),
-    onSuccess: () => { setEditing(false); refresh(); toast.info(tr('Reset to auto classification', '已重設為自動分類', '已重设为自动分类')); refreshLists(); },
-    onError: (err: any) => toast.error(err?.message || tr('Reset failed', '重設失敗', '重设失败')),
-  });
-
   if (isLoading) return <div className="p-4 text-sm text-muted-foreground">{tr('Loading...', '載入中...', '载入中...')}</div>;
   if (!data) return null;
 
   const linkedTxs: LinkedTx[] = data.linked_transactions || [];
   const journalEntries: JournalEntry[] = data.journal_entries || [];
   const invoiceJe = journalEntries.find(e => e.reference_type === 'invoice') || null;
-  const holdingLine = invoiceJe?.lines.find(l => l.account_type === 'asset' || l.account_type === 'liability') || null;
-  const labelLine = invoiceJe?.lines.find(l => l.account_type === 'revenue' || l.account_type === 'expense') || null;
-  const paymentEntries = journalEntries
-    .filter(e => e.reference_type === 'payment')
-    .map(je => ({ je, tx: linkedTxs.find(t => t.id === (je as any).reference_id) }));
 
   return (
     <div className="bg-muted/20 border-t border-border px-4 py-3 space-y-4" data-testid="invoice-detail-panel">
@@ -190,123 +156,29 @@ export default function InvoiceDetailPanel({ invoiceId }: { invoiceId: string })
         )}
       </div>
 
-      {/* Section 3: GL postings */}
+      {/* Section 3: GL postings — this invoice's own entry (Entry 1) */}
       <div>
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex items-center justify-between mb-2">
           <h4 className="text-xs font-semibold text-muted-foreground uppercase">{tr('GL postings', '過賬分錄', '过账分录')}</h4>
-          {invoiceJe && (
-            <button
-              onClick={() => {
-                if (editing) { setEditing(false); return; }
-                setDraft({ label: labelLine?.account_code || '', holding: holdingLine?.account_code || '' });
-                setEditing(true);
-              }}
-              className="p-0.5 rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-              title={tr('Edit posting', '編輯分錄', '编辑分录')}
-              data-testid="edit-posting"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {invoiceJe?.entry_source === 'manual' && !editing && (
-            <button
-              onClick={() => resetPostingMut.mutate()}
-              disabled={resetPostingMut.isPending}
-              className="p-0.5 rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-              title={tr('Reset to auto classification', '已重設為自動分類', '已重设为自动分类')}
-              data-testid="reset-posting"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-            </button>
-          )}
+          {invoiceJe && <span className="font-mono text-[10px] text-muted-foreground">{invoiceJe.entry_number}</span>}
         </div>
-        {(journalEntries.length > 0 || linkedTxs.length > 0) && (
-          <LineageMap
-            invoiceNumber={data.invoice_number}
-            total={data.total}
-            currency={data.currency}
-            invoiceJe={invoiceJe}
-            paymentEntries={paymentEntries}
-          />
-        )}
-        {journalEntries.length === 0 ? (
+        {!invoiceJe ? (
           <p className="text-xs text-muted-foreground">{tr('Not yet posted to GL', '尚未過賬至總賬', '尚未过账至总账')}</p>
-        ) : editing && invoiceJe ? (
-          <div className="space-y-2">
-            <CoaRoleSelect
-              label={tr('What kind of income / expense', '收入／支出類別', '收入／支出类别')}
-              value={draft.label} onChange={v => setDraft(d => ({ ...d, label: v }))} tree={coaTree}
-              allowedTypes={['revenue', 'expense']} />
-            <CoaRoleSelect
-              label={tr('Where the debt / claim is tracked', '債務／權益追蹤科目', '债务／权益追踪科目')}
-              value={draft.holding} onChange={v => setDraft(d => ({ ...d, holding: v }))} tree={coaTree}
-              allowedTypes={['asset', 'liability']} />
-            {draft.label && draft.holding && draft.label === draft.holding && (
-              <p className="text-xs text-red-600">{tr('Accounts must differ', '兩個科目不能相同', '两个科目不能相同')}</p>
-            )}
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button onClick={() => setEditing(false)} className="px-3 py-1 text-xs border rounded hover:bg-muted">
-                {tr('Cancel', '取消', '取消')}
-              </button>
-              <button onClick={() => savePostingMut.mutate()} disabled={savePostingMut.isPending || !draft.label || !draft.holding || draft.label === draft.holding}
-                className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded hover:opacity-90 disabled:opacity-30">
-                {savePostingMut.isPending ? '…' : tr('Save posting', '儲存分錄', '储存分录')}
-              </button>
-            </div>
-          </div>
         ) : (
-          <div className="space-y-2">
-            {journalEntries.map(je => (
-              <div key={je.id} className="border rounded px-2 py-1.5 bg-background">
-                <div className="flex items-center gap-2 text-xs mb-1">
-                  <span className="font-mono font-medium">{je.entry_number}</span>
-                  <span className="text-muted-foreground font-mono">{je.entry_date}</span>
-                  {je.description && <span className="text-muted-foreground truncate">{je.description}</span>}
-                </div>
-                <div className="space-y-0.5">
-                  {je.lines.map((l, i) => (
-                    <div key={i} className="flex items-center gap-2 text-xs">
-                      {(l.debit > 0 ? 'Dr' : 'Cr') === 'Dr'
-                        ? <span className="font-mono font-bold text-xs text-red-600">Dr</span>
-                        : <span className="font-mono font-bold text-xs text-green-600">Cr</span>}
-                      <span className="font-mono">{l.account_code}</span>
-                      <span className="text-muted-foreground truncate flex-1">{l.account_name}</span>
-                      <span className="font-mono font-medium">
-                        {(l.debit > 0 ? l.debit : l.credit)?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+          <div className="space-y-0.5">
+            {invoiceJe.lines.map((l, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs">
+                <span className={`font-mono font-bold ${l.debit > 0 ? 'text-red-600' : 'text-green-600'}`}>{l.debit > 0 ? 'Dr' : 'Cr'}</span>
+                <span className="font-mono">{l.account_code}</span>
+                <span className="text-muted-foreground truncate flex-1">{l.account_name}</span>
+                <span className="font-mono font-medium">
+                  {(l.debit > 0 ? l.debit : l.credit)?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </span>
               </div>
             ))}
           </div>
         )}
       </div>
     </div>
-  );
-}
-
-function CoaRoleSelect({ label, value, onChange, tree, allowedTypes }: {
-  label: string; value: string; onChange: (v: string) => void; tree: CoaNode[]; allowedTypes: string[];
-}) {
-  return (
-    <label className="block">
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
-      <select value={value} onChange={e => onChange(e.target.value)}
-        className="w-full mt-0.5 border rounded px-2 py-1 text-xs bg-background">
-        <option value="">{tr('-- Select account --', '-- 選科目 --', '-- 選科目 --')}</option>
-        {tree.map(n => n.isParent ? (
-          <option key={`p-${n.account.account_code}`} value="" disabled>
-            {`${'\u00A0'.repeat(n.depth * 2)}${n.account.account_code} ${n.account.account_name}`}
-          </option>
-        ) : (
-          allowedTypes.includes(String((n.account as any).account_type)) ? (
-            <option key={n.account.account_code} value={n.account.account_code}>
-              {`${'\u00A0'.repeat(n.depth * 3)}${n.account.account_code} ${n.account.account_name}`}
-            </option>
-          ) : null
-        ))}
-      </select>
-    </label>
   );
 }
