@@ -56,7 +56,7 @@ export async function createSnapshot(
       description: l.description,
       debit: l.debit,
       credit: l.credit,
-      project: l.project,
+      project: l.project ?? null,
     })),
   };
 
