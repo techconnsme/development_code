@@ -5,6 +5,9 @@ import { test, expect, chromium } from '@playwright/test';
 // WAIVER: the posting SAVE path itself is intentionally NOT exercised here —
 // saves rewrite shared ground-truth financial data in the test DB. Manual
 // verification of save/reset lives in task report §Step 5.
+// WAIVER (auto-link): POST /bank-statements/auto-match is SUGGEST-ONLY (writes
+// nothing), so clicking auto-link-btn is safe; the commit paths —
+// confirm-suggested-btn and the candidates' Link button — are NEVER clicked.
 
 const BASE = process.env.TEST_BASE_URL || 'https://opcc-crm-testing.pages.dev';
 const LOGIN_EMAIL = process.env.TEST_EMAIL || 'joseph.lin@pnr.hk';
@@ -204,4 +207,113 @@ test('TC-LIN-03: bank transaction opens popup chain with hops + lineage map', as
   await expect(modal.getByTestId('audit-chain')).toContainText('→');
   // At least one invoice leg rendered (guaranteed by the walk; asserted per brief)
   await expect(modal.getByTestId('lineage-map').first()).toBeVisible({ timeout: 15000 });
+});
+
+test('TC-LIN-04: auto-link on unpaid invoice enters pending then settles with message (never confirms)', async ({ page }) => {
+  await login(page);
+  await page.goto(`${BASE}/ap`);
+  // Pick an UNPAID PnR AP bill at runtime: first visible row whose Status cell
+  // reads Sent (EN label for status='sent'; 'active' kept per brief for parity).
+  // A bill showing auto-link must have NO linked transactions — if the first
+  // candidate already carries suggested txs the popup skips it and we try the
+  // next unpaid row. Shared DB: rows shift between runs, hence the walk.
+  const rows = page.locator('tr[id^="inv-row-"]');
+  await rows.first().waitFor({ timeout: 15000 });
+  const rowCount = await rows.count();
+  let modal: any = null;
+  outer:
+  for (let k = 0; k < rowCount; k++) {
+    const row = rows.nth(k);
+    if (!await row.isVisible().catch(() => false)) continue; // hidden duplicate table
+    const statusTxt = await row.locator('td').nth(3).textContent().catch(() => '') || '';
+    if (!/sent|active/i.test(statusTxt)) continue;
+    await row.getByTestId('audit-trail-btn').click();
+    const m = page.getByTestId('audit-trail-modal');
+    await expect(m).toBeVisible({ timeout: 15000 });
+    // auto-link-btn only mounts once GET /invoices/:id resolves AND the bill has
+    // no settling transactions; give the query a bounded window, else move on.
+    const gotBtn = await m.getByTestId('auto-link-btn')
+      .waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
+    if (gotBtn) { modal = m; break outer; }
+    await m.locator('button').first().click(); // header ✕
+    await expect(m).toBeHidden({ timeout: 5000 });
+  }
+  expect(modal, 'no unpaid (Sent/active) bill with an unlinked chain found').not.toBeNull();
+  const autoBtn = modal.getByTestId('auto-link-btn');
+  // SUGGEST-ONLY: POST /bank-statements/auto-match writes nothing (waiver above).
+  await autoBtn.click();
+  // Observe the transient pending ('…', disabled) OR the settled outcome —
+  // whichever lands first; the mutation itself decides which one we catch.
+  await expect(async () => {
+    const btnText = (((await autoBtn.textContent()) || '')).trim();
+    const msg = await modal.getByText(/Recommendations refreshed|Auto-link failed/i).count();
+    const suggested = await modal.getByTestId('confirm-suggested-btn').count();
+    expect(btnText === '…' || msg > 0 || suggested > 0, 'neither pending nor settled state observed').toBeTruthy();
+  }).toPass({ timeout: 45000 });
+  // Settled state must materialise: success/error message renders, or suggested
+  // rows appear carrying confirm-suggested-btn.
+  await expect(async () => {
+    const msg = await modal.getByText(/Recommendations refreshed|Auto-link failed/i).count();
+    const suggested = await modal.getByTestId('confirm-suggested-btn').count();
+    expect(msg > 0 || suggested > 0, 'auto-link neither messaged nor produced suggestions').toBeTruthy();
+  }).toPass({ timeout: 45000 });
+  // WAIVER enforcement: any ✓ confirm button that surfaced stays UNCLICKED —
+  // asserting it merely exists (or not) and closing keeps the DB untouched.
+  await modal.locator('button').first().click(); // header ✕ — no confirm, no Link
+  await expect(modal).toBeHidden({ timeout: 5000 });
+});
+
+test('TC-LIN-05: unmatched bank tx popup lists link candidates (Link never clicked)', async ({ page }) => {
+  await login(page);
+  await page.goto(`${BASE}/bank-statements`);
+  // Same walk skeleton as TC-LIN-03, INVERTED: rows WITHOUT the green confirmed
+  // badge (i.e. suggested/unmatched). Only one statement AND one tx expand at a
+  // time; all interactions are read-only UI expansions.
+  const stmtRows = page.locator('[id^="stmt-row-"]');
+  await stmtRows.first().waitFor({ timeout: 15000 });
+  const unmatchedRows = page.locator('tr[id^="tx-"]').filter({ hasNot: page.locator('span.text-green-700') });
+  let candidatesBox: any = null;
+  const stmtCount = await stmtRows.count();
+  outer:
+  for (let i = 0; i < stmtCount; i++) {
+    await stmtRows.nth(i).locator('> div').first().click();
+    // Statement detail query must finish before sampling its transaction rows
+    await stmtRows.nth(i).getByText(/Loading transactions/i)
+      .waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
+    const rowCount = await unmatchedRows.count();
+    for (let j = 0; j < rowCount; j++) {
+      const row = unmatchedRows.nth(j);
+      if (!await row.isVisible().catch(() => false)) continue;
+      // Description cell expands (several cells stopPropagation); the popup
+      // button is now UNCONDITIONAL, so no settles-strip gate is needed here.
+      await row.locator('td').nth(1).click();
+      const btnOk = await page.getByTestId('audit-trail-btn')
+        .waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+      if (!btnOk) continue; // expansion didn't land — next candidate
+      await page.getByTestId('audit-trail-btn').click();
+      const m = page.getByTestId('audit-trail-modal');
+      await expect(m).toBeVisible({ timeout: 15000 });
+      // Unmatched/suggested tx ⇒ invoiceIds empty ⇒ popup falls through to the
+      // candidates list (draft/sent/overdue bills). Bounded wait, then discard.
+      const box = m.getByTestId('link-candidates');
+      const gotList = await box.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false);
+      if (gotList) {
+        // ≥1 candidate row required by the brief; the Link button is NEVER clicked.
+        await box.getByTestId('link-candidate').first().waitFor({ state: 'visible', timeout: 10000 });
+        candidatesBox = box;
+        break outer;
+      }
+      await m.locator('button').first().click(); // header ✕
+      await expect(m).toBeHidden({ timeout: 5000 });
+    }
+  }
+  if (!candidatesBox) {
+    // Graceful skip: fixture data currently holds no unmatched tx with candidates
+    console.log('NOTE (TC-LIN-05): no unmatched bank transaction with link candidates found — skipping gracefully (nothing mutated)');
+    test.skip(true, 'no unmatched bank transaction available in fixture data');
+  }
+  // WAIVER: candidates are asserted visible, never activated.
+  await expect(candidatesBox.getByTestId('link-candidate').first()).toBeVisible();
+  await page.getByTestId('audit-trail-modal').locator('button').first().click(); // header ✕
+  await expect(page.getByTestId('audit-trail-modal')).toBeHidden({ timeout: 5000 });
 });

@@ -144,3 +144,7 @@ GET /invoices/:id payload gains linked_receipt: { id, invoice_number, total, iss
 
 - Playwright updates: lineage testids now live inside the modal (open via the new action button); inline GL shows a single pair; editor assertions move to modal context; settles-strip test extended to open the popup from the bank side.
 - Manual checks unchanged (director scenario + group slice), executed through the popup.
+
+### 7.5 Revision 3 (2026-08-25): polish + in-popup auto-link
+
+Revision 3 (2026-08-25): trigger restyled as labeled button; popup min-height 60vh with scrollable body; in-popup auto-link — invoice context runs auto-match then offers ✓ confirm on suggested transactions; tx context lists unpaid-invoice candidates with Link action; bank-side popup button now unconditional.
