@@ -897,14 +897,17 @@ bank.patch('/transactions/:id/match', async (c) => {
         `UPDATE bank_transactions SET match_confidence = 'manual', match_status = 'confirmed'
          WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
       ).bind(txId, tenantId),
-      ...v.allocations.map(a => db.prepare(
-        `INSERT INTO bank_transaction_invoice_links (id, user_id, transaction_id, invoice_id, allocated_amount)
-         VALUES (?, ?, ?, ?, ?)`
-      ).bind(`btil-${uuidv4().slice(0, 8)}`, tenantId, txId, a.invoice_id, a.allocated_amount)),
-      ...v.allocations.map(a => db.prepare(
-        `UPDATE invoices SET status = 'paid', paid_date = ?, updated_at = datetime('now')
-         WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
-      ).bind(tx.transaction_date, a.invoice_id, tenantId)),
+      ...v.allocations.flatMap(a => [
+        db.prepare(
+          `INSERT INTO bank_transaction_invoice_links (id, user_id, transaction_id, invoice_id, allocated_amount)
+           VALUES (?, ?, ?, ?, ?)`
+        ).bind(`btil-${uuidv4().slice(0, 8)}`, tenantId, txId, a.invoice_id, a.allocated_amount),
+        // Receipt-paid invoices keep their original paid_date — only the junction link is written
+        ...(a.alreadyPaid ? [] : [db.prepare(
+          `UPDATE invoices SET status = 'paid', paid_date = ?, updated_at = datetime('now')
+           WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+        ).bind(tx.transaction_date, a.invoice_id, tenantId)]),
+      ]),
       ...v.fileIds.filter((fid): fid is string => !!fid).map(fid => db.prepare(
         `UPDATE file_records SET payment_status = 'matched', updated_at = datetime('now')
          WHERE id = ? AND user_id = ? AND deleted_at IS NULL`

@@ -16,7 +16,7 @@ export interface GroupConfirmInvoiceRow {
 }
 
 export type GroupConfirmResult =
-  | { ok: true; allocations: { invoice_id: string; allocated_amount: number }[]; fileIds: (string | null)[] }
+  | { ok: true; allocations: { invoice_id: string; allocated_amount: number; alreadyPaid: boolean }[]; fileIds: (string | null)[] }
   | { ok: false; httpStatus: number; error: string };
 
 export function validateGroupConfirm(input: {
@@ -34,8 +34,10 @@ export function validateGroupConfirm(input: {
 
   for (const inv of invs as GroupConfirmInvoiceRow[]) {
     if (inv.deleted_at) return { ok: false, httpStatus: 409, error: 'One or more invoices are deleted' };
-    if (inv.status === 'paid') return { ok: false, httpStatus: 409, error: 'Invoice already paid' };
     if (inv.status === 'cancelled') return { ok: false, httpStatus: 409, error: 'Invoice is cancelled' };
+    // 'paid' is NOT rejected here: an invoice settled via the receipt leg can
+    // legitimately coexist with a bank match on the same money — the caller
+    // skips the status write for alreadyPaid allocations instead.
     const incoming = inv.direction === 'incoming';
     if (input.txIsDeposit === incoming) {
       return { ok: false, httpStatus: 400, error: input.txIsDeposit
@@ -54,7 +56,7 @@ export function validateGroupConfirm(input: {
 
   return {
     ok: true,
-    allocations: invs.map(i => ({ invoice_id: i!.id, allocated_amount: i!.total })),
+    allocations: invs.map(i => ({ invoice_id: i!.id, allocated_amount: i!.total, alreadyPaid: i!.status === 'paid' })),
     fileIds: invs.map(i => i!.file_id),
   };
 }
