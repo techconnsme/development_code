@@ -13,7 +13,7 @@ import { categorizeTransaction, resolveBankAccountCode } from '../lib/transactio
 import { findParentAccountError } from '../lib/account-guard';
 import { getTemporaryAccount } from '../lib/coa-temporary';
 import { checkPeriodOpen } from '../lib/period-guard';
-import { createSnapshot, getLatestSnapshot } from '../lib/journal-snapshots';
+import { createSnapshot, getLatestSnapshot, getSnapshots } from '../lib/journal-snapshots';
 
 // Re-exported for backward compatibility with anything importing them from here.
 export { HK_COA_NAMES, getCodeType };
@@ -192,6 +192,22 @@ bookkeeping.get('/entries/:id', async (c) => {
   if (!entry) return c.json({ error: 'Entry not found' }, 404);
   const lines = await db.prepare('SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY sort_order').bind(c.req.param('id')).all();
   return c.json({ ...entry, lines: lines.results });
+});
+
+bookkeeping.get('/entries/:id/audit-trail', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const entryId = c.req.param('id');
+
+  // Verify entry exists and belongs to tenant
+  const entry = await db.prepare(
+    'SELECT id FROM journal_entries WHERE id = ? AND user_id = ?'
+  ).bind(entryId, tenantId).first();
+  if (!entry) return c.json({ error: 'Entry not found' }, 404);
+
+  const auditTrail = await getSnapshots(db, entryId);
+  return c.json(auditTrail);
 });
 
 const lineSchema = z.object({
