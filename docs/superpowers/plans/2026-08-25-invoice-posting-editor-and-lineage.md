@@ -203,6 +203,17 @@ invoices.put('/:id/posting', async (c) => {
   if (!live) return c.json({ error: 'Invoice is not posted to GL yet' }, 409);
 
   if (body.reset_to_auto === true) {
+    // Same reconciled-statement guard as the manual path — reset must never
+    // rebuild payment legs under locked statements (plan amendment 2026-08-25).
+    const resetTxIds = await payingTransactionIds(db, tenantId, id);
+    for (const txId of resetTxIds) {
+      const st = await db.prepare(
+        `SELECT bs.status FROM bank_transactions bt JOIN bank_statements bs ON bt.bank_statement_id = bs.id WHERE bt.id = ?`
+      ).bind(txId).first<{ status: string }>();
+      if (st && st.status !== 'active') {
+        return c.json({ error: 'A settling statement is reconciled — reopen reconciliation before resetting this posting' }, 409);
+      }
+    }
     await db.prepare(
       `UPDATE journal_entries SET deleted_at = datetime('now'), updated_at = datetime('now')
        WHERE id = ? AND user_id = ?`
