@@ -95,12 +95,13 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto" onClick={onClose} data-testid="audit-trail-modal">
-      <div className="bg-card border rounded-xl p-5 w-full max-w-3xl mx-4 my-8 space-y-4" onClick={e => e.stopPropagation()}>
+      <div className="bg-card border rounded-xl p-5 w-full max-w-3xl mx-4 my-8 min-h-[60vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-lg">{tr('Audit Trail', '審計追蹤', '审计追踪')}</h3>
           <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="h-4 w-4" /></button>
         </div>
 
+        <div className="overflow-y-auto flex-1 space-y-4 pr-1">
         {/* Chain */}
         <div className="border rounded p-3 space-y-2 bg-muted/10" data-testid="audit-chain">
           {txContext && (
@@ -207,6 +208,7 @@ export default function AuditTrailModal({ open, onClose, invoiceId, txContext }:
             </div>
           );
         })}
+        </div>
       </div>
     </div>
   );
