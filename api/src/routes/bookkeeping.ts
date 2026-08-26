@@ -12,6 +12,7 @@ import { HK_COA_NAMES, getCodeType, ensureMissingAccounts } from '../lib/ensure-
 import { categorizeTransaction, resolveBankAccountCode } from '../lib/transaction-categorizer';
 import { findParentAccountError } from '../lib/account-guard';
 import { getTemporaryAccount } from '../lib/coa-temporary';
+import { checkPeriodOpen } from '../lib/period-guard';
 
 // Re-exported for backward compatibility with anything importing them from here.
 export { HK_COA_NAMES, getCodeType };
@@ -831,14 +832,6 @@ bookkeeping.get('/closed-periods', async (c) => {
   ).bind(tenantId).all();
   return c.json({ data: rows.results });
 });
-
-// Middleware-style check: prevent mutation on closed periods (called by mutation endpoints)
-async function checkPeriodOpen(db: any, tenantId: string, entryDate: string): Promise<boolean> {
-  const closed = await db.prepare(
-    'SELECT id FROM closed_periods WHERE user_id = ? AND ? >= period_start AND ? <= period_end LIMIT 1'
-  ).bind(tenantId, entryDate, entryDate).first();
-  return !closed;
-}
 
 bookkeeping.get('/trial-balance', async (c) => {
   const user = c.get('user');

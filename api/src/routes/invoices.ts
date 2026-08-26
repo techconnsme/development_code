@@ -6,9 +6,12 @@ import { Bindings, Variables } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { ensureProducts } from '../lib/auto-product';
 import { generateInvoiceNumber, generateReceiptNumber } from '../lib/numbering';
-import { tryPostInvoiceToGl } from '../lib/post-invoice';
+import { tryPostInvoiceToGl, postInvoiceToGl } from '../lib/post-invoice';
 import { jeLive } from '../lib/journal-filters';
 import { tombstoneInvoiceJournal } from '../lib/invoice-journal';
+import { findParentAccountError } from '../lib/account-guard';
+import { checkPeriodOpen } from '../lib/period-guard';
+import { postPaymentToGl, resolveInvoiceHoldingAccount } from '../lib/post-payment';
 
 // 1 when the invoice already has a live GL entry, else NULL. Lets the UI offer a
 // persistent "Post to GL" control for anything still unposted, instead of the
@@ -108,15 +111,11 @@ invoices.get('/:id/review', async (c) => {
   return c.json({ ...invoice, items: items.results, customers: customers.results });
 });
 
-invoices.get('/:id', async (c) => {
-  const user = c.get('user');
-  const tenantId = c.get('client_user_id') || user.id;
-  const db = c.env.DB;
-  const id = c.req.param('id');
+async function invoiceDetailPayload(db: any, tenantId: string, id: string) {
   const invoice = await db.prepare(
     'SELECT i.*, c.name as customer_name, c.email as customer_email, c.address as customer_address FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.id = ? AND i.user_id = ? AND i.deleted_at IS NULL'
   ).bind(id, tenantId).first();
-  if (!invoice) return c.json({ error: 'Invoice not found' }, 404);
+  if (!invoice) return null;
   const items = await db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY sort_order').bind(id).all();
 
   // Linked bank transactions — both link paths:
@@ -197,7 +196,181 @@ invoices.get('/:id', async (c) => {
     journal_entries = entries.map(e => ({ ...e, lines: byEntry[e.id] || [] }));
   }
 
-  return c.json({ ...invoice, items: items.results, linked_transactions, journal_entries });
+  return { ...invoice, items: items.results, linked_transactions, journal_entries };
+}
+
+invoices.get('/:id', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const payload = await invoiceDetailPayload(c.env.DB, tenantId, c.req.param('id'));
+  if (!payload || (payload as any).error === 'Invoice not found') return c.json({ error: 'Invoice not found' }, 404);
+  return c.json(payload);
+});
+
+async function payingTransactionIds(db: any, tenantId: string, invoiceId: string): Promise<string[]> {
+  const res = await db.prepare(
+    `SELECT DISTINCT bt.id FROM bank_transactions bt
+     LEFT JOIN bank_transaction_invoice_links l ON l.transaction_id = bt.id
+     WHERE bt.user_id = ? AND bt.match_status = 'confirmed' AND bt.deleted_at IS NULL
+       AND (bt.invoice_id = ? OR l.invoice_id = ?)`
+  ).bind(tenantId, invoiceId, invoiceId).all();
+  return (res.results as any[]).map(r => r.id);
+}
+
+/**
+ * Regenerate confirmed payment legs after a holding-account change. With
+ * fromCode set, only transactions whose current payment JE references that
+ * code are rebuilt; with null (reset path) all payers are rebuilt. Reuses the
+ * idempotent posters: tombstone the live payment JE, then re-run postPaymentToGl.
+ */
+async function propagateHoldingChange(db: any, tenantId: string, invoiceId: string, fromCode: string | null): Promise<void> {
+  const txIds = await payingTransactionIds(db, tenantId, invoiceId);
+  for (const txId of txIds) {
+    const je = await db.prepare(
+      `SELECT je.id, jl.account_code FROM journal_entries je
+       LEFT JOIN journal_lines jl ON jl.entry_id = je.id
+       WHERE je.reference_type = 'payment' AND je.reference_id = ? AND je.user_id = ? AND ${jeLive('je')}
+       ORDER BY CASE WHEN jl.debit > 0 THEN jl.debit ELSE jl.credit END DESC LIMIT 1`
+    ).bind(txId, tenantId).first() as { id: string; account_code: string | null } | null;
+    if (fromCode && je?.account_code && je.account_code !== fromCode) continue;
+    if (je) {
+      await db.prepare(
+        `UPDATE journal_entries SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND user_id = ?`
+      ).bind(je.id, tenantId).run();
+    }
+    await postPaymentToGl(db, tenantId, txId);
+  }
+}
+
+// PUT /invoices/:id/posting — rewrite the live invoice JE's label+holding pair
+// (entry_source='manual'), propagating holding changes to confirmed payment legs.
+invoices.put('/:id/posting', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({})) as any;
+
+  const inv = await db.prepare(
+    'SELECT * FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(id, tenantId).first<any>();
+  if (!inv) return c.json({ error: 'Invoice not found' }, 404);
+
+  // Current live invoice JE (must exist — editing implies posted)
+  const live = await db.prepare(
+    `SELECT id, entry_number, entry_date, description FROM journal_entries
+     WHERE reference_type = 'invoice' AND reference_id = ? AND user_id = ? AND ${jeLive('journal_entries')}`
+  ).bind(id, tenantId).first<{ id: string; entry_number: string; entry_date: string; description: string }>();
+  if (!live) return c.json({ error: 'Invoice is not posted to GL yet' }, 409);
+
+  if (body.reset_to_auto === true) {
+    await db.prepare(
+      `UPDATE journal_entries SET deleted_at = datetime('now'), updated_at = datetime('now')
+       WHERE id = ? AND user_id = ?`
+    ).bind(live.id, tenantId).run();
+    const repost = await postInvoiceToGl(db, tenantId, id);
+    if (repost.error || repost.not_postable || repost.already_posted) {
+      return c.json({ error: repost.error || `Cannot re-post (status ${repost.not_postable})` }, 409);
+    }
+    await propagateHoldingChange(db, tenantId, id, /*oldHolding*/ null); // null = re-resolve per member
+    await db.prepare('INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'reset_posting', 'invoice', id, JSON.stringify({ previous_entry: live.entry_number })).run();
+    return c.json({ ok: true });
+  }
+
+  const labelCode = String(body.label_account_code ?? '');
+  const holdingCode = String(body.holding_account_code ?? '');
+  if (!labelCode || !holdingCode) return c.json({ error: 'Both label and holding accounts are required' }, 400);
+  if (labelCode === holdingCode) return c.json({ error: 'Label and holding accounts must differ' }, 400);
+
+  const acctRows = await db.prepare(
+    `SELECT account_code, account_name, account_type FROM accounts
+     WHERE user_id = ? AND account_code IN (?, ?) AND is_active = 1`
+  ).bind(tenantId, labelCode, holdingCode).all();
+  const byCode = new Map((acctRows.results as any[]).map(r => [r.account_code, r]));
+  const label = byCode.get(labelCode);
+  const holding = byCode.get(holdingCode);
+  if (!label) return c.json({ error: `Label account ${labelCode} not found` }, 400);
+  if (!holding) return c.json({ error: `Holding account ${holdingCode} not found` }, 400);
+  if (!(label.account_type === 'revenue' || label.account_type === 'expense')) {
+    return c.json({ error: 'Label account must be a revenue or expense account' }, 400);
+  }
+  if (!(holding.account_type === 'asset' || holding.account_type === 'liability')) {
+    return c.json({ error: 'Holding account must be an asset or liability account' }, 400);
+  }
+  const leafErr = (await findParentAccountError(db, tenantId, labelCode))
+    || (await findParentAccountError(db, tenantId, holdingCode));
+  if (leafErr) return c.json({ error: leafErr }, 400);
+
+  if (!(await checkPeriodOpen(db, tenantId, live.entry_date))) {
+    return c.json({ error: 'Cannot change posting in a closed period' }, 409);
+  }
+
+  const prevHolding = await resolveInvoiceHoldingAccount(db, tenantId, id);
+  const prevLabelRow = await db.prepare(
+    `SELECT jl.account_code FROM journal_lines jl
+     JOIN accounts a ON a.user_id = ? AND a.account_code = jl.account_code
+     WHERE jl.entry_id = ? AND a.account_type IN ('revenue','expense')
+     ORDER BY (CASE WHEN jl.debit > 0 THEN jl.debit ELSE jl.credit END) DESC LIMIT 1`
+  ).bind(tenantId, live.id).first<{ account_code: string }>();
+  const prevLabelCodeValue = prevLabelRow?.account_code || null;
+  const holdingChanged = prevHolding.code !== holdingCode;
+
+  // Pre-validate EVERY confirmed paying transaction's parent statement BEFORE writing anything.
+  const payTxIds = await payingTransactionIds(db, tenantId, id);
+  if (holdingChanged && payTxIds.length > 0) {
+    for (const txId of payTxIds) {
+      const st = await db.prepare(
+        `SELECT bs.status FROM bank_transactions bt JOIN bank_statements bs ON bt.bank_statement_id = bs.id WHERE bt.id = ?`
+      ).bind(txId).first<{ status: string }>();
+      if (st && st.status !== 'active') {
+        return c.json({ error: 'A settling statement is reconciled — reopen reconciliation before changing the holding account' }, 409);
+      }
+    }
+  }
+
+  // Tombstone + fresh manual JE (new -R suffix: UNIQUE(user_id, entry_number) holds for tombstoned rows)
+  await db.prepare(
+    `UPDATE journal_entries SET deleted_at = datetime('now'), updated_at = datetime('now')
+     WHERE id = ? AND user_id = ?`
+  ).bind(live.id, tenantId).run();
+
+  const baseNum = `JE-INV-${inv.invoice_number}`;
+  const numRows = await db.prepare(
+    `SELECT entry_number FROM journal_entries WHERE user_id = ? AND entry_number LIKE ?`
+  ).bind(tenantId, `${baseNum}-R%`).all();
+  let maxR = 1;
+  for (const r of numRows.results as any[]) {
+    const m = /-R(\d+)$/.exec(r.entry_number);
+    if (m) maxR = Math.max(maxR, parseInt(m[1], 10));
+  }
+  const jeId = `je-${uuidv4().slice(0, 8)}`;
+  const jeNum = `${baseNum}-R${maxR + 1}`;
+  const lineIns = 'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?,?,?,?,?,?,?,?)';
+  const isIncoming = inv.direction === 'incoming';
+  // One D1 batch = entry + both lines land atomically
+  await db.batch([
+    db.prepare(
+      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id, entry_source) VALUES (?,?,?,?,?,?,?,?)'
+    ).bind(jeId, tenantId, jeNum, live.entry_date, live.description || '', 'invoice', id, 'manual'),
+    isIncoming
+      ? db.prepare(lineIns).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, labelCode, label.account_name, inv.invoice_number, inv.total, 0, 0)
+      : db.prepare(lineIns).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, holdingCode, holding.account_name, inv.invoice_number, inv.total, 0, 0),
+    isIncoming
+      ? db.prepare(lineIns).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, holdingCode, holding.account_name, inv.invoice_number, 0, inv.total, 1)
+      : db.prepare(lineIns).bind(`jl-${uuidv4().slice(0, 8)}`, jeId, labelCode, label.account_name, inv.invoice_number, 0, inv.total, 1),
+  ]);
+
+  if (holdingChanged) await propagateHoldingChange(db, tenantId, id, prevHolding.code);
+
+  await db.prepare('INSERT INTO audit_log (id, user_id, action, entity_type, entity_id, changes) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(`al-${uuidv4().slice(0, 8)}`, user.id, 'update_posting', 'invoice', id, JSON.stringify({
+      previous_entry: live.entry_number, new_entry: jeNum,
+      label: { from: prevLabelCodeValue, to: labelCode },
+      holding: { from: prevHolding.code, to: holdingCode },
+    })).run();
+
+  return c.json(await invoiceDetailPayload(db, tenantId, id));
 });
 
 const itemSchema = z.object({
