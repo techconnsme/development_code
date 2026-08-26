@@ -348,7 +348,15 @@ bank.post('/auto-match', async (c) => {
      FROM invoices i
      LEFT JOIN customers cust ON i.customer_id = cust.id
      LEFT JOIN suppliers supp ON i.supplier_id = supp.id
-     WHERE i.user_id = ? AND i.status NOT IN ('paid', 'cancelled') AND i.deleted_at IS NULL`
+     WHERE i.user_id = ?
+     AND i.status != 'cancelled'
+     AND NOT EXISTS (
+       SELECT 1 FROM bank_transactions b2
+       LEFT JOIN bank_transaction_invoice_links l2 ON l2.transaction_id = b2.id
+       WHERE b2.deleted_at IS NULL AND b2.match_status = 'confirmed'
+         AND (b2.invoice_id = i.id OR l2.invoice_id = i.id)
+     )
+     AND i.deleted_at IS NULL`
   ).bind(tenantId).all();
 
   // Split by direction
@@ -824,7 +832,8 @@ bank.patch('/transactions/:id/match', async (c) => {
       if (tx.current_invoice_id === invoice_id) return c.json({ error: 'Transaction already matched to this invoice' }, 409);
       return c.json({ error: 'Transaction already matched to another invoice — unlink first' }, 409);
     }
-    if (inv.status === 'paid') return c.json({ error: 'Invoice already paid' }, 409);
+    if (inv.status === 'cancelled') return c.json({ error: 'Invoice is cancelled' }, 409);
+    const alreadyPaid = inv.status === 'paid';
 
     // Direction: deposits pay AR (outgoing), withdrawals pay AP (incoming)
     const invIsIncoming = inv.direction === 'incoming';
@@ -841,9 +850,11 @@ bank.patch('/transactions/:id/match', async (c) => {
       `UPDATE bank_transactions SET invoice_id = ?, match_confidence = 'manual', match_status = 'confirmed' WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
     ).bind(invoice_id, txId, tenantId).run();
 
-    await db.prepare(
-      `UPDATE invoices SET status = 'paid', paid_date = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?`
-    ).bind(tx.transaction_date, invoice_id, tenantId).run();
+    if (!alreadyPaid) {
+      await db.prepare(
+        `UPDATE invoices SET status = 'paid', paid_date = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?`
+      ).bind(tx.transaction_date, invoice_id, tenantId).run();
+    }
 
     // Sync the file manager's payment status
     if (inv.file_id) {

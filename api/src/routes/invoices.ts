@@ -800,7 +800,7 @@ invoices.post('/auto-match-receipts', async (c) => {
      LEFT JOIN customers cust ON i.customer_id = cust.id
      LEFT JOIN suppliers supp ON i.supplier_id = supp.id
      WHERE i.user_id = ? AND i.direction = ?
-     AND i.receipt_number IS NULL AND i.status NOT IN ('paid', 'cancelled')
+     AND i.receipt_number IS NULL AND i.linked_invoice_id IS NULL AND i.status != 'cancelled'
      AND i.total > 0 AND i.deleted_at IS NULL`
   ).bind(tenantId, targetDirection).all();
 
@@ -910,7 +910,7 @@ invoices.post('/confirm-receipt-match', async (c) => {
 
   const ph = ids.map(() => '?').join(',');
   const invRes = await db.prepare(
-    `SELECT id, total, direction, status, receipt_number FROM invoices WHERE id IN (${ph}) AND user_id = ? AND deleted_at IS NULL`
+    `SELECT id, total, direction, status, receipt_number, linked_invoice_id, invoice_number FROM invoices WHERE id IN (${ph}) AND user_id = ? AND deleted_at IS NULL`
   ).bind(...ids, tenantId).all<any>();
   const invs = invRes.results as any[];
   if (invs.length !== ids.length) return c.json({ error: 'One or more invoices not found' }, 404);
@@ -920,7 +920,8 @@ invoices.post('/confirm-receipt-match', async (c) => {
 
   for (const inv of invs) {
     if (inv.receipt_number != null) return c.json({ error: `Invoice ${inv.id} is itself a receipt` }, 400);
-    if (inv.status === 'paid' || inv.status === 'cancelled') return c.json({ error: 'Invoice already paid or cancelled' }, 409);
+    if (inv.status === 'cancelled') return c.json({ error: 'Invoice is cancelled' }, 409);
+    if (inv.linked_invoice_id) return c.json({ error: `Invoice ${inv.invoice_number} already has a linked receipt` }, 409);
     if (pref && inv.direction !== pref) {
       return c.json({ error: `Direction mismatch: receipt payer suggests ${pref} invoices, target is ${inv.direction}` }, 400);
     }
@@ -933,9 +934,11 @@ invoices.post('/confirm-receipt-match', async (c) => {
 
   const paidDate = receipt.issue_date || new Date().toISOString().split('T')[0];
   const stmts = [
-    ...invs.map((inv) => db.prepare(
-      "UPDATE invoices SET status = 'paid', paid_date = ?, linked_invoice_id = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
-    ).bind(paidDate, receiptId, inv.id, tenantId)),
+    ...invs.map((inv) => inv.status === 'paid'
+      ? db.prepare("UPDATE invoices SET linked_invoice_id = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NULL")
+          .bind(receiptId, inv.id, tenantId)
+      : db.prepare("UPDATE invoices SET status = 'paid', paid_date = ?, linked_invoice_id = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL")
+          .bind(paidDate, receiptId, inv.id, tenantId)),
     db.prepare('UPDATE invoices SET linked_invoice_id = ? WHERE id = ? AND user_id = ?')
       .bind(ids.join(','), receiptId, tenantId),
   ];
