@@ -87,16 +87,16 @@ async function resolveLinks(db: any, entry: any): Promise<any> {
   switch (entry.reference_type) {
     case 'bank_transaction': {
       const tx = await db.prepare(
-        `SELECT bt.id, bt.description, bt.deposit_amount, bt.withdrawal_amount, bt.match_status, bt.statement_id,
+        `SELECT bt.id, bt.description, bt.deposit_amount, bt.withdrawal_amount, bt.match_status, bt.bank_statement_id,
                 bs.statement_number, bs.file_name
          FROM bank_transactions bt
-         LEFT JOIN bank_statements bs ON bt.statement_id = bs.id
+         LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
          WHERE bt.id = ?`
       ).bind(entry.reference_id).first();
       if (!tx) return { bank_transaction: { id: entry.reference_id, description: '(deleted)', amount: 0, match_status: 'deleted', statement_id: null, statement_number: null, file_name: null } };
       return {
-        bank_statement: tx.statement_id ? { id: (tx as any).statement_id, statement_number: (tx as any).statement_number, file_name: (tx as any).file_name } : null,
-        bank_transaction: { id: (tx as any).id, description: (tx as any).description, amount: (tx as any).deposit_amount || (tx as any).withdrawal_amount, match_status: (tx as any).match_status, statement_id: (tx as any).statement_id },
+        bank_statement: tx.bank_statement_id ? { id: (tx as any).bank_statement_id, statement_number: (tx as any).statement_number, file_name: (tx as any).file_name } : null,
+        bank_transaction: { id: (tx as any).id, description: (tx as any).description, amount: (tx as any).deposit_amount || (tx as any).withdrawal_amount, match_status: (tx as any).match_status, statement_id: (tx as any).bank_statement_id },
       };
     }
     case 'invoice': {
@@ -116,10 +116,10 @@ async function resolveLinks(db: any, entry: any): Promise<any> {
     }
     case 'payment': {
       const tx = await db.prepare(
-        `SELECT bt.id, bt.description, bt.deposit_amount, bt.withdrawal_amount, bt.match_status, bt.statement_id,
+        `SELECT bt.id, bt.description, bt.deposit_amount, bt.withdrawal_amount, bt.match_status, bt.bank_statement_id,
                 bs.statement_number, bs.file_name
          FROM bank_transactions bt
-         LEFT JOIN bank_statements bs ON bt.statement_id = bs.id
+         LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
          WHERE bt.id = ?`
       ).bind(entry.reference_id).first();
       const linkedInvoices = await db.prepare(
@@ -129,8 +129,8 @@ async function resolveLinks(db: any, entry: any): Promise<any> {
          WHERE btil.transaction_id = ?`
       ).bind(entry.reference_id).all();
       const result: any = {
-        bank_statement: tx?.statement_id ? { id: (tx as any).statement_id, statement_number: (tx as any).statement_number, file_name: (tx as any).file_name } : null,
-        bank_transaction: tx ? { id: (tx as any).id, description: (tx as any).description, amount: (tx as any).deposit_amount || (tx as any).withdrawal_amount, match_status: (tx as any).match_status, statement_id: (tx as any).statement_id } : null,
+        bank_statement: tx?.bank_statement_id ? { id: (tx as any).bank_statement_id, statement_number: (tx as any).statement_number, file_name: (tx as any).file_name } : null,
+        bank_transaction: tx ? { id: (tx as any).id, description: (tx as any).description, amount: (tx as any).deposit_amount || (tx as any).withdrawal_amount, match_status: (tx as any).match_status, statement_id: (tx as any).bank_statement_id } : null,
       };
       if (linkedInvoices.results.length > 0) {
         result.linked_invoices = (linkedInvoices.results as any[]).map(li => ({
@@ -176,8 +176,13 @@ bookkeeping.get('/entries', async (c) => {
 
   const entriesWithLinks = await Promise.all(
     (rows.results as any[]).map(async (entry) => {
-      const resolved_links = await resolveLinks(db, entry);
-      return { ...entry, resolved_links };
+      try {
+        const resolved_links = await resolveLinks(db, entry);
+        return { ...entry, resolved_links };
+      } catch (err) {
+        console.error('resolveLinks failed for entry', entry.id, err);
+        return { ...entry, resolved_links: null };
+      }
     })
   );
 
