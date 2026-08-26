@@ -13,6 +13,7 @@ import { categorizeTransaction, resolveBankAccountCode } from '../lib/transactio
 import { findParentAccountError } from '../lib/account-guard';
 import { getTemporaryAccount } from '../lib/coa-temporary';
 import { checkPeriodOpen } from '../lib/period-guard';
+import { nextManualVoucherNumber, findSimilarEntryCandidates, hasSharedAccount } from '../lib/manual-booking';
 import { createSnapshot, getLatestSnapshot, getSnapshots } from '../lib/journal-snapshots';
 
 // Re-exported for backward compatibility with anything importing them from here.
@@ -222,8 +223,9 @@ const lineSchema = z.object({
 });
 
 const entrySchema = z.object({
-  entry_number: z.string().min(1).max(50), entry_date: z.string().max(10), description: z.string().min(1).max(500),
+  entry_number: z.string().min(1).max(50).optional(), entry_date: z.string().max(10), description: z.string().min(1).max(500),
   reference_type: z.string().max(50).optional(), reference_id: z.string().max(50).optional(), lines: z.array(lineSchema).min(2).max(200),
+  file_ids: z.array(z.string()).max(10).optional(), duplicate_acknowledged: z.boolean().optional(),
 });
 
 bookkeeping.post('/entries', bookkeeperMiddleware, zValidator('json', entrySchema), async (c) => {
@@ -256,9 +258,32 @@ bookkeeping.post('/entries', bookkeeperMiddleware, zValidator('json', entrySchem
   if (!(await checkPeriodOpen(db, tenantId, data.entry_date)))
     return c.json({ error: 'Cannot create entry in a closed period' }, 400);
 
+  const fileIds = [...new Set(data.file_ids || [])];
+  if (fileIds.length > 0) {
+    const fileRows = await db.prepare(
+      `SELECT id FROM file_records WHERE user_id = ? AND deleted_at IS NULL AND id IN (${fileIds.map(() => '?').join(',')})`
+    ).bind(tenantId, ...fileIds).all();
+    const found = new Set((fileRows.results as any[]).map(f => f.id));
+    const missing = fileIds.filter(fid => !found.has(fid));
+    if (missing.length > 0) return c.json({ error: `File(s) not found: ${missing.join(', ')}` }, 400);
+  }
+
+  if (!data.duplicate_acknowledged) {
+    const candidates = await findSimilarEntryCandidates(db, tenantId, data.entry_date, totalDebit);
+    const similar = candidates
+      .filter(cand => hasSharedAccount(cand.line_codes, codes))
+      .map(({ id, entry_number, description, total_debit }) => ({ id, entry_number, description, total_debit }));
+    if (similar.length > 0) {
+      return c.json({ error: 'Similar entry already exists', error_code: 'similar_entry_exists', similar_entries: similar }, 409);
+    }
+  }
+
+  const entryNumber = data.entry_number || await nextManualVoucherNumber(db, tenantId, data.entry_date);
+  const createdBy = JSON.stringify({ id: user.id, name: user.name, email: user.email });
+
   await db.prepare(
-    'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, tenantId, data.entry_number, data.entry_date, data.description, data.reference_type || null, data.reference_id || null).run();
+    'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id, entry_source, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, tenantId, entryNumber, data.entry_date, data.description, data.reference_type || null, data.reference_id || null, 'manual', createdBy).run();
 
   for (let i = 0; i < data.lines.length; i++) {
     const line = data.lines[i];
@@ -267,9 +292,16 @@ bookkeeping.post('/entries', bookkeeperMiddleware, zValidator('json', entrySchem
     ).bind(`jl-${uuidv4().slice(0, 8)}`, id, line.account_code, line.account_name, line.description || null, line.debit || 0, line.credit || 0, line.project || null, i).run();
   }
 
+  for (const fileId of fileIds) {
+    await db.prepare('INSERT OR IGNORE INTO journal_entry_files (entry_id, file_record_id) VALUES (?, ?)').bind(id, fileId).run();
+  }
+
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ?').bind(id).first();
   const lines = await db.prepare('SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY sort_order').bind(id).all();
-  await auditLog(db, user.id, 'create', 'journal_entry', id, { entry_number: data.entry_number, description: data.description, lines: data.lines.length });
+  await auditLog(db, user.id, 'create', 'journal_entry', id, {
+    entry_number: entryNumber, description: data.description, lines: data.lines.length,
+    file_ids: fileIds, duplicate_acknowledged: !!data.duplicate_acknowledged,
+  });
   await createSnapshot(db, tenantId, id, 'create');
   return c.json({ ...entry, lines: lines.results }, 201);
 });
