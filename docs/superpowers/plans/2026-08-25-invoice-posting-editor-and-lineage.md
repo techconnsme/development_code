@@ -328,7 +328,6 @@ Capture the previous label BEFORE the tombstone — insert right after resolving
   ).bind(tenantId, live.id).first<{ account_code: string }>();
   const prevLabelCodeValue = prevLabelRow?.account_code || null;
 ```
-```
 
 Plus these two helpers placed just ABOVE the route (same file, module scope):
 
