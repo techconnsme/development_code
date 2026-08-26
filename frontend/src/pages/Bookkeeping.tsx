@@ -445,7 +445,8 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                     </div>
                   </td>
                 </tr>
-                <tr key={`${e.id}-detail`} className={`bg-muted/20 border-b transition-all duration-300 ease-in-out overflow-hidden ${expandedId === e.id ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0 border-b-0'}`}>
+                {expandedId === e.id && (
+                  <tr key={`${e.id}-detail`} className="bg-muted/20 border-b animate-slide-down">
                     <td colSpan={8} className="p-0">
                       <div className="px-8 py-3">
                         {loadingDetail === e.id ? (
@@ -591,6 +592,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                       </div>
                     </td>
                   </tr>
+                )}
                 </React.Fragment>
               ))}
               {(!entries?.data || entries.data.length === 0) && (

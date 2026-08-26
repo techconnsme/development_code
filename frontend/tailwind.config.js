@@ -42,6 +42,15 @@ export default {
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
       },
+      keyframes: {
+        'slide-down': {
+          from: { opacity: '0', maxHeight: '0' },
+          to: { opacity: '1', maxHeight: '500px' },
+        },
+      },
+      animation: {
+        'slide-down': 'slide-down 0.2s ease-out',
+      },
     },
   },
   plugins: [],
