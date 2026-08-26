@@ -103,3 +103,17 @@
   border-radius: 4px;
   scroll-margin-top: 100px;
 }
+
+.highlight-border {
+  outline: 2px solid #3b82f6;
+  outline-offset: -2px;
+  border-radius: 4px;
+  scroll-margin-top: 100px;
+  animation: fadeOutline 2s ease-out forwards;
+}
+
+@keyframes fadeOutline {
+  0%   { outline-color: #3b82f6; }
+  70%  { outline-color: #3b82f6; }
+  100% { outline-color: transparent; }
+}

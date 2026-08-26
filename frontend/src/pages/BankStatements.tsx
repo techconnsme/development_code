@@ -350,8 +350,8 @@ export default function BankStatements() {
         const el = document.getElementById(`stmt-row-${highlightId}`);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          el.classList.add('highlight-pulse');
-          setTimeout(() => el.classList.remove('highlight-pulse'), 5000);
+          el.classList.add('highlight-border');
+          setTimeout(() => el.classList.remove('highlight-border'), 2500);
         }
       }, 300);
     } else if (highlightId) {
