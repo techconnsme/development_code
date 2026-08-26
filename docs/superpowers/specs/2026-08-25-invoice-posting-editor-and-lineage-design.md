@@ -148,3 +148,7 @@ GET /invoices/:id payload gains linked_receipt: { id, invoice_number, total, iss
 ### 7.5 Revision 3 (2026-08-25): polish + in-popup auto-link
 
 Revision 3 (2026-08-25): trigger restyled as labeled button; popup min-height 60vh with scrollable body; in-popup auto-link — invoice context runs auto-match then offers ✓ confirm on suggested transactions; tx context lists unpaid-invoice candidates with Link action; bank-side popup button now unconditional.
+
+### 7.6 Revision 3 correction (2026-08-25): auto-match is suggest-only
+
+POST /bank-statements/auto-match returns candidate pairs and persists NOTHING. The popups auto-link therefore renders the response payload: entries filtered to the invoice in context appear as local suggestion rows (confidence, invoice number(s), amount, reason) whose confirm goes through PATCH /transactions/:txId/match; tx-context candidates are direction-filtered by the transactions movement. TC-LIN-04 asserts the honest outcome (suggestion rows or an explicit none-found message).
