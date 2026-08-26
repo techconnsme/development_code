@@ -642,9 +642,12 @@ export function ReceiptMatchReviewModal({ matches, onConfirm, onClose }: {
                 const ids = receiptMatchInvoiceIds(m);
                 const canConfirm = ids.length > 0;
                 const combined = ids.length > 1;
+                const combinedNumbers = (Array.isArray(m.invoices) ? m.invoices : [])
+                  .map((inv: any) => inv.invoice_number)
+                  .filter(Boolean);
                 const invoiceLabels = combined
-                  ? (Array.isArray(m.invoices) && m.invoices.length
-                      ? m.invoices.map((inv: any) => inv.invoice_number || String(inv.invoice_id || '').slice(-8))
+                  ? (combinedNumbers.length
+                      ? combinedNumbers
                       : ids.map((id: string) => String(id).slice(-8)))
                   : [];
                 return (

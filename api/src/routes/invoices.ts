@@ -12,6 +12,7 @@ import { tombstoneInvoiceJournal } from '../lib/invoice-journal';
 import { findParentAccountError } from '../lib/account-guard';
 import { checkPeriodOpen } from '../lib/period-guard';
 import { postPaymentToGl, resolveInvoiceHoldingAccount } from '../lib/post-payment';
+import { fuzzyMatchCompany } from '../lib/company-matcher';
 
 // 1 when the invoice already has a live GL entry, else NULL. Lets the UI offer a
 // persistent "Post to GL" control for anything still unposted, instead of the
@@ -704,52 +705,170 @@ invoices.delete('/:id', async (c) => {
   return c.json({ success: true, file_deleted: fileDeleted, journal_entries_tombstoned: jeTombstoned, restorable_until: new Date(Date.now() + 30 * 86400_000).toISOString() });
 });
 
+// ── Receipt ↔ invoice matching helpers (hardened 2026-08-26) ───────────────
+// The pre-fix matcher was amount-only: no direction, no counterparty, no
+// guards on confirm — equal amounts cross-linked (ground-truth §4.3 lists
+// coincidences that are NOT links) and confirm accepted any two invoice ids.
+
+async function ownCompanyNames(db: D1Database, tenantId: string): Promise<string[]> {
+  const row = await db.prepare(
+    'SELECT name, legal_name, short_name FROM company_settings WHERE user_id = ?'
+  ).bind(tenantId).first<{ name: string | null; legal_name: string | null; short_name: string | null }>();
+  const names = [row?.name, row?.legal_name, row?.short_name].filter((s): s is string => !!s?.trim());
+  if (names.length === 0) {
+    const u = await db.prepare('SELECT company_name FROM users WHERE id = ?').bind(tenantId).first<{ company_name: string | null }>();
+    if (u?.company_name?.trim()) names.push(u.company_name);
+  }
+  return names;
+}
+
+/** Preferred invoice direction for a receipt (same cascade as the import
+ *  auto-link): payer≈own → incoming; issuer≈own → outgoing; neither≈own →
+ *  incoming (a third party's receipt in our books is one they issued to us). */
+function receiptPrefDirection(
+  payerName: string | null,
+  issuerName: string | null,
+  ownNames: string[],
+): 'incoming' | 'outgoing' | null {
+  const score = (n: string | null) =>
+    n && ownNames.length > 0 ? (fuzzyMatchCompany(n, ownNames, { topN: 1, minScore: 50 })?.best?.score ?? 0) : 0;
+  if (score(payerName) >= 70) return 'incoming';
+  if (score(issuerName) >= 70) return 'outgoing';
+  if (issuerName || payerName) return 'incoming';
+  return null;
+}
+
+/** The non-own name on a receipt — the counterparty to rank candidates against. */
+function receiptCounterpartyName(
+  payerName: string | null,
+  issuerName: string | null,
+  ownNames: string[],
+): string | null {
+  const score = (n: string | null) =>
+    n && ownNames.length > 0 ? (fuzzyMatchCompany(n, ownNames, { topN: 1, minScore: 50 })?.best?.score ?? 0) : 0;
+  if (score(payerName) >= 70) return issuerName;
+  if (score(issuerName) >= 70) return payerName;
+  return issuerName || payerName;
+}
+
+/** Exact-sum subset over same-direction unpaid invoices (combined-payment
+ *  receipts covering 2-3 invoices). Mirrors bank-matcher's subset search. */
+function receiptSubsetSum(
+  pool: { id: string; invoice_number: string; total: number }[],
+  size: number,
+  start: number,
+  target: number,
+  acc: { id: string; invoice_number: string; total: number }[],
+): { id: string; invoice_number: string; total: number }[] | null {
+  if (acc.length === size) {
+    const sum = acc.reduce((s, i) => s + i.total, 0);
+    return Math.abs(sum - target) < 0.01 ? acc.slice() : null;
+  }
+  const partial = acc.reduce((s, i) => s + i.total, 0);
+  for (let i = start; i < pool.length; i++) {
+    if (partial + pool[i].total - target > 0.01) continue; // sorted desc
+    acc.push(pool[i]);
+    const hit = receiptSubsetSum(pool, size, i + 1, target, acc);
+    if (hit) return hit;
+    acc.pop();
+  }
+  return null;
+}
+
 // ── Auto-match receipts to invoices (returns suggestions, does NOT link) ──
 // ?direction=incoming (AP: receipt proves you paid a supplier bill)
 // ?direction=outgoing (AR: receipt proves customer paid you)
+// A receipt appears in AT MOST one direction run (payer-name preference),
+// which also fixes the old duplicate-row bug in MatchSuggestionsModal.
 invoices.post('/auto-match-receipts', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
   const direction = c.req.query('direction') || 'incoming';
 
-  // Find unmatched receipts (have receipt_number, not yet linked, have total > 0)
-  // Receipts can be either direction — they are the "proof of payment" document
   const receipts = await db.prepare(
-    `SELECT id, invoice_number, receipt_number, total, vendor_name, customer_name, paid_date, direction
+    `SELECT id, invoice_number, receipt_number, total, vendor_name, customer_name, payer_name, paid_date, direction
      FROM invoices WHERE user_id = ? AND receipt_number IS NOT NULL
      AND linked_invoice_id IS NULL AND total > 0 AND deleted_at IS NULL`
   ).bind(tenantId).all();
 
-  // Find unpaid invoices for the target direction
   const targetDirection = direction === 'outgoing' ? 'outgoing' : 'incoming';
   const unpaidInvoices = await db.prepare(
-    `SELECT id, invoice_number, total, vendor_name, customer_name, status, issue_date
-     FROM invoices WHERE user_id = ? AND direction = ?
-     AND receipt_number IS NULL AND status NOT IN ('paid', 'cancelled') AND total > 0 AND deleted_at IS NULL`
+    `SELECT i.id, i.invoice_number, i.total, i.vendor_name, i.status, i.issue_date,
+            cust.name AS customer_name, supp.name AS supplier_name
+     FROM invoices i
+     LEFT JOIN customers cust ON i.customer_id = cust.id
+     LEFT JOIN suppliers supp ON i.supplier_id = supp.id
+     WHERE i.user_id = ? AND i.direction = ?
+     AND i.receipt_number IS NULL AND i.status NOT IN ('paid', 'cancelled')
+     AND i.total > 0 AND i.deleted_at IS NULL`
   ).bind(tenantId, targetDirection).all();
 
+  const ownNames = await ownCompanyNames(db, tenantId);
   const matched: any[] = [];
   const usedInvoiceIds = new Set<string>();
 
   for (const receipt of (receipts.results as any[])) {
-    for (const inv of (unpaidInvoices.results as any[])) {
-      if (usedInvoiceIds.has(inv.id)) continue;
-      if (Math.abs(receipt.total - inv.total) < 0.02) {
-        usedInvoiceIds.add(inv.id);
-        matched.push({
-          receipt_id: receipt.id,
-          receipt_number: receipt.receipt_number || receipt.invoice_number,
-          receipt_total: receipt.total,
-          receipt_vendor: receipt.vendor_name || receipt.customer_name || '',
-          invoice_id: inv.id,
-          invoice_number: inv.invoice_number,
-          invoice_total: inv.total,
-          invoice_vendor: inv.vendor_name || inv.customer_name || '',
-          direction: targetDirection,
-        });
-        break;
-      }
+    const payer = receipt.payer_name || null;
+    const issuer = receipt.vendor_name || receipt.customer_name || null;
+    const pref = receiptPrefDirection(payer, issuer, ownNames);
+    if (pref && pref !== targetDirection) continue; // this receipt belongs to the other run
+    const counterpartyR = receiptCounterpartyName(payer, issuer, ownNames);
+
+    const cands = (unpaidInvoices.results as any[])
+      .filter((inv) => !usedInvoiceIds.has(inv.id) && Math.abs(receipt.total - inv.total) < 0.02)
+      .map((inv) => {
+        const invParty = targetDirection === 'outgoing' ? (inv.customer_name || inv.supplier_name) : (inv.supplier_name || inv.customer_name);
+        return {
+          inv,
+          nameScore: counterpartyR && invParty
+            ? (fuzzyMatchCompany(counterpartyR, [invParty], { topN: 1, minScore: 50 })?.best?.score ?? 0)
+            : 0,
+        };
+      })
+      .sort((a, b) => b.nameScore - a.nameScore || (b.inv.issue_date || '').localeCompare(a.inv.issue_date || ''));
+
+    const base = {
+      receipt_id: receipt.id,
+      receipt_number: receipt.receipt_number || receipt.invoice_number,
+      receipt_total: receipt.total,
+      receipt_vendor: issuer || payer || '',
+      direction: targetDirection,
+    };
+
+    if (cands.length === 1 || (cands.length > 1 && cands[0].nameScore >= 70)) {
+      // Unambiguous single match (unique amount, or counterparty corroborated)
+      usedInvoiceIds.add(cands[0].inv.id);
+      matched.push({
+        ...base,
+        invoice_id: cands[0].inv.id,
+        invoice_number: cands[0].inv.invoice_number,
+        invoice_total: cands[0].inv.total,
+        invoice_vendor: cands[0].inv.customer_name || cands[0].inv.supplier_name || '',
+        reason: cands[0].nameScore >= 70 ? `Amount + counterparty "${payer}" match` : 'Unique equal amount in this direction',
+      });
+      continue;
+    }
+    if (cands.length > 1) continue; // equal amounts, no corroborating signal → leave to manual review
+
+    // Combined-payment receipt: exact sum of 2-3 same-direction invoices
+    const pool = (unpaidInvoices.results as any[])
+      .filter((inv) => !usedInvoiceIds.has(inv.id) && inv.total > 0 && inv.total <= receipt.total)
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 12);
+    let group: { id: string; invoice_number: string; total: number }[] | null = null;
+    for (let size = 2; size <= Math.min(3, pool.length) && !group; size++) {
+      group = receiptSubsetSum(pool, size, 0, receipt.total, []);
+    }
+    if (group) {
+      for (const g of group) usedInvoiceIds.add(g.id);
+      matched.push({
+        ...base,
+        invoice_ids: group.map((g) => g.id),
+        invoices: group.map((g) => ({ invoice_id: g.id, invoice_number: g.invoice_number, total: g.total })),
+        invoice_total: group.reduce((s, g) => s + g.total, 0),
+        reason: `Combined payment: ${group.map((g) => g.total.toLocaleString()).join(' + ')} = ${receipt.total.toLocaleString()}`,
+      });
     }
   }
 
@@ -760,37 +879,69 @@ invoices.post('/auto-match-receipts', async (c) => {
   });
 });
 
-// ── Confirm a receipt-to-invoice match ──
+// ── Confirm a receipt-to-invoice match (fully guarded since 2026-08-26) ──
+// Accepts { receipt_id, invoice_id } or { receipt_id, invoice_ids: [] } for
+// combined payments. Validates receipt-ness, tenant, statuses, direction
+// consistency and amounts — the pre-fix endpoint accepted any two ids.
 invoices.post('/confirm-receipt-match', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
-  const { receipt_id, invoice_id } = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
+  const receiptId = body?.receipt_id;
+  const ids: string[] = Array.isArray(body?.invoice_ids)
+    ? body.invoice_ids
+    : (body?.invoice_id ? [body.invoice_id] : []);
 
-  if (!receipt_id || !invoice_id) {
-    return c.json({ error: 'receipt_id and invoice_id are required' }, 400);
+  if (!receiptId || ids.length === 0) {
+    return c.json({ error: 'receipt_id and invoice_id (or invoice_ids) are required' }, 400);
+  }
+  if (new Set(ids).size !== ids.length) {
+    return c.json({ error: 'Duplicate invoice ids' }, 400);
   }
 
-  // Verify both exist and belong to this tenant
   const receipt = await db.prepare(
-    'SELECT id, paid_date, issue_date FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(receipt_id, tenantId).first<any>();
+    'SELECT id, total, issue_date, vendor_name, customer_name, payer_name, linked_invoice_id, receipt_number, invoice_number FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(receiptId, tenantId).first<any>();
+  if (!receipt) return c.json({ error: 'Receipt not found' }, 404);
+  const isReceiptRow = receipt.receipt_number != null || /^REC/i.test(receipt.invoice_number || '');
+  if (!isReceiptRow) return c.json({ error: 'receipt_id does not refer to a receipt' }, 400);
+  if (receipt.linked_invoice_id) return c.json({ error: 'Receipt already linked — unlink first' }, 409);
 
-  const invoice = await db.prepare(
-    'SELECT id FROM invoices WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(invoice_id, tenantId).first<any>();
+  const ph = ids.map(() => '?').join(',');
+  const invRes = await db.prepare(
+    `SELECT id, total, direction, status, receipt_number FROM invoices WHERE id IN (${ph}) AND user_id = ? AND deleted_at IS NULL`
+  ).bind(...ids, tenantId).all<any>();
+  const invs = invRes.results as any[];
+  if (invs.length !== ids.length) return c.json({ error: 'One or more invoices not found' }, 404);
 
-  if (!receipt || !invoice) {
-    return c.json({ error: 'Receipt or invoice not found' }, 404);
+  const ownNames = await ownCompanyNames(db, tenantId);
+  const pref = receiptPrefDirection(receipt.payer_name || null, receipt.vendor_name || receipt.customer_name || null, ownNames);
+
+  for (const inv of invs) {
+    if (inv.receipt_number != null) return c.json({ error: `Invoice ${inv.id} is itself a receipt` }, 400);
+    if (inv.status === 'paid' || inv.status === 'cancelled') return c.json({ error: 'Invoice already paid or cancelled' }, 409);
+    if (pref && inv.direction !== pref) {
+      return c.json({ error: `Direction mismatch: receipt payer suggests ${pref} invoices, target is ${inv.direction}` }, 400);
+    }
   }
 
-  // Link receipt → invoice (receipt proves payment)
-  await db.prepare('UPDATE invoices SET linked_invoice_id = ? WHERE id = ? AND user_id = ?')
-    .bind(invoice_id, receipt_id, tenantId).run();
-  await db.prepare("UPDATE invoices SET status = 'paid', paid_date = ?, linked_invoice_id = ? WHERE id = ? AND user_id = ?")
-    .bind(receipt.paid_date || receipt.issue_date || new Date().toISOString().split('T')[0], receipt_id, invoice_id, tenantId).run();
+  const sum = invs.reduce((s, i) => s + i.total, 0);
+  if (Math.abs(sum - receipt.total) >= 0.02) {
+    return c.json({ error: `Amount mismatch: receipt ${receipt.total} vs invoices ${sum}` }, 409);
+  }
 
-  return c.json({ success: true, receipt_id, invoice_id });
+  const paidDate = receipt.issue_date || new Date().toISOString().split('T')[0];
+  const stmts = [
+    ...invs.map((inv) => db.prepare(
+      "UPDATE invoices SET status = 'paid', paid_date = ?, linked_invoice_id = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
+    ).bind(paidDate, receiptId, inv.id, tenantId)),
+    db.prepare('UPDATE invoices SET linked_invoice_id = ? WHERE id = ? AND user_id = ?')
+      .bind(ids.join(','), receiptId, tenantId),
+  ];
+  await db.batch(stmts);
+
+  return c.json({ success: true, receipt_id: receiptId, invoice_id: ids[0], invoice_ids: ids });
 });
 
 export { invoices as invoiceRoutes };
