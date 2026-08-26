@@ -17,6 +17,27 @@ import TxPostingPanel, { PostingLine } from '../components/TxPostingPanel';
 import SlideOpen from '../components/SlideOpen';
 import { isTemporaryAccount } from '../lib/coa-hierarchy';
 
+function PreFillButton({ item, bankCode, onPrefillJe, onPrefillMatch }: {
+  item: any;
+  bankCode: string;
+  onPrefillJe: (txId: string, bankCode: string, lines: any[]) => void;
+  onPrefillMatch: (txId: string, invoiceNumber?: string, confidence?: string) => void;
+}) {
+  if (item.kind === 'invoice_match')
+    return (
+      <button data-testid="review-prefill" onClick={() => onPrefillMatch(item.transaction_id, item.prefill?.invoice_number, item.confidence)}
+        className="px-2 py-0.5 text-xs rounded border hover:bg-green-100 whitespace-nowrap">
+        {tr('Review match', '審視配對', '审视配对')}
+      </button>
+    );
+  return (
+    <button data-testid="review-prefill" onClick={() => onPrefillJe(item.transaction_id, bankCode, item.prefill?.lines || [])}
+      className="px-2 py-0.5 text-xs rounded border hover:bg-green-100 whitespace-nowrap">
+      {tr('Pre-fill', '預填', '预填')}
+    </button>
+  );
+}
+
 interface Transaction {
   id: string;
   transaction_date: string;
@@ -68,6 +89,8 @@ export default function BankStatements() {
   const [acctModalTx, setAcctModalTx] = useState<Transaction | null>(null);
   const [aiLoading, setAiLoading] = useState<string | null>(null);
   const [reconData, setReconData] = useState<any>(null);
+  const [prefillTxId, setPrefillTxId] = useState<string | null>(null);
+  const [prefilledLines, setPrefilledLines] = useState<PostingLine[] | undefined>(undefined);
   // Default OFF: balance_status='ok' only means the balance math checked out at
   // import — it does NOT mean the statement is reconciled. Hiding COA controls by
   // default blocked account assignment on every auto-verified statement (2026-08-17).
@@ -227,6 +250,26 @@ export default function BankStatements() {
       body: reset ? { reset_to_auto: true } : { lines, movement_amount: movement },
     });
     queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
+    setPrefillTxId(null);
+    setPrefilledLines(undefined);
+  };
+
+  // Review-vs-Ledger suggestion → pre-fill the row's posting editor
+  const prefillJe = (txId: string, bankCode: string, lines: any[]) => {
+    setPrefillTxId(txId);
+    setPrefilledLines(
+      lines
+        .filter((l: any) => l.account_code !== bankCode)
+        .map((l: any) => ({ account_code: l.account_code, amount: Math.round(((l.debit || 0) + (l.credit || 0)) * 100) / 100 }))
+    );
+    toast.info(tr('Suggestion pre-filled — review and save', '建議已預填——請確認後保存', '建议已预填——请确认后保存'));
+  };
+  // Review-vs-Ledger invoice suggestion → open the existing match modal with a hint
+  const prefillMatch = (txId: string, invoiceNumber?: string, confidence?: string) => {
+    if (invoiceNumber)
+      toast.info(tr(`Suggested: ${invoiceNumber} (${confidence ?? 'low'} confidence)`,
+        `建議：${invoiceNumber}（${confidence ?? 'low'} 信心）`, `建议：${invoiceNumber}（${confidence ?? 'low'} 信心）`));
+    setMatchTxId(txId);
   };
 
   const autoMatchCardsMut = useMutation({
@@ -527,14 +570,14 @@ export default function BankStatements() {
                               <button onClick={async () => {
                                 if (!detail?.id) return;
                                 try {
-                                  const res = await api(`/bank-statements/${detail.id}/reconcile`, { method: 'POST' });
+                                  const res = await api(`/bank-statements/${detail.id}/review`, { method: 'POST' });
                                   setReconData(res);
                                 } catch (err: any) {
-                                  toast.error((tr('Reconcile failed: ', '對賬失敗：', '对账失败：')) + (err.message || 'unknown'));
+                                  toast.error((tr('Review failed: ', '審查失敗：', '审查失败：')) + (err.message || 'unknown'));
                                 }
                               }}
                                 className="px-2 py-1 text-xs rounded border hover:bg-green-100">
-                                {tr('🔍 Reconcile', '🔍 對賬 Reconcile', '🔍 对账 Reconcile')}
+                                {tr('🔍 Review vs Ledger', '🔍 對帳審查', '🔍 对账审查')}
                               </button>
                               <button onClick={() => autoMatchMut.mutate()}
                                 disabled={autoMatchMut.isPending}
@@ -916,6 +959,7 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
                                           fixedName={accounts.find((a: any) => a.account_code === stmtBankCode)?.account_name || 'Bank account'}
                                           posting={posting}
                                           currentCode={tx.account_code}
+                                          initialContraLines={prefillTxId === tx.id ? prefilledLines : undefined}
                                           accounts={accounts}
                                           tree={coaTree}
                                           disabled={!!detail?.is_reconciled}
@@ -1036,52 +1080,76 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
         />
       )}
 
-      {/* Bank Reconciliation Modal */}
+      {/* Review vs Ledger Modal */}
       {reconData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setReconData(null)}>
-          <div className="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 space-y-4" onClick={e => e.stopPropagation()}>
+          <div className="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 space-y-4 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between">
-              <h3 className="font-bold text-lg">{tr('Bank Reconciliation', '銀行對賬 Bank Reconciliation', '银行对账 Bank Reconciliation')}</h3>
-              <span className={`text-sm font-bold px-3 py-1 rounded ${Math.abs(reconData.difference || 0) < 0.01 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                {Math.abs(reconData.difference || 0) < 0.01
-                  ? (tr('✓ Balanced', '✓ 相符', '✓ 相符'))
-                  : (tr('⚠ Difference', '⚠ 不符', '⚠ 不符'))}
-              </span>
+              <h3 className="font-bold text-lg">{tr('Review vs Ledger', '對帳審查', '对账审查')}</h3>
+              {reconData.is_locked && (
+                <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 text-xs">
+                  {tr('Statement is reconciled — read-only', '月結單已對賬——唯讀', '月结单已对账——只读')}
+                </span>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="bg-muted/50 rounded-lg p-3">
-                <span className="text-muted-foreground text-xs">{tr('Statement Balance', '月結單餘額', '月结单余额')}</span>
-                <p className="font-bold text-lg">HKD {reconData.statement_balance?.toLocaleString()}</p>
+                <span className="text-muted-foreground text-xs">{tr('Bank', '銀行', '银行')}</span>
+                <p className="font-bold text-lg">HKD {(reconData.balance_summary?.statement_balance ?? 0).toLocaleString()}</p>
               </div>
               <div className="bg-muted/50 rounded-lg p-3">
-                <span className="text-muted-foreground text-xs">{tr('GL Balance', '總賬餘額', '總賬余额')}</span>
-                <p className="font-bold text-lg">HKD {reconData.gl_balance?.toLocaleString()}</p>
+                <span className="text-muted-foreground text-xs">{tr('Books', '帳面', '账面')}</span>
+                <p className="font-bold text-lg">HKD {(reconData.balance_summary?.gl_balance ?? 0).toLocaleString()}</p>
               </div>
-            </div>
-            <div className="text-sm flex justify-between border-t pt-3">
-              <span>{tr('Difference', '差異 Difference', '差异 Difference')}</span>
-              <span className={`font-bold ${Math.abs(reconData.difference || 0) < 0.01 ? 'text-green-600' : 'text-red-600'}`}>
-                HKD {reconData.difference?.toLocaleString()}
-              </span>
-            </div>
-            {(reconData.outstanding_transactions || []).length > 0 && (
               <div>
-                <span className="text-sm font-medium">
-                  {tr(`Outstanding (${reconData.outstanding_transactions.length})`, `未達交易 Outstanding (${reconData.outstanding_transactions.length})`, `未達交易 Outstanding (${reconData.outstanding_transactions.length})`)}
-                </span>
-                <div className="max-h-48 overflow-y-auto mt-2 border rounded-lg divide-y">
-                  {(reconData.outstanding_transactions || []).map((t: any) => (
-                    <div key={t.id} className="flex items-center justify-between px-3 py-2 text-xs hover:bg-muted/30">
-                      <span className="w-20 text-muted-foreground">{t.transaction_date}</span>
-                      <span className="flex-1 truncate mx-2">{t.description?.slice(0, 50)}</span>
-                      <span className={`font-mono ${t.deposit_amount > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        {t.deposit_amount > 0 ? `+${t.deposit_amount.toLocaleString()}` : t.withdrawal_amount > 0 ? `-${t.withdrawal_amount.toLocaleString()}` : ''}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <span className="text-muted-foreground text-xs">{tr('Gap', '差額', '差额')}</span>
+                <p className={`font-bold text-lg ${(Math.abs(reconData.balance_summary?.difference ?? 0) < 0.01) ? 'text-green-600' : 'text-red-600'}`}>
+                  HKD {(reconData.balance_summary?.difference ?? 0).toLocaleString()}
+                </p>
               </div>
-            )}
+              <div>
+                <span className="text-muted-foreground text-xs">{tr('After suggestions', '建議後', '建议后')}</span>
+                <p className={`font-bold text-lg ${(Math.abs(reconData.projected_difference ?? 0) < 0.01) ? 'text-green-600' : 'text-amber-600'}`}>
+                  HKD {(reconData.projected_difference ?? 0).toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            {(['adjusting_je', 'invoice_match', 'coa_posting'] as const).map(kind => {
+              const group = (reconData.items || []).filter((i: any) => i.kind === kind);
+              if (!group.length) return null;
+              const titles: Record<string, [string, string, string]> = {
+                adjusting_je: ['Suggested adjusting entries', '建議調整分錄', '建议调整分录'],
+                invoice_match: ['Suggested invoice matches', '建議發票配對', '建议发票配对'],
+                coa_posting: ['Postings needed', '待入帳項目', '待入账项目'],
+              };
+              const t = titles[kind];
+              return (
+                <div key={kind}>
+                  <p className="text-sm font-semibold mb-1">{tr(t[0], t[1], t[2])}</p>
+                  <ul className="space-y-1">
+                    {group.map((it: any) => (
+                      <li key={it.id} data-testid="review-item" className="flex items-center justify-between gap-2 text-sm border rounded px-2 py-1">
+                        <span className="flex-1 min-w-0">
+                          <span className={`mr-1 px-1 rounded text-[10px] ${it.source === 'ai' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
+                            {it.source === 'ai' ? tr('AI', 'AI', 'AI') : tr('RULE', '規則', '规则')}
+                          </span>
+                          {it.explanation}
+                        </span>
+                        {!reconData.is_locked && it.transaction_id && (
+                          <PreFillButton item={it} bankCode={detail?.account_code || '11101'}
+                            onPrefillJe={prefillJe} onPrefillMatch={prefillMatch} />
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+            {(reconData.items || []).filter((i: any) => i.kind === 'info').map((it: any) => (
+              <p key={it.id} className="text-xs text-muted-foreground">{it.explanation}</p>
+            ))}
+
             <div className="flex gap-3 justify-end">
               <button onClick={() => setReconData(null)} className="px-4 py-2 border rounded-md text-sm">
                 {tr('Close', '關閉', '关闭')}

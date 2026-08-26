@@ -21,6 +21,8 @@ interface TxPostingPanelProps {
   posting: { entry_id: string; entry_number: string; entry_source: string; lines: { account_code: string; account_name: string; debit: number; credit: number }[] } | null;
   /** Current single-code fallback when no posting exists yet */
   currentCode?: string | null;
+  /** Review suggestion seed (only honoured when no posting exists yet) */
+  initialContraLines?: PostingLine[];
   accounts: any[];
   tree: CoaNode[];
   disabled?: boolean;
@@ -35,7 +37,7 @@ interface TxPostingPanelProps {
  * split across N accounts with amounts. Save validates allocation == movement.
  */
 export default function TxPostingPanel({
-  kind, movementAmount, contraSide, fixedCode, fixedName, posting, currentCode,
+  kind, movementAmount, contraSide, fixedCode, fixedName, posting, currentCode, initialContraLines,
   accounts, tree, disabled, lockedReason, onSave, onResetAuto,
 }: TxPostingPanelProps) {
   const rounded = Math.round(movementAmount * 100) / 100;
@@ -60,6 +62,7 @@ export default function TxPostingPanel({
           .map(l => ({ account_code: l.account_code, amount: Math.round((l.debit || l.credit || 0) * 100) / 100 }));
       }
     }
+    if (initialContraLines && initialContraLines.length > 0) return initialContraLines;
     if (currentCode) return [{ account_code: currentCode, amount: rounded }];
     return [{ account_code: '', amount: rounded }];
   });
