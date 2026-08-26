@@ -96,7 +96,7 @@ All in existing route files, same auth/tenancy pattern (`tenantId = c.get('clien
 
 ### 5.4 Existing endpoints — two behavior changes (flagged and approved)
 
-- **`POST /entries/:id/reverse`**: auto-assigns an `MJ-` number when none is supplied, and stamps `entry_source='manual'` + `created_by` on the reversal. Guards: original must be live (409 otherwise) and its period open (400). The reversal keeps `reference_type='journal'`, `reference_id=<original id>` (existing convention).
+- **`POST /entries/:id/reverse`**: keeps its existing `-REV` auto-numbering (`MJ-202608-004-REV` — traceable to the original voucher). Adds what is missing today: stamps `entry_source='manual'` + `created_by` on the reversal, rejects tombstoned originals (409), and enforces the period guard on the reversal date (today; 400). The reversal keeps `reference_type='journal'`, `reference_id=<original id>` (existing convention).
 - **`DELETE /entries/:id`**: switches from hard delete to **tombstone** — sets `deleted_at` (leaves `status` untouched), keeps lines. Rationale: HK practice corrects posted vouchers by reversal, not destruction; tombstoning retires the voucher number permanently (auto-number scan includes tombstones) and leaves a recoverable trail. UX impact on the GJE tab: none visible (`jeLive()` excludes tombstones exactly as it excluded deleted rows). Recycle Bin UI for JEs is out of scope.
 
 ## 6. Frontend
