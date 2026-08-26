@@ -37,7 +37,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [loadingAudit, setLoadingAudit] = useState<string | null>(null);
   const { highlight: highlightId } = useHighlightTarget();
   const bookkeepingNavigate = useNavigate();
-  const [expandedPL, setExpandedPL] = useState<Record<string, boolean>>({ cost: true });
+  const [expandedPL, setExpandedPL] = useState<Record<string, boolean>>({});
   const [selectedPLAccount, setSelectedPLAccount] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const entryRowRef = useRef<HTMLTableRowElement | null>(null);
@@ -728,13 +728,13 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                 <span className="shrink-0 text-muted-foreground">
                   {expandedPL.revenue ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                 </span>
-                <span className="flex-1 font-medium text-sm">
+                <span className="flex-1 font-medium text-base">
                   {tr('Revenue', '收入', '收入')}
                 </span>
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-200">
                   {(incomeStatement.revenue_accounts || []).length} {tr('COA Accounts', '科目', '科目')}
                 </span>
-                <span className="font-semibold text-green-600 text-sm ml-2">
+                <span className="font-semibold text-green-600 text-base ml-2">
                   HKD {((incomeStatement.revenue || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </span>
               </button>
@@ -785,13 +785,13 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                 <span className="shrink-0 text-muted-foreground">
                   {expandedPL.cost ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                 </span>
-                <span className="flex-1 font-medium text-sm">
+                <span className="flex-1 font-medium text-base">
                   {tr('Cost', '直接成本', '直接成本')}
                 </span>
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
                   {(incomeStatement.cost_accounts || []).length} {tr('COA Accounts', '科目', '科目')}
                 </span>
-                <span className="font-semibold text-orange-600 text-sm ml-2">
+                <span className="font-semibold text-orange-600 text-base ml-2">
                   HKD {((incomeStatement.cost || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </span>
               </button>
@@ -834,11 +834,11 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             </div>
 
             {/* Gross Profit subtotal */}
-            <div className="border-t flex justify-between items-center px-4 py-3 bg-orange-50/40 dark:bg-orange-950/20">
-              <span className="font-bold text-sm">
+            <div className="border-t flex justify-between items-center px-4 py-4 bg-orange-50/40 dark:bg-orange-950/20">
+              <span className="font-bold text-lg">
                 {tr('Gross Profit', '毛利', '毛利')}
               </span>
-              <span className={`font-bold text-sm ${(incomeStatement.gross_profit || 0) >= 0 ? 'text-orange-600' : 'text-red-600'}`}>
+              <span className={`font-bold text-lg ${(incomeStatement.gross_profit || 0) >= 0 ? 'text-orange-600' : 'text-red-600'}`}>
                 HKD {(incomeStatement.gross_profit || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
               </span>
             </div>
@@ -852,13 +852,13 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                 <span className="shrink-0 text-muted-foreground">
                   {expandedPL.expenses ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                 </span>
-                <span className="flex-1 font-medium text-sm">
+                <span className="flex-1 font-medium text-base">
                   {tr('Expenses', '支出', '支出')}
                 </span>
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-800 border border-rose-200">
                   {(incomeStatement.expense_accounts || []).length} {tr('COA Accounts', '科目', '科目')}
                 </span>
-                <span className="font-semibold text-red-600 text-sm ml-2">
+                <span className="font-semibold text-red-600 text-base ml-2">
                   HKD {((incomeStatement.expenses || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </span>
               </button>
@@ -901,11 +901,11 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             </div>
 
             {/* Net Income — always visible */}
-            <div className="border-t flex justify-between items-center px-4 py-3 bg-muted/20">
-              <span className="font-bold text-sm">
+            <div className="border-t flex justify-between items-center px-4 py-4 bg-muted/20">
+              <span className="font-bold text-lg">
                 {tr('Net Income', '淨利', '净利')}
               </span>
-              <span className={`font-bold text-sm ${(incomeStatement.net_income || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              <span className={`font-bold text-lg ${(incomeStatement.net_income || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 HKD {(incomeStatement.net_income || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
               </span>
             </div>
