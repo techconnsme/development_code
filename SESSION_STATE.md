@@ -17,14 +17,17 @@ Commits `8f330e0` (feature) + `1c21ac1` (tree snapshot), pushed to `origin/main`
 | Doc | Location | Status | Value |
 |---|---|---|---|
 | **SESSION_STATE.md** | `latest_code/` | ✅ canonical ledger | current facts — read first |
-| **DEPLOYMENT_CONTEXT.md** | `latest_code/` | ⚠️ tracked+pushed | URLs, deploy commands, Pages projects, LLM key handling, handover accounts |
+| **DEPLOYMENT_CONTEXT.md** | `latest_code/` | ✅ tracked+pushed | URLs, deploy commands, Pages projects, LLM key handling, handover accounts (app-test passwords intentionally included — see credential policy below) |
 | **AP-AR-GL-FIX-HANDOFF.md** | `latest_code/` | ❗ local-only, 2026-08-20 | closed workstream + env Gotchas (imported below) |
 | **TeCS_DEVELOPMENT_ROADMAP.md** | `latest_code/` | ❗ local-only, 2026-07-27 | forward plan P1–P4 phases |
 | READ-ME-FIRST.md / plan.md | `latest_code/` | tracked, stale | July-era snapshots, superseded by this ledger |
 | ai-caseylai-wuzapi | `Pastel/ai-caseylai-whatsapp-wuzapi/SESSION_CONTEXT.md` | separate product | whatsapp bot state |
 | ai-caseylai-bailey | `Pastel/ai-caseylai-whatsapp-bailey/DEBUG-CONTEXT.md` | separate product | debugging notes |
 
-> Recommendation pending owner decision: `git add -f` the two ❗ files; rotate passwords exposed via DEPLOYMENT_CONTEXT.md history.
+> Credential policy (owner decision 2026-08-27): web-app account passwords (handover/demo/test logins in
+> DEPLOYMENT_CONTEXT.md) are intentionally kept in git — developers need them for testing. Do NOT flag them as
+> secrets or recommend rotation. What stays out of git: infrastructure secrets only (Cloudflare API tokens,
+> DEEPSEEK/GLM/QWEN key values, JWT_SECRET). Pending owner decision: whether to `git add -f` the two ❗ local-only files.
 
 ## Environment Gotchas (imported from AP-AR-GL-FIX-HANDOFF.md, 2026-08-20)
 
