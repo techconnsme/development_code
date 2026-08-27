@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-22-bank-charge-auto-linking-design.md`
 
+**Evidence update (2026-08-24):** audit of all 30 real statements added to the spec's §2 —
+one date block can hold multiple txs (per-tx grouping, not per-line); one bank tx can settle
+2-3 invoices (PASTEL TECH 19 Sep 57,580.80 / 5 Nov 55,000 / 5 Feb 27,544 — see
+`test-sample-real/LINKS_REPORT.txt` §4.1), and split payments exist (VEII 2025006 = two ECQ
+deposits). Feed these as extra test-corpus cases in Task 1 Step 1 (internal-transfer pair
+`CR TO 521-305565-838`/`EMPOWER H & S I A L` 10.00 already matches rule 7, but the
+`MR LAI KIN CHEONG` deposit and combined-payment rows are worth explicit cases).
+
 ## Global Constraints
 
 - No new npm dependencies.

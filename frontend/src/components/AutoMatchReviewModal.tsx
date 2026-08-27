@@ -12,11 +12,13 @@ import { tr } from '../lib/i18nHelpers';
 // dual-PDF preview (bank statement left, invoice right) right below it.
 // The iframes stay mounted while collapsed, so PDFs aren't re-downloaded
 // on every toggle. Only one row can be expanded at a time.
-export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onClose }: {
+export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onClose, useAI = true, onToggleAI }: {
   matches: any[];
   onConfirm: (txId: string, invoiceId: string | null, invoiceIds?: string[]) => void | Promise<void>;
   onReject: (txId: string) => void | Promise<void>;
   onClose: () => void;
+  useAI?: boolean;
+  onToggleAI?: (enabled: boolean) => void;
 }) {
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
   const [rejected, setRejected] = useState<Set<string>>(new Set());
@@ -50,13 +52,26 @@ export default function AutoMatchReviewModal({ matches, onConfirm, onReject, onC
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-card border rounded-xl p-6 w-full max-w-[95vw] mx-4 space-y-4 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-card border rounded-xl p-6 w-full max-w-[95vw] mx-4 space-y-4 h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-semibold flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-blue-600" />
             {tr('Auto-Match Suggestions', '自動配對建議', '自动配对建议')} ({confirmed.size + rejected.size}/{matches.length})
           </h3>
-          <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="h-4 w-4" /></button>
+          <div className="flex items-center gap-3">
+            {onToggleAI && (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useAI}
+                  onChange={e => onToggleAI(e.target.checked)}
+                  className="rounded border-muted-foreground/30"
+                />
+                {tr('Use AI matching', '使用 AI 配對', '使用 AI 配对')}
+              </label>
+            )}
+            <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="h-4 w-4" /></button>
+          </div>
         </div>
 
         {pending.length === 0 ? (

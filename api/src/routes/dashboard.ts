@@ -246,10 +246,10 @@ dashboard.get('/', async (c) => {
          AND (bt.invoice_id IS NOT NULL OR EXISTS (SELECT 1 FROM bank_transaction_invoice_links l WHERE l.transaction_id=bt.id AND l.user_id=bt.user_id))`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
       const pInvTotal = (await db.prepare(
-        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND receipt_number IS NULL AND issue_date>=? AND issue_date<=?`
+        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND receipt_number IS NULL AND direction='incoming' AND issue_date>=? AND issue_date<=?`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
       const pInvLinked = (await db.prepare(
-        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND receipt_number IS NULL AND linked_invoice_id IS NOT NULL AND issue_date>=? AND issue_date<=?`
+        `SELECT COUNT(*) as cnt FROM invoices WHERE user_id=? AND deleted_at IS NULL AND receipt_number IS NULL AND direction='incoming' AND linked_invoice_id IS NOT NULL AND issue_date>=? AND issue_date<=?`
       ).bind(tenantId, ps, pe).first() as any)?.cnt || 0;
       const pChainCount = (await db.prepare(
         `SELECT COUNT(DISTINCT bt.id) as cnt FROM bank_transactions bt
@@ -322,11 +322,11 @@ dashboard.get('/link-stats', async (c) => {
      FROM bank_transactions bt WHERE bt.user_id = ? AND bt.deleted_at IS NULL`
   ).bind(tenantId).first() as any;
 
-  // Invoices (non-receipt): total + linked to a receipt via linked_invoice_id
+  // Invoices (non-receipt, AP only): total + linked to a receipt via linked_invoice_id
   const invStats = await db.prepare(
     `SELECT COUNT(*) as total,
      COALESCE(SUM(CASE WHEN linked_invoice_id IS NOT NULL THEN 1 ELSE 0 END), 0) as linked_receipts
-     FROM invoices WHERE user_id = ? AND receipt_number IS NULL AND deleted_at IS NULL`
+     FROM invoices WHERE user_id = ? AND receipt_number IS NULL AND deleted_at IS NULL AND direction = 'incoming'`
   ).bind(tenantId).first() as any;
 
   // Full chain: bank transaction → invoice → receipt (direct OR junction-linked)

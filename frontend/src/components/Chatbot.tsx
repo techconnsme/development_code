@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { tr } from '../lib/i18nHelpers';
 import { api, streamChat } from '../lib/api';
-import { MessageCircle, X, Send, Paperclip, Plus, Trash2, History } from 'lucide-react';
+import { MessageCircle, X, Send, Paperclip, Plus, Trash2, History, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -24,9 +24,11 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 interface ChatbotPanelProps {
   onClose?: () => void;
   className?: string;
+  matchStatus?: { message: string; phase: string } | null;
+  onMatchStatusRead?: () => void;
 }
 
-export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
+export default function Chatbot({ onClose, className, matchStatus, onMatchStatusRead }: ChatbotPanelProps) {
   const { t, i18n } = useTranslation();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -50,6 +52,17 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
   };
 
   useEffect(() => { loadSessions(); }, []);
+
+  // Display match status as a system message
+  useEffect(() => {
+    if (matchStatus) {
+      setMessages(prev => {
+        const filtered = prev.filter(m => !m.content.startsWith('[MATCH_STATUS]'));
+        return [...filtered, { role: 'assistant', content: `[MATCH_STATUS] ${matchStatus.message}` }];
+      });
+      onMatchStatusRead?.();
+    }
+  }, [matchStatus]);
 
   const loadSession = async (id: string) => {
     try {
@@ -230,17 +243,26 @@ export default function Chatbot({ onClose, className }: ChatbotPanelProps) {
             )}
             {messages.map((m, i) => (
               <div key={m.id || i} className={`group relative flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm ${
-                  m.role === 'user'
-                    ? 'bg-primary text-primary-foreground rounded-br-sm whitespace-pre-wrap'
-                    : 'bg-muted text-foreground rounded-bl-sm'
-                }`}>
-                  {m.role === 'assistant' ? (
-                    <div className="prose prose-sm max-w-none dark:prose-invert [&_table]:text-xs [&_table]:w-full [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1 [&_table]:border-collapse [&_th]:border [&_td]:border [&_th]:bg-muted/50 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:my-1">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                {m.content.startsWith('[MATCH_STATUS]') ? (
+                  <div className="w-full bg-blue-50 border border-blue-200 rounded-lg p-3 my-2 animate-pulse">
+                    <div className="flex items-center gap-2 text-sm text-blue-700">
+                      <Sparkles className="h-4 w-4" />
+                      {m.content.replace('[MATCH_STATUS]', '')}
                     </div>
-                  ) : m.content}
-                </div>
+                  </div>
+                ) : (
+                  <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm ${
+                    m.role === 'user'
+                      ? 'bg-primary text-primary-foreground rounded-br-sm whitespace-pre-wrap'
+                      : 'bg-muted text-foreground rounded-bl-sm'
+                  }`}>
+                    {m.role === 'assistant' ? (
+                      <div className="prose prose-sm max-w-none dark:prose-invert [&_table]:text-xs [&_table]:w-full [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1 [&_table]:border-collapse [&_th]:border [&_td]:border [&_th]:bg-muted/50 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:my-1">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                      </div>
+                    ) : m.content}
+                  </div>
+                )}
                 <button onClick={() => deleteMessage(i)}
                   className="absolute -top-1 right-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-card border shadow-sm hover:bg-destructive hover:text-destructive-foreground"
                   title={tr('Delete message', '刪除訊息', '删除消息')}>

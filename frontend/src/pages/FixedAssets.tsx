@@ -15,6 +15,8 @@ export default function FixedAssets() {
     asset_name: '', asset_code: '', category: 'office_equipment', purchase_date: '', cost: '',
     useful_life_years: '5', salvage_value: '0',
     account_code: '12201', depn_account_code: '66101', acc_depn_account_code: '12301', notes: '',
+    depreciation_method: 'straight_line',
+    custom_schedule: { period_type: 'yearly' as 'monthly' | 'yearly', lines: [] as Array<{period: number, rate: number | null, amount: number | null}> },
   });
 
   const { data, isLoading } = useQuery({
@@ -128,41 +130,290 @@ export default function FixedAssets() {
       {/* Add asset form modal */}
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowForm(false)}>
-          <div className="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 space-y-4" onClick={e => e.stopPropagation()}>
-            <h3 className="font-bold text-lg">{tr('Add Fixed Asset', '新增固定資產', '新增固定资产')}</h3>
-            <form onSubmit={e => { e.preventDefault(); createMut.mutate(form); }} className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <input required value={form.asset_name} onChange={e => setForm({...form, asset_name: e.target.value})}
-                  placeholder={tr('Asset Name *', '資產名稱 *', '资产名称 *')} className="px-3 py-2 border rounded-md text-sm" />
-                <input value={form.asset_code} onChange={e => setForm({...form, asset_code: e.target.value})}
-                  placeholder={tr('Asset Code', '資產編號', '资产编号')} className="px-3 py-2 border rounded-md text-sm" />
-                <select value={form.category} onChange={e => setForm({...form, category: e.target.value})}
-                  className="px-3 py-2 border rounded-md text-sm bg-background">
-                  <option value="office_equipment">{tr('Office Equipment', '辦公設備 Office Equipment', '办公设备 Office Equipment')}</option>
-                  <option value="computer">{tr('Computer', '電腦設備 Computer', '电脑设备 Computer')}</option>
-                  <option value="vehicle">{tr('Vehicle', '汽車 Vehicle', '汽车 Vehicle')}</option>
-                  <option value="furniture">{tr('Furniture', '家具 Furniture', '家具 Furniture')}</option>
-                  <option value="leasehold">{tr('Leasehold Improvement', '裝修 Leasehold Improvement', '装修 Leasehold Improvement')}</option>
-                </select>
-                <input type="date" required value={form.purchase_date} onChange={e => setForm({...form, purchase_date: e.target.value})}
-                  className="px-3 py-2 border rounded-md text-sm" />
-                <input type="number" step="0.01" required value={form.cost} onChange={e => setForm({...form, cost: e.target.value})}
-                  placeholder={tr('Cost *', '購置成本 *', '购置成本 *')} className="px-3 py-2 border rounded-md text-sm" />
-                <input type="number" step="0.1" value={form.useful_life_years} onChange={e => setForm({...form, useful_life_years: e.target.value})}
-                  placeholder={tr('Useful Life (years)', '使用年限 (年)', '使用年限 (年)')} className="px-3 py-2 border rounded-md text-sm" />
-                <input type="number" step="0.01" value={form.salvage_value} onChange={e => setForm({...form, salvage_value: e.target.value})}
-                  placeholder={tr('Residual Value', '殘值', '残值')} className="px-3 py-2 border rounded-md text-sm" />
-                <input value={form.notes} onChange={e => setForm({...form, notes: e.target.value})}
-                  placeholder={tr('Notes', '備註', '备注')} className="px-3 py-2 border rounded-md text-sm col-span-2" />
+          <div className="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <h3 className="font-bold text-lg mb-4">{tr('Add Fixed Asset', '新增固定資產', '新增固定资产')}</h3>
+            <form onSubmit={e => { e.preventDefault(); createMut.mutate(form); }} className="space-y-4">
+              {/* Basic Information */}
+              <div className="space-y-3">
+                <h4 className="text-sm font-medium text-muted-foreground border-b pb-1">
+                  {tr('Basic Information', '基本資料', '基本资料')}
+                </h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-sm font-medium mb-1">
+                      {tr('Asset Name', '資產名稱', '资产名称')} <span className="text-destructive">*</span>
+                    </label>
+                    <input required value={form.asset_name} onChange={e => setForm({...form, asset_name: e.target.value})}
+                      placeholder={tr('e.g. MacBook Pro 16"', '例如 MacBook Pro 16"', '例如 MacBook Pro 16"')}
+                      className="w-full px-3 py-2 border rounded-md text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      {tr('Asset Code', '資產編號', '资产编号')}
+                    </label>
+                    <input value={form.asset_code} onChange={e => setForm({...form, asset_code: e.target.value})}
+                      placeholder={tr('Optional code', '可選編號', '可选编号')}
+                      className="w-full px-3 py-2 border rounded-md text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      {tr('Category', '類別', '类别')}
+                    </label>
+                    <select value={form.category} onChange={e => setForm({...form, category: e.target.value})}
+                      className="w-full px-3 py-2 border rounded-md text-sm bg-background">
+                      <option value="office_equipment">{tr('Office Equipment', '辦公設備', '办公设备')}</option>
+                      <option value="computer">{tr('Computer', '電腦設備', '电脑设备')}</option>
+                      <option value="vehicle">{tr('Vehicle', '汽車', '汽车')}</option>
+                      <option value="furniture">{tr('Furniture', '家具', '家具')}</option>
+                      <option value="leasehold">{tr('Leasehold Improvement', '裝修', '装修')}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">
+                      {tr('Purchase Date', '購買日期', '购买日期')} <span className="text-destructive">*</span>
+                    </label>
+                    <input type="date" required value={form.purchase_date} onChange={e => setForm({...form, purchase_date: e.target.value})}
+                      className="w-full px-3 py-2 border rounded-md text-sm" />
+                  </div>
+                </div>
               </div>
-              <div className="flex gap-3 justify-end">
-                <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 border rounded-md text-sm">{tr('Cancel', '取消', '取消')}</button>
+
+              {/* Depreciation Details */}
+              <div className="space-y-3">
+                <h4 className="text-sm font-medium text-muted-foreground border-b pb-1">
+                  {tr('Depreciation Details', '折舊詳情', '折旧详情')}
+                </h4>
+
+                {/* Tabs */}
+                <div className="flex gap-1 border rounded-lg p-1 bg-muted">
+                  <button
+                    type="button"
+                    onClick={() => setForm({...form, depreciation_method: 'straight_line'})}
+                    className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                      form.depreciation_method === 'straight_line'
+                        ? 'bg-background shadow-sm font-medium'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {tr('Constant', '平率折舊', '平率折旧')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setForm({...form, depreciation_method: 'custom'})}
+                    className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                      form.depreciation_method === 'custom'
+                        ? 'bg-background shadow-sm font-medium'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {tr('Custom', '自訂折舊', '自订折旧')}
+                  </button>
+                </div>
+
+                {/* Constant tab content */}
+                {form.depreciation_method === 'straight_line' && (
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">
+                        {tr('Cost (HKD)', '成本 (HKD)', '成本 (HKD)')} <span className="text-destructive">*</span>
+                      </label>
+                      <input type="number" step="0.01" required value={form.cost} onChange={e => setForm({...form, cost: e.target.value})}
+                        placeholder="0.00"
+                        className="w-full px-3 py-2 border rounded-md text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">
+                        {tr('Useful Life (years)', '使用年限 (年)', '使用年限 (年)')}
+                      </label>
+                      <input type="number" step="0.1" value={form.useful_life_years} onChange={e => setForm({...form, useful_life_years: e.target.value})}
+                        className="w-full px-3 py-2 border rounded-md text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">
+                        {tr('Salvage Value', '殘值', '残值')}
+                      </label>
+                      <input type="number" step="0.01" value={form.salvage_value} onChange={e => setForm({...form, salvage_value: e.target.value})}
+                        placeholder="0.00"
+                        className="w-full px-3 py-2 border rounded-md text-sm" />
+                    </div>
+                  </div>
+                )}
+
+                {/* Custom tab content */}
+                {form.depreciation_method === 'custom' && (
+                  <CustomScheduleEditor
+                    schedule={form.custom_schedule}
+                    cost={Number(form.cost) || 0}
+                    onChange={(schedule) => setForm({...form, custom_schedule: schedule})}
+                  />
+                )}
+
+                {/* Formula explanation (only for constant) */}
+                {form.depreciation_method === 'straight_line' && (
+                  <p className="text-xs text-muted-foreground">
+                    {tr('Monthly depreciation will be calculated as (Cost - Salvage Value) ÷ (Useful Life × 12)', 
+                        '月折舊將按 (成本 - 殘值) ÷ (使用年限 × 12) 計算',
+                        '月折旧将按 (成本 - 残值) ÷ (使用年限 × 12) 计算')}
+                  </p>
+                )}
+              </div>
+
+              {/* Notes */}
+              <div className="space-y-3">
+                <h4 className="text-sm font-medium text-muted-foreground border-b pb-1">
+                  {tr('Notes', '備註', '备注')}
+                </h4>
+                <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})}
+                  placeholder={tr('Additional notes (optional)', '額外備註 (可選)', '额外备注 (可选)')}
+                  rows={2}
+                  className="w-full px-3 py-2 border rounded-md text-sm resize-none" />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-2 border-t">
+                <button type="button" onClick={() => setShowForm(false)} 
+                  className="px-4 py-2 border rounded-md text-sm hover:bg-muted">{tr('Cancel', '取消', '取消')}</button>
                 <button type="submit" disabled={createMut.isPending}
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm">{tr('Create', '建立', '建立')}</button>
+                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm hover:opacity-90 disabled:opacity-40">
+                  {tr('Create', '建立', '建立')}
+                </button>
               </div>
             </form>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+type CustomSchedule = { period_type: 'monthly' | 'yearly'; lines: Array<{period: number, rate: number | null, amount: number | null}> };
+
+function CustomScheduleEditor({
+  schedule,
+  cost,
+  onChange,
+}: {
+  schedule: CustomSchedule;
+  cost: number;
+  onChange: (schedule: CustomSchedule) => void;
+}) {
+  const addLine = () => {
+    const nextPeriod = schedule.lines.length + 1;
+    onChange({
+      ...schedule,
+      lines: [...schedule.lines, { period: nextPeriod, rate: null, amount: null }],
+    });
+  };
+
+  const removeLine = (period: number) => {
+    const newLines = schedule.lines
+      .filter(l => l.period !== period)
+      .map((l, i) => ({ ...l, period: i + 1 }));
+    onChange({ ...schedule, lines: newLines });
+  };
+
+  const updateLine = (period: number, field: 'rate' | 'amount', value: number | null) => {
+    const newLines = schedule.lines.map(l => {
+      if (l.period !== period) return l;
+      if (field === 'rate') {
+        const amount = value !== null ? Math.round(cost * value / 100 * 100) / 100 : null;
+        return { ...l, rate: value, amount: l.amount !== null ? amount : null };
+      } else {
+        const rate = value !== null && cost > 0 ? Math.round(value / cost * 100 * 100) / 100 : null;
+        return { ...l, amount: value, rate: l.rate !== null ? rate : null };
+      }
+    });
+    onChange({ ...schedule, lines: newLines });
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Period type selector */}
+      <div className="flex gap-2 items-center">
+        <label className="text-sm font-medium">{tr('Period:', '期間:', '期间:')}</label>
+        <select
+          value={schedule.period_type}
+          onChange={e => onChange({...schedule, period_type: e.target.value as 'monthly' | 'yearly'})}
+          className="px-2 py-1 border rounded text-sm bg-background"
+        >
+          <option value="yearly">{tr('Yearly', '每年', '每年')}</option>
+          <option value="monthly">{tr('Monthly', '每月', '每月')}</option>
+        </select>
+      </div>
+
+      {/* Schedule table */}
+      <div className="border rounded-lg overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-muted">
+              <th className="px-3 py-2 text-left">{tr('Period', '期間', '期间')}</th>
+              <th className="px-3 py-2 text-left">{tr('Rate (%)', '比率 (%)', '比率 (%)')}</th>
+              <th className="px-3 py-2 text-left">{tr('Amount (HKD)', '金額 (HKD)', '金额 (HKD)')}</th>
+              <th className="px-3 py-2 w-10"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {schedule.lines.map((line) => (
+              <tr key={line.period} className="border-t">
+                <td className="px-3 py-2">
+                  {schedule.period_type === 'yearly'
+                    ? tr(`Year ${line.period}`, `第 ${line.period} 年`, `第 ${line.period} 年`)
+                    : tr(`Month ${line.period}`, `第 ${line.period} 月`, `第 ${line.period} 月`)}
+                </td>
+                <td className="px-3 py-2">
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="100"
+                    value={line.rate ?? ''}
+                    onChange={e => updateLine(line.period, 'rate', e.target.value ? Number(e.target.value) : null)}
+                    placeholder="0.00"
+                    className="w-20 px-2 py-1 border rounded text-sm"
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={line.amount ?? ''}
+                    onChange={e => updateLine(line.period, 'amount', e.target.value ? Number(e.target.value) : null)}
+                    placeholder="0.00"
+                    className="w-24 px-2 py-1 border rounded text-sm"
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => removeLine(line.period)}
+                    className="text-destructive hover:text-destructive/80 p-1"
+                  >
+                    ×
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <button
+        type="button"
+        onClick={addLine}
+        className="flex items-center gap-1 text-sm text-primary hover:underline"
+      >
+        <Plus className="h-3 w-3" />
+        {tr('Add Period', '新增期間', '新增期间')}
+      </button>
+
+      {cost > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {tr(
+            'Enter a rate (%) to auto-calculate amount, or enter a fixed amount (HKD).',
+            '輸入比率 (%) 自動計算金額，或輸入固定金額 (HKD)。',
+            '输入比率 (%) 自动计算金额，或输入固定金额 (HKD)。'
+          )}
+        </p>
       )}
     </div>
   );

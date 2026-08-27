@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Bindings, Variables } from '../types';
 import { authMiddleware } from '../middleware/auth';
 import { wsBroadcast } from './ws';
+import { llmCompleteJson, llmKeysFromEnv, hasLlmKey } from '../lib/llm-parse';
 
 const messaging = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -533,26 +534,12 @@ async function processTelegramMedia(
        VALUES (?, ?, 'Telegram Bills', ?, ?, ?, ?, ?, ?, ?, ?, 'expense_receipt', 'incoming')`
     ).bind(fileId2, userId, safeName, safeName, mimeType, fileBuffer.byteLength, r2Key, caption, ocrText, ocrText.length > 20 ? 'completed' : 'pending').run();
 
-    // 7. Parse with DeepSeek
+    // 7. Parse via the Qwen-first LLM chain (was DeepSeek-only)
     let parsed: any = null;
-    if (env.DEEPSEEK_API_KEY && ocrText.length > 20) {
+    if (hasLlmKey(llmKeysFromEnv(env)) && ocrText.length > 20) {
       try {
-        const resp = await fetch('https://api.deepseek.com/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${env.DEEPSEEK_API_KEY}` },
-          body: JSON.stringify({
-            model: 'deepseek-chat',
-            messages: [{
-              role: 'user',
-              content: `Parse this bill/receipt OCR text into JSON. Extract: supplier_name, bill_date (YYYY-MM-DD), due_date, total_amount (number), currency (default HKD), items (array of {description, amount}), bill_number, category (one of: rent, utilities, telecom, office, travel, meals, software, professional, insurance, tax, other). Return ONLY valid JSON, no explanation.\n\n${ocrText.slice(0, 6000)}`,
-            }],
-            max_tokens: 2000,
-          }),
-        });
-        const data = await resp.json() as any;
-        const raw = data.choices?.[0]?.message?.content || '';
-        const jsonMatch = raw.match(/\{[\s\S]*\}/);
-        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+        const billPrompt = `Parse this bill/receipt OCR text into JSON. Extract: supplier_name, bill_date (YYYY-MM-DD), due_date, total_amount (number), currency (default HKD), items (array of {description, amount}), bill_number, category (one of: rent, utilities, telecom, office, travel, meals, software, professional, insurance, tax, other). Return ONLY valid JSON, no explanation.\n\n${ocrText.slice(0, 6000)}`;
+        parsed = (await llmCompleteJson(llmKeysFromEnv(env), billPrompt, 'telegram:bill', { maxTokens: 2000 })).parsed;
       } catch {}
     }
 

@@ -151,7 +151,7 @@ export async function getTemporaryAccount(db: any, tenantId: string, kind: TempK
 
     const code = nextLeafCode(parentCode, allCodes);
     await db.prepare(
-      'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)'
+      'INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)'
     ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, code, wanted, TYPES[kind][0], parentCode).run();
     invalidate(tenantId);
     const info: TempAccountInfo = { code, name: wanted, kind, created: true };

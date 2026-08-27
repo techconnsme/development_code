@@ -4,6 +4,8 @@ import { hash } from 'bcryptjs';
 import { authMiddleware } from '../middleware/auth';
 import { Bindings, Variables } from '../types';
 import { jePosted, jeNotOrphaned } from '../lib/journal-filters';
+import { normalizeBankNameForStorage } from '../lib/company-matcher';
+import { llmCompleteJson, llmKeysFromEnv, hasLlmKey } from '../lib/llm-parse';
 
 const chat = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 chat.use('*', authMiddleware);
@@ -278,6 +280,8 @@ const TOOLS: any[] = [
   { type: 'function', function: { name: 'git_log', description: 'Show recent git commits', parameters: { type: 'object', properties: { count: { type: 'number' } }, required: [] } } },
   { type: 'function', function: { name: 'deploy_frontend', description: 'Deploy frontend to Cloudflare Pages', parameters: { type: 'object', properties: { confirm: { type: 'boolean' } }, required: ['confirm'] } } },
 
+  { type: 'function', function: { name: 'match_documents', description: 'Analyze and suggest linkages between documents (bank statements↔invoices, invoices↔receipts). Use when user asks to match, link, or reconcile documents. Runs AI analysis and returns suggested matches for user review.', parameters: { type: 'object', properties: { type: { type: 'string', description: 'Type of matching: bank-invoice (bank statements to invoices) or receipt-invoice (receipts to invoices)', enum: ['bank-invoice', 'receipt-invoice'] }, direction: { type: 'string', description: 'Optional direction filter: incoming (AP) or outgoing (AR)', enum: ['incoming', 'outgoing'] } }, required: ['type'] } } },
+
   { type: 'function', function: { name: 'query_database', description: 'Execute a SQL SELECT query on the database to retrieve data. Only SELECT queries are allowed and ONLY on these tenant-scoped tables (each has a user_id column): customers, suppliers, products, invoices, quotations, purchase_orders, service_orders, services, service_bookings, todos, calendar_events, journal_entries, accounts, bank_statements, bank_transactions, expense_receipts, file_records, documents, chat_sessions, chat_messages, company_settings, domains. NEVER query journal_lines or any *_items table directly. Use this when no specific function covers the data you need.', parameters: { type: 'object', properties: { sql: { type: 'string', description: 'SQL SELECT query on an allowed table. Must include WHERE user_id = ? placeholder. Example: SELECT * FROM customers WHERE user_id = ? AND name LIKE ? LIMIT 10' }, params: { type: 'array', description: 'Parameters for the query. First param must always be the user_id, additional params as needed.', items: { type: 'string' } } }, required: ['sql'] } } },
 ];
 
@@ -286,7 +290,7 @@ async function ensureAccount(db: D1Database, userId: string, code: string): Prom
   if (acct) return { code: acct.account_code as string, name: acct.account_name as string };
   // Auto-create expense accounts (5xxx)
   if (/^5\d{3}$/.test(code)) {
-    await db.prepare('INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)')
+    await db.prepare('INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)')
       .bind(`acc-${uuidv4().slice(0, 8)}`, userId, code, `Expense ${code}`, 'expense', '5000').run();
     return { code, name: `Expense ${code}` };
   }
@@ -578,7 +582,7 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       const existing = await db.prepare('SELECT account_code FROM accounts WHERE user_id = ? AND account_code = ?').bind(userId, code).first();
       if (existing) return JSON.stringify({ error: `Account ${code} already exists` });
       const id = `acc-${uuidv4().slice(0, 8)}`;
-      await db.prepare('INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)')
+      await db.prepare('INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)')
         .bind(id, userId, code, name, type, args?.parent_code || null).run();
       return JSON.stringify({ success: true, account: { code, name, type } });
     }
@@ -1314,15 +1318,9 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
       }
       if (!ocrText || ocrText.length < 10) return JSON.stringify({ error: 'Could not extract text from this file. The file may be corrupted or in an unsupported format.' });
       let parsed: any = null;
-      const deepseekKey = env?.DEEPSEEK_API_KEY;
-      if (deepseekKey) {
+      if (hasLlmKey(llmKeysFromEnv(env))) {
         try {
-          const parseResp = await fetch('https://api.deepseek.com/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
-            body: JSON.stringify({
-              model: 'deepseek-chat',
-              messages: [{ role: 'user', content: `Parse the following bank statement OCR text into structured JSON. Extract:
+          const parsePrompt = `Parse the following bank statement OCR text into structured JSON. Extract:
 - bank_name: the bank name
 - account_number: account number if visible
 - currency: default "HKD"
@@ -1334,18 +1332,13 @@ async function executeTool(name: string, db: D1Database, userId: string, args: a
 Return ONLY valid JSON, no explanation. If you can't parse something, use null.
 
 OCR TEXT:
-${ocrText.slice(0, 8000)}` }],
-              max_tokens: 4000,
-            }),
-          });
-          const parseData = await parseResp.json() as any;
-          const raw = parseData.choices?.[0]?.message?.content || '';
-          const jsonMatch = raw.match(/\{[\s\S]*\}/);
-          if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+${ocrText.slice(0, 8000)}`;
+          parsed = (await llmCompleteJson(llmKeysFromEnv(env), parsePrompt, 'chat:bank-statement')).parsed;
         } catch {}
       }
       const stmtId = `bs-${uuidv4().slice(0, 8)}`;
-      const bankName = args.bank_name || parsed?.bank_name || null;
+      // Canonicalize so all statements of the same account share one bank_name
+      const bankName = normalizeBankNameForStorage(args.bank_name || parsed?.bank_name);
       const accountNumber = args.account_number || parsed?.account_number || null;
       const currency = args.currency || parsed?.currency || 'HKD';
       const stmtYear = args.statement_year || parsed?.statement_year || null;
@@ -1398,18 +1391,11 @@ ${ocrText.slice(0, 8000)}` }],
         }
       }
       if (!ocrText || ocrText.length < 10) return JSON.stringify({ error: 'Could not extract text. This file may not be readable.' });
-      const deepseekKey = env?.DEEPSEEK_API_KEY;
       let parsed: any = null;
-      if (deepseekKey) {
+      if (hasLlmKey(llmKeysFromEnv(env))) {
         try {
-          const resp = await fetch('https://api.deepseek.com/chat/completions', {
-            method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${deepseekKey}` },
-            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'user', content: `Parse this invoice OCR text into structured JSON. Extract: invoice_number, customer_name, customer_email, issue_date (YYYY-MM-DD), due_date, currency (default "HKD"), items as array of { description, quantity, unit_price, amount }, total, notes. Return ONLY valid JSON. OCR:\n${ocrText.slice(0, 8000)}` }], max_tokens: 4000 }),
-          });
-          const data = await resp.json() as any;
-          const raw = data.choices?.[0]?.message?.content || '';
-          const jsonMatch = raw.match(/\{[\s\S]*\}/);
-          if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+          const invoicePrompt = `Parse this invoice OCR text into structured JSON. Extract: invoice_number, customer_name, customer_email, issue_date (YYYY-MM-DD), due_date, currency (default "HKD"), items as array of { description, quantity, unit_price, amount }, total, notes. Return ONLY valid JSON. OCR:\n${ocrText.slice(0, 8000)}`;
+          parsed = (await llmCompleteJson(llmKeysFromEnv(env), invoicePrompt, 'chat:invoice')).parsed;
         } catch {}
       }
       // Match or create customer
@@ -1629,6 +1615,31 @@ ${ocrText.slice(0, 8000)}` }],
         const d = await r.json() as any;
         return JSON.stringify(r.ok?{success:true,id:d.result?.id}:{error:'Deploy failed'});
       } catch(e: any) { return JSON.stringify({ error: e.message }); }
+    }
+
+    case 'match_documents': {
+      const { runLLMMatching } = await import('../lib/llm-matcher');
+      const matchType = args?.type || 'bank-invoice';
+      const matchDirection = args?.direction;
+
+      try {
+        const suggestions = await runLLMMatching({
+          userId,
+          db,
+          env,
+          type: matchType,
+          direction: matchDirection,
+        });
+
+        return JSON.stringify({
+          success: true,
+          match_count: suggestions.length,
+          suggestions: suggestions.slice(0, 20),
+          message: `Found ${suggestions.length} suggested matches. ${suggestions.length > 0 ? 'Please review in the matching modal.' : 'No matches found.'}`
+        });
+      } catch (err: any) {
+        return JSON.stringify({ success: false, error: err.message });
+      }
     }
 
     default:

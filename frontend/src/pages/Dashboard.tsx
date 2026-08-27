@@ -10,8 +10,8 @@ import AdminDashboard from './AdminDashboard';
 import { tr } from '../lib/i18nHelpers';
 
 // Small helper card used in the period rows
-function MiniCard({ icon: Icon, label, value, color, onClick }: {
-  icon: any; label: string; value: string; color: string; onClick?: () => void;
+function MiniCard({ icon: Icon, label, value, color, onClick, hint }: {
+  icon: any; label: string; value: string; color: string; onClick?: () => void; hint?: string;
 }) {
   return (
     <div
@@ -24,7 +24,8 @@ function MiniCard({ icon: Icon, label, value, color, onClick }: {
         <Icon className="h-3.5 w-3.5" style={{ color }} />
         {label}
       </div>
-      <div className="text-base font-bold">{value}</div>
+      <div className="text-2xl font-bold">{value}</div>
+      {hint && <div className="text-xs text-muted-foreground mt-1">{hint}</div>}
     </div>
   );
 }
@@ -100,13 +101,14 @@ export default function Dashboard() {
 
       {/* ═══════════════════════════════════════════════════════════
           SECTION 1 — CURRENT POSITION (always today, no FY filter)
+          COMMENTED OUT — may be re-enabled in future
           ═══════════════════════════════════════════════════════════ */}
+      {/*
       <div>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
           {tr('Current Position', '當前狀況', '当前状况')}
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Cash on Hand */}
           <button
             onClick={() => navigate('/GJE')}
             className="bg-card border rounded-xl p-4 text-left hover:shadow-md transition-shadow cursor-pointer"
@@ -126,7 +128,6 @@ export default function Dashboard() {
             </div>
           </button>
 
-          {/* Outstanding AP / AR */}
           <div className="bg-card border rounded-xl p-4" style={{ borderTop: '3px solid #10b981' }}>
             <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
               <ArrowLeftRight className="h-4 w-4 text-green-600" />
@@ -148,7 +149,6 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* Unreconciled */}
           <button
             onClick={() => navigate('/bank-statements?filter=unmatched')}
             className="bg-card border rounded-xl p-4 text-left hover:shadow-md transition-shadow cursor-pointer"
@@ -175,6 +175,7 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+      */}
 
       {/* ═══════════════════════════════════════════════════════════
           SECTION 2 — CURRENT PERIOD (matches selected FY)
@@ -209,10 +210,14 @@ export default function Dashboard() {
               <MiniCard
                 icon={Link2} color="#3b82f6"
                 label={tr('Bank → Invoice', '銀行→發票', '银行→发票')} value={`${periods[0].bank_pct || 0}%`}
+                onClick={() => navigate('/bank-statements?filter=unmatched')}
+                hint={tr('Click to review bank statements', '點擊查看銀行月結單', '点击查看银行月结单')}
               />
               <MiniCard
                 icon={Receipt} color="#8b5cf6"
-                label={tr('Inv → Receipt', '發票→收據', '发票→收据')} value={`${periods[0].invoice_pct || 0}%`}
+                label={tr('AP Invoice → Receipt', '應付發票→收據', '应付发票→收据')} value={`${periods[0].invoice_pct || 0}%`}
+                onClick={() => navigate('/ap?linkFilter=unlinked')}
+                hint={tr('Click to review AP invoices', '點擊查看應付發票', '点击查看应付发票')}
               />
               <MiniCard
                 icon={GitMerge} color="#10b981"
@@ -229,8 +234,14 @@ export default function Dashboard() {
               <MiniCard icon={Activity} color="#10b981" label={tr('Net P&L', '淨損益', '净损益')} value="…" />
             </div>
             <div className="flex flex-wrap gap-2">
-              <MiniCard icon={Link2} color="#3b82f6" label={tr('Bank → Invoice', '銀行→發票', '银行→发票')} value="…" />
-              <MiniCard icon={Receipt} color="#8b5cf6" label={tr('Inv → Receipt', '發票→收據', '发票→收据')} value="…" />
+              <MiniCard icon={Link2} color="#3b82f6" label={tr('Bank → Invoice', '銀行→發票', '银行→发票')} value="…"
+                onClick={() => navigate('/bank-statements?filter=unmatched')}
+                hint={tr('Click to review bank statements', '點擊查看銀行月結單', '点击查看银行月结单')}
+              />
+              <MiniCard icon={Receipt} color="#8b5cf6" label={tr('AP Invoice → Receipt', '應付發票→收據', '应付发票→收据')} value="…"
+                onClick={() => navigate('/ap?linkFilter=unlinked')}
+                hint={tr('Click to review AP invoices', '點擊查看應付發票', '点击查看应付发票')}
+              />
               <MiniCard icon={GitMerge} color="#10b981" label={tr('Full Chain', '完整鏈', '完整链')} value="…" />
             </div>
           </div>

@@ -2,82 +2,64 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let users key in bank/card statements by hand, link statements and hand-keyed invoices to uploaded files (with "linked" flags in File Storage), and upload files without AI analysis (analyzable later).
+**Goal:** Add manual bank/card statement entry, file linking for manually-created records, and a no-OCR upload option to the bookkeeping subpages.
 
-**Architecture:** Additive migration (`source_file_id` + `source` on both statement tables, `source` on invoices). New literal routes (`POST …/manual`, `PUT …/link-file`) modeled on the existing `/import` routes. The file-link read path (`buildFileListSql`, `linked-records`) extends its joins with `OR source_file_id = fr.id`. `'skipped'` becomes a new `file_records.ocr_status` value for no-AI uploads; File Storage gets an Analyze action that calls the existing `import-document`. Manual statements land as `status='draft'` and flow through the unchanged review pipeline.
+**Architecture:** Extend existing statement and invoice endpoints with `source_file_id`/`source` columns for provenance tracking. Add `POST …/manual` endpoints for bank and card statements. Extend `linked-records` and `buildFileListSql` with OR-joins for manual links. Frontend: "Save without AI Analysis" button on FileUpload, manual entry editors on statement pages, file attachment on Create Invoice modal, and provenance-aware badges on File Storage.
 
 **Tech Stack:** Cloudflare Worker (Hono) + D1 (SQLite) + R2; React + TypeScript + TanStack Query + Tailwind; `tr()` EN/繁/简 i18n; Playwright for non-mutating specs.
 
-**Spec:** `docs/superpowers/specs/2026-08-27-manual-statements-file-linking-design.md` — read it before starting; this plan argues from it.
+**Spec:** `docs/superpowers/specs/2026-08-27-manual-statements-file-linking-design.md` — read it before starting.
 
 ## Global Constraints
 
-- **CONCURRENT SESSION:** Another AI agent session may be editing this codebase. All work happens in an isolated git worktree (Task 0). Never run `git add -A` / `git add .` / `git commit -a` — always add files by explicit path. Before editing any shared file, re-read its CURRENT content first.
-- API typecheck baseline: measure in Task 0 (`npx tsc --noEmit` in `api/`), keep the count identical through all tasks; zero new errors in touched files.
-- Frontend `npm run build` must stay clean after every frontend task.
-- `tests/` is gitignored — test files there need `git add -f`.
-- All frontend strings via `tr('EN', '繁體', '简体')`.
-- Every API write audit-logged via the file-local `auditLog()` helper; tenancy always `const tenantId = c.get('client_user_id') || user.id`.
-- House git convention: commit messages end with `Co-Authored-By: Claude <noreply@anthropic.com>`.
-- Migrations are plain SQL applied manually with `npx wrangler d1 execute opcc-crm-db --remote --file=…` from `api/` — no migrations runner. Verify with PRAGMA after running; never assume a `.sql` file was applied.
-- `playwright-report/` dirties the tree on test runs — never commit it.
-- Line numbers below were measured on `main` at commit `3ca6ce1`; they drift. Anchor edits by the quoted code, not the number. STOP and report if the surrounding logic no longer matches.
+- **CONCURRENT SESSION:** Another AI agent session may be editing this codebase. All work happens in an isolated git worktree. Never run `git add -A` / `git add .` / `git commit -a` — always add files by explicit path. Never stash, revert, or commit changes that are not yours.
+- `tsc` baseline must stay identical (zero new errors in touched files).
+- `npm run build` clean after every frontend task.
+- All user-facing strings via `tr()` with EN/繁/简.
+- Every write audit-logged via the file-local `auditLog()` helper.
+- Tenancy: `const tenantId = c.get('client_user_id') || user.id`.
+- Migration = plain SQL applied via `wrangler d1 execute`; verify with `PRAGMA table_info` — never assume applied.
+- Tests: throwaway `npx tsx tests/*.test.ts` with mock db; Playwright non-mutating.
+- Commit only by explicit path. Co-Authored-By trailer on every commit.
 
 ---
 
-### Task 0: Setup — isolated worktree + baselines
+## File Structure
 
-**Files:** none modified
-
-**Interfaces:** Produces the worktree path all later tasks assume (`<repo>/.claude/worktrees/manual-statements`) and the recorded `tsc` baseline count.
-
-- [ ] **Step 1: Create an isolated worktree**
-
-Use the `superpowers:using-git-worktrees` skill for the repo at `C:\Users\samue\Documents\Pastel\Tech_Connect_SME\Development_code\latest_code` (branch name: `manual-statements`). All subsequent tasks run inside that worktree.
-
-- [ ] **Step 2: Measure the API typecheck baseline**
-
-```bash
-cd api && npx tsc --noEmit 2>&1 | tee /tmp/tsc-baseline.txt | tail -1
-grep -c "error TS" /tmp/tsc-baseline.txt
-```
-
-Record the number. Every later `tsc` run must match it exactly, with no error pointing at a file this plan touches.
-
-- [ ] **Step 3: Measure the frontend build baseline**
-
-```bash
-cd frontend && npm run build
-```
-
-Expected: clean build.
-
-- [ ] **Step 4: Sanity-check the worktree state**
-
-```bash
-git log --oneline -3 && git status --short
-```
-
-Expected: clean tree at `main` HEAD (`3ca6ce1` or a descendant that still contains the spec commit).
+| Action | File | Responsibility |
+|--------|------|----------------|
+| Create | `api/src/db/migration-manual-statements.sql` | Schema migration: `source_file_id`, `source` columns + indexes |
+| Modify | `api/src/db/schema.sql` | Add new columns to fresh-DB schema |
+| Modify | `api/src/routes/bank-statements.ts` | Add `POST /manual` endpoint + stamp `source='ocr'` on import |
+| Modify | `api/src/routes/card-statements.ts` | Add `POST /manual` endpoint + stamp `source='ocr'` on import + `PUT /:id/link-file` |
+| Modify | `api/src/routes/file-storage.ts` | Extend `linked-records` OR-join; add `PUT /:id/link-file` for bank stmts |
+| Modify | `api/src/routes/invoices.ts` | Add `file_id` to `createSchema`; stamp `source='ocr'` on import |
+| Modify | `api/src/lib/list-filters.ts` | Extend `buildFileListSql` with OR-join + source columns |
+| Modify | `api/src/lib/manual-booking.ts` | Extend `buildFileLinks` to show provenance labels |
+| Modify | `frontend/src/pages/FileUpload.tsx` | "Save without AI Analysis" second submit button |
+| Modify | `frontend/src/pages/FileStorage.tsx` | `'skipped'` badge + Analyze action + provenance-aware badges |
+| Modify | `frontend/src/pages/BankStatements.tsx` | "+ Manual Entry" button + inline editor + "Link File" action |
+| Modify | `frontend/src/pages/CardStatements.tsx` | "+ Manual Entry" button + inline editor + "Link File" action |
+| Modify | `frontend/src/pages/Invoices.tsx` | File attachment section in Create Invoice modal |
+| Create | `tests/manual-statements.test.ts` | Mock-db tests for validation, linking, badge logic |
+| Create | `tests/manual-statements.spec.ts` | Playwright non-mutating checks |
 
 ---
 
-### Task 1: Migration + schema.sql
+### Task 1: Database Migration
 
 **Files:**
 - Create: `api/src/db/migration-manual-statements.sql`
-- Modify: `api/src/db/schema.sql` (bank_statements ~lines 542-566, invoices ~lines 74-99)
+- Modify: `api/src/db/schema.sql`
 
-**Interfaces:** Produces DB columns `bank_statements.source_file_id`, `bank_statements.source`, `card_statements.source_file_id`, `card_statements.source`, `invoices.source` — every later task's SQL assumes they exist.
+**Interfaces:**
+- Produces: `source_file_id TEXT`, `source TEXT` on `bank_statements`, `card_statements`; `source TEXT` on `invoices`; two indexes.
 
-- [ ] **Step 1: Write the migration file**
-
-Create `api/src/db/migration-manual-statements.sql` with exactly:
+- [ ] **Step 1: Create the migration file**
 
 ```sql
--- Manual statement entry + file linking — schema
--- source_file_id: manual link to a file_records row (OCR path uses r2_key instead)
--- source: provenance — 'ocr' | 'manual'
+-- api/src/db/migration-manual-statements.sql
+-- Manual statement entry + file linking (2026-08-27)
 
 ALTER TABLE bank_statements ADD COLUMN source_file_id TEXT;
 ALTER TABLE bank_statements ADD COLUMN source TEXT;
@@ -96,131 +78,66 @@ CREATE INDEX IF NOT EXISTS idx_card_stmt_source_file ON card_statements(source_f
 
 - [ ] **Step 2: Update schema.sql for fresh DBs**
 
-In `api/src/db/schema.sql`:
+In `api/src/db/schema.sql`, find the `CREATE TABLE bank_statements` block and add before the closing `)`:
 
-1. In the `bank_statements` CREATE TABLE, after the `ocr_text TEXT,` line and before `status TEXT NOT NULL DEFAULT 'active',`, add:
-   ```sql
-     source_file_id TEXT,
-     source TEXT,
-   ```
-2. In the `invoices` CREATE TABLE, after the `file_id` column (or any late column — match the existing formatting), add `source TEXT,`.
-3. `card_statements` has NO CREATE TABLE in schema.sql (it lives only in `api/src/db/migration-card-statements.sql`) — add the same two columns to the CREATE TABLE in that migration file instead, with a trailing comment `-- source_file_id/source added 2026-08-27 (see migration-manual-statements.sql)`.
-
-- [ ] **Step 3: Verify the SQL parses (local D1 dry run)**
-
-```bash
-cd api && npx wrangler d1 execute opcc-crm-db --local --file=src/db/migration-manual-statements.sql && npx wrangler d1 execute opcc-crm-db --local --command "PRAGMA table_info(bank_statements)" 2>&1 | grep -E "source_file_id|source"
+```sql
+  source_file_id TEXT,
+  source TEXT,
 ```
 
-Expected: both columns listed. (The local DB is disposable; this only checks the SQL is valid. Re-running the file errors on "duplicate column name" — that is the accepted house behavior for the ALTERs.)
+Do the same for `card_statements`. For `invoices`, add `source TEXT,` before the closing `)`.
+
+- [ ] **Step 3: Run migration on dev DB and verify**
+
+```bash
+cd Tech_Connect_SME/Development_code/latest_code
+wrangler d1 execute opcc-crm-db --file=api/src/db/migration-manual-statements.sql --remote
+wrangler d1 execute opcc-crm-db --command="PRAGMA table_info(bank_statements)" --remote | grep source
+wrangler d1 execute opcc-crm-db --command="PRAGMA table_info(card_statements)" --remote | grep source
+wrangler d1 execute opcc-crm-db --command="PRAGMA table_info(invoices)" --remote | grep source
+```
+
+Expected: `source_file_id` and `source` appear on bank/card; `source` on invoices.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add api/src/db/migration-manual-statements.sql api/src/db/schema.sql api/src/db/migration-card-statements.sql
-git commit -m "feat(db): manual-statements migration — source_file_id + source columns
+git add api/src/db/migration-manual-statements.sql api/src/db/schema.sql
+git commit -m "feat(db): manual statement entry — source_file_id + source columns
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 2: `buildFileListSql` manual-link join + tests
+### Task 2: Backend — Bank Statement Manual Endpoint + OCR Source Stamp
 
 **Files:**
-- Modify: `api/src/lib/list-filters.ts`
-- Test: `tests/list-filters.test.ts` (force-add)
+- Modify: `api/src/routes/bank-statements.ts`
 
 **Interfaces:**
-- Produces: SELECT list now includes `bs.source as stmt_source, cs.source as card_source, i.source as inv_source`; statement joins match `source_file_id` as well as `r2_key`. The `?unlinked=1` clause is unchanged and now excludes manually-linked files via the extended joins.
+- Produces: `POST /bank-statements/manual` → `{ id, transaction_count }`; existing import INSERTs stamp `source='ocr'`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Add `source='ocr'` to existing import INSERTs**
 
-Append to `tests/list-filters.test.ts` (before the final `console.log`):
+In `api/src/routes/bank-statements.ts`, find the two `INSERT INTO bank_statements` blocks (around lines 1327 and 1397). Add `source` to the column list and `'ocr'` to the VALUES. Example for the first one:
 
-```ts
-// ── manual-link join extension (2026-08-27) ──
-const ml = buildFileListSql({ tenantId: 'u1' });
-ok(/bs\.r2_key = fr\.r2_key OR bs\.source_file_id = fr\.id/.test(ml.sql), 'bank join covers r2_key OR source_file_id');
-ok(/cs\.r2_key = fr\.r2_key OR cs\.source_file_id = fr\.id/.test(ml.sql), 'card join covers r2_key OR source_file_id');
-ok(/bs\.source as stmt_source/.test(ml.sql) && /cs\.source as card_source/.test(ml.sql) && /i\.source as inv_source/.test(ml.sql), 'provenance aliases selected');
-const mlUn = buildFileListSql({ tenantId: 'u1', unlinked: true });
-ok(/bs\.id IS NULL/.test(mlUn.sql) && /cs\.id IS NULL/.test(mlUn.sql), 'unlinked still excludes statements (now incl. manual links)');
+```sql
+INSERT INTO bank_statements (id, user_id, file_name, file_type, file_data, r2_key,
+  bank_name, account_number, branch, currency, account_type,
+  statement_year, statement_month, period_start, period_end,
+  opening_balance, closing_balance, page_count, ocr_text, source)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+And add `'ocr'` as the last bind parameter. Do the same for the second INSERT block (around line 1397).
 
-```bash
-npx tsx tests/list-filters.test.ts
-```
+- [ ] **Step 2: Add `POST /bank-statements/manual` endpoint**
 
-Expected: FAIL on the four new checks (`manual-link join…`, `card join…`, `provenance aliases…`).
+Register this BEFORE any `/:id` param routes in the file. Add after the existing import endpoint:
 
-- [ ] **Step 3: Extend the builder**
-
-In `api/src/lib/list-filters.ts`, replace the SELECT + JOIN block (lines 14-27) with:
-
-```ts
-  let sql = `SELECT fr.id, fr.folder, fr.filename, fr.original_name, fr.file_type, fr.file_size,
-    fr.description, fr.ocr_status, fr.category, fr.direction, fr.payment_status, fr.amount,
-    fr.created_at, fr.updated_at,
-    i.id as invoice_id, i.invoice_number, i.status as invoice_status, i.needs_review as invoice_needs_review,
-    i.vendor_name, i.direction as invoice_direction, i.source as inv_source,
-    c.name as customer_name,
-    bs.id as statement_id, bs.bank_name as stmt_bank_name, bs.status as stmt_status, bs.source as stmt_source,
-    cs.id as card_statement_id, cs.card_issuer, cs.status as card_status, cs.source as card_source
-    FROM file_records fr
-    LEFT JOIN invoices i ON i.file_id = fr.id AND i.user_id = fr.user_id AND i.deleted_at IS NULL
-    LEFT JOIN customers c ON i.customer_id = c.id
-    LEFT JOIN bank_statements bs ON (bs.r2_key = fr.r2_key OR bs.source_file_id = fr.id) AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
-    LEFT JOIN card_statements cs ON (cs.r2_key = fr.r2_key OR cs.source_file_id = fr.id) AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
-    WHERE fr.user_id = ? AND fr.deleted_at IS NULL`;
-```
-
-The `unlinked` block stays exactly as it is.
-
-- [ ] **Step 4: Run tests — all pass**
-
-```bash
-npx tsx tests/list-filters.test.ts
-```
-
-Expected: `… passed, 0 failed`.
-
-- [ ] **Step 5: Typecheck baseline unchanged**
-
-```bash
-cd api && npx tsc --noEmit 2>&1 | grep -c "error TS"
-```
-
-Must equal the Task 0 number.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add api/src/lib/list-filters.ts && git add -f tests/list-filters.test.ts
-git commit -m "feat(api): file list joins manual statement links via source_file_id
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
-```
-
----
-
-### Task 3: Bank statement manual entry + link-file endpoints
-
-**Files:**
-- Modify: `api/src/routes/bank-statements.ts` (new routes before `bank.post('/import', …)` at ~line 1298; `source='ocr'` stamps on the two existing INSERTs at ~1327 and ~1397; list SELECT at ~line 148; detail SELECT in `bank.get('/:id', …)` at ~1152)
-
-**Interfaces:**
-- Produces: `POST /bank-statements/manual` → `{ id, status: 'draft', transactions_count }` (201); `PUT /bank-statements/:id/link-file` body `{ file_id }` → `{ id, source_file_id }`. List/detail rows now include `r2_key`, `source_file_id`, `source`.
-- Consumes: Task 1 columns.
-
-- [ ] **Step 1: Add the manual-entry route**
-
-Re-read the file around `bank.post('/import', …)`. Insert directly ABOVE it:
-
-```ts
-// ── Manual entry (hand-keyed; optional source_file_id link) ──
+```typescript
+// ── Manual statement entry (no OCR) ──
 bank.post('/manual', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
@@ -230,41 +147,56 @@ bank.post('/manual', async (c) => {
     bank_name, account_number, branch, currency,
     statement_year, statement_month, period_start, period_end,
     opening_balance, closing_balance, source_file_id,
-    transactions
-  } = body;
+    transactions,
+  } = body as any;
 
-  if (!bank_name || !String(bank_name).trim()) return c.json({ error: 'bank_name required' }, 400);
-  if (!Array.isArray(transactions) || transactions.length === 0) return c.json({ error: 'transactions must be a non-empty array' }, 400);
-  if (transactions.length > 500) return c.json({ error: 'transactions: max 500 rows' }, 400);
-  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (!bank_name?.trim()) return c.json({ error: 'bank_name is required' }, 400);
+  if (!Array.isArray(transactions) || transactions.length === 0 || transactions.length > 500) {
+    return c.json({ error: 'transactions must be 1–500 rows' }, 400);
+  }
+
+  // Validate source_file_id tenancy
+  if (source_file_id) {
+    const fileRow = await db.prepare(
+      'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(source_file_id, tenantId).first();
+    if (!fileRow) return c.json({ error: `file_records id ${source_file_id} not found or not yours` }, 400);
+  }
+
+  // Validate transactions
   for (let i = 0; i < transactions.length; i++) {
     const tx = transactions[i];
-    if (!dateRe.test(tx.transaction_date || '')) return c.json({ error: `Row ${i + 1}: transaction_date must be YYYY-MM-DD` }, 400);
-    if (!tx.description || !String(tx.description).trim()) return c.json({ error: `Row ${i + 1}: description required` }, 400);
-    const dep = Number(tx.deposit_amount || 0);
-    const wdl = Number(tx.withdrawal_amount || 0);
-    if ((dep > 0) === (wdl > 0)) return c.json({ error: `Row ${i + 1}: exactly one of deposit_amount / withdrawal_amount must be > 0` }, 400);
-  }
-  if (source_file_id) {
-    const f = await db.prepare(
-      'SELECT id, filename FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-    ).bind(source_file_id, tenantId).first();
-    if (!f) return c.json({ error: `file_id ${source_file_id} not found for this account` }, 400);
+    if (!tx.transaction_date || !/^\d{4}-\d{2}-\d{2}$/.test(tx.transaction_date)) {
+      return c.json({ error: `Row ${i + 1}: transaction_date must be YYYY-MM-DD` }, 400);
+    }
+    if (!tx.description?.trim()) {
+      return c.json({ error: `Row ${i + 1}: description is required` }, 400);
+    }
+    const hasDeposit = (tx.deposit_amount || 0) > 0;
+    const hasWithdrawal = (tx.withdrawal_amount || 0) > 0;
+    if (hasDeposit === hasWithdrawal) {
+      return c.json({ error: `Row ${i + 1}: must have exactly one of deposit_amount or withdrawal_amount > 0` }, 400);
+    }
   }
 
   const id = `bs-${uuidv4().slice(0, 8)}`;
-  const storedBank = normalizeBankNameForStorage(bank_name);
-  const ym = statement_year && statement_month ? ` ${statement_year}-${String(statement_month).padStart(2, '0')}` : '';
+  const fileName = `Manual — ${bank_name.trim()} ${statement_year || ''}-${String(statement_month || '').padStart(2, '0')}`.trim();
+
   await db.prepare(
     `INSERT INTO bank_statements (id, user_id, file_name, file_type, file_data, r2_key,
      bank_name, account_number, branch, currency, account_type,
      statement_year, statement_month, period_start, period_end,
-     opening_balance, closing_balance, page_count, ocr_text, status, source_file_id, source)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).bind(id, tenantId, `Manual — ${storedBank}${ym}`, 'application/pdf', '', null,
-    storedBank, account_number || null, branch || null, currency || 'HKD', null,
-    statement_year || null, statement_month || null, period_start || null, period_end || null,
-    opening_balance ?? null, closing_balance ?? null, null, '', 'draft', source_file_id || null, 'manual').run();
+     opening_balance, closing_balance, page_count, ocr_text, source, source_file_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    id, tenantId, fileName, 'application/pdf', '', null,
+    bank_name.trim(), account_number || null, branch || null,
+    currency || 'HKD', null,
+    statement_year || null, statement_month || null,
+    period_start || null, period_end || null,
+    opening_balance ?? null, closing_balance ?? null,
+    null, '', 'manual', source_file_id || null
+  ).run();
 
   for (let i = 0; i < transactions.length; i++) {
     const tx = transactions[i];
@@ -272,151 +204,59 @@ bank.post('/manual', async (c) => {
       `INSERT INTO bank_transactions (id, bank_statement_id, user_id, transaction_date, description,
        deposit_amount, withdrawal_amount, balance, account_type, reference, sort_order)
        VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-    ).bind(`bt-${uuidv4().slice(0, 8)}`, id, tenantId, tx.transaction_date, tx.description,
-      Number(tx.deposit_amount || 0), Number(tx.withdrawal_amount || 0), tx.balance ?? 0,
-      null, tx.reference || null, i).run();
+    ).bind(
+      `bt-${uuidv4().slice(0, 8)}`, id, tenantId,
+      tx.transaction_date, tx.description.trim(),
+      tx.deposit_amount || 0, tx.withdrawal_amount || 0, tx.balance ?? 0,
+      tx.account_type || null, tx.reference || null, i
+    ).run();
   }
 
-  await auditLog(db, user.id, 'create', 'bank_statement', id, { source: 'manual', transactions: transactions.length, source_file_id: source_file_id || null });
-  return c.json({ id, status: 'draft', transactions_count: transactions.length }, 201);
-});
-
-// ── Link a manually-entered statement to a stored file (replace allowed) ──
-bank.put('/:id/link-file', async (c) => {
-  const user = c.get('user');
-  const tenantId = c.get('client_user_id') || user.id;
-  const db = c.env.DB;
-  const id = c.req.param('id');
-  const { file_id } = await c.req.json();
-  if (!file_id) return c.json({ error: 'file_id required' }, 400);
-  const stmt = await db.prepare(
-    'SELECT id, r2_key, source_file_id FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(id, tenantId).first<{ id: string; r2_key: string | null; source_file_id: string | null }>();
-  if (!stmt) return c.json({ error: 'Not found' }, 404);
-  if (stmt.r2_key) return c.json({ error: 'OCR-imported statements are already linked to their source file' }, 409);
-  const f = await db.prepare(
-    'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(file_id, tenantId).first();
-  if (!f) return c.json({ error: `file_id ${file_id} not found for this account` }, 400);
-  await db.prepare(
-    "UPDATE bank_statements SET source_file_id = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?"
-  ).bind(file_id, id, tenantId).run();
-  await auditLog(db, user.id, 'update', 'bank_statement', id, { linked_file_id: file_id, replaced_file_id: stmt.source_file_id || null });
-  return c.json({ id, source_file_id: file_id });
+  await auditLog(db, tenantId, 'create', 'bank_statement', id, {
+    source: 'manual', transactions: transactions.length, source_file_id: source_file_id || null,
+  });
+  return c.json({ id, transaction_count: transactions.length }, 201);
 });
 ```
 
-Route order note: both are safe — no existing 1-segment POST or 2-segment `PUT /:id/*` route is shadowed (`POST /:id/confirm` is 2-segment with a different literal tail).
-
-- [ ] **Step 2: Stamp `source='ocr'` on the existing OCR-path INSERTs**
-
-In this same file, the `bank.post('/import')` INSERT (~line 1327) and `bank.post('/upload')` INSERT (~line 1397) each gain the `source` column with the literal `'ocr'` value (add `source` to the column list, append `'ocr'` to the VALUES placeholders and bind list). Then enumerate every other writer:
+- [ ] **Step 3: Verify tsc compiles**
 
 ```bash
-grep -rn "INSERT INTO bank_statements" api/src/routes/
+cd Tech_Connect_SME/Development_code/latest_code
+npx tsc --noEmit 2>&1 | head -20
 ```
 
-For each hit (expected: `file-storage.ts` ×2, `chat.ts` ×1), add `source` = `'ocr'` the same way. These are all OCR/chat-upload paths.
+Expected: no new errors in `bank-statements.ts`.
 
-- [ ] **Step 3: Expose link fields on list + detail**
-
-1. In `bank.get('/')` (~line 148), extend the SELECT's first line: `SELECT bs.id, bs.file_name, bs.bank_name,` → `SELECT bs.id, bs.file_name, bs.r2_key, bs.source_file_id, bs.source, bs.bank_name,`.
-2. In `bank.get('/:id', …)` (~line 1152), add `r2_key, source_file_id, source` to the SELECT the same way (read the handler first; keep its shape).
-
-- [ ] **Step 4: Write the mock-db test**
-
-Create `tests/manual-statements.test.ts`:
-
-```ts
-// Tests for manual statement entry validation + link semantics.
-// Run: npx tsx tests/manual-statements.test.ts
-let pass = 0, fail = 0;
-function ok(cond: boolean, label: string) {
-  if (cond) { pass++; } else { fail++; console.error(`FAIL: ${label}`); }
-}
-
-// The route handlers are exercised through Hono in the live round-trip (Task 13);
-// here we pin the pure validation predicate shared by both statement endpoints.
-export function validateManualRows(transactions: any[]): string | null {
-  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-  for (let i = 0; i < transactions.length; i++) {
-    const tx = transactions[i];
-    if (!dateRe.test(tx.transaction_date || '')) return `Row ${i + 1}: transaction_date must be YYYY-MM-DD`;
-    if (!tx.description || !String(tx.description).trim()) return `Row ${i + 1}: description required`;
-    const dep = Number(tx.deposit_amount || 0);
-    const wdl = Number(tx.withdrawal_amount || 0);
-    if ((dep > 0) === (wdl > 0)) return `Row ${i + 1}: exactly one of deposit_amount / withdrawal_amount must be > 0`;
-  }
-  return null;
-}
-
-ok(validateManualRows([{ transaction_date: '2026-07-03', description: 'X', deposit_amount: 5, withdrawal_amount: 0 }]) === null, 'valid row passes');
-ok(/Row 1/.test(validateManualRows([{ transaction_date: 'bad', description: 'X', deposit_amount: 5, withdrawal_amount: 0 }]) || ''), 'bad date names row');
-ok(/exactly one/.test(validateManualRows([{ transaction_date: '2026-07-03', description: 'X', deposit_amount: 0, withdrawal_amount: 0 }]) || ''), 'neither amount rejected');
-ok(/exactly one/.test(validateManualRows([{ transaction_date: '2026-07-03', description: 'X', deposit_amount: 5, withdrawal_amount: 5 }]) || ''), 'both amounts rejected');
-ok(/description/.test(validateManualRows([{ transaction_date: '2026-07-03', description: ' ', deposit_amount: 5, withdrawal_amount: 0 }]) || ''), 'blank description rejected');
-
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
-```
-
-**IMPORTANT:** to keep the route and the test from drifting, extract the loop body into `export function validateManualRows(transactions: any[]): string | null` in a new `api/src/lib/manual-statements.ts`, import it in both `bank-statements.ts` and `card-statements.ts` (Task 4), and have the test import it from there (delete the local copy above; the test's import line becomes `import { validateManualRows } from '../api/src/lib/manual-statements';`).
-
-- [ ] **Step 5: Run tests + typecheck**
+- [ ] **Step 4: Commit**
 
 ```bash
-npx tsx tests/manual-statements.test.ts && cd api && npx tsc --noEmit 2>&1 | grep -c "error TS"
-```
-
-Expected: `5 passed, 0 failed`; typecheck count = baseline.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add api/src/routes/bank-statements.ts api/src/lib/manual-statements.ts api/src/routes/file-storage.ts api/src/routes/chat.ts
-git add -f tests/manual-statements.test.ts
-git commit -m "feat(api): manual bank statement entry + link-file endpoint
+git add api/src/routes/bank-statements.ts
+git commit -m "feat(api): manual bank statement endpoint + OCR source stamp
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 4: Card statement manual entry + link-file endpoints
+### Task 3: Backend — Card Statement Manual Endpoint + Link-File + OCR Source Stamp
 
 **Files:**
-- Modify: `api/src/routes/card-statements.ts` (new routes before `card.post('/import', …)` at ~line 239; `source='ocr'` stamp on the /import INSERT at ~264; list SELECT at ~line 102; detail SELECT in `card.get('/:id', …)` at ~493)
+- Modify: `api/src/routes/card-statements.ts`
 
 **Interfaces:**
-- Produces: `POST /card-statements/manual` → `{ id, status: 'draft', transactions_count }` (201); `PUT /card-statements/:id/link-file` → `{ id, source_file_id }`. List/detail rows include `r2_key`, `source_file_id`, `source`.
-- Consumes: `validateManualCardRows` semantics below; Task 1 columns; Task 3's `api/src/lib/manual-statements.ts` (add the card validator there).
+- Produces: `POST /card-statements/manual` → `{ id, transaction_count }`; `PUT /card-statements/:id/link-file`; existing import INSERT stamps `source='ocr'`.
 
-- [ ] **Step 1: Add the card validators to `api/src/lib/manual-statements.ts`**
+- [ ] **Step 1: Add `source='ocr'` to the existing import INSERT**
 
-```ts
-const CARD_TX_TYPES = ['purchase', 'payment', 'refund', 'fee', 'interest', 'cash_advance'];
+Find `INSERT INTO card_statements` around line 264. Add `source` to the column list and `'ocr'` as the last value.
 
-export function validateManualCardTransactions(transactions: any[]): string | null {
-  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-  for (let i = 0; i < transactions.length; i++) {
-    const tx = transactions[i];
-    if (!dateRe.test(tx.transaction_date || '')) return `Row ${i + 1}: transaction_date must be YYYY-MM-DD`;
-    if (!tx.description || !String(tx.description).trim()) return `Row ${i + 1}: description required`;
-    if (!(Number(tx.amount) > 0)) return `Row ${i + 1}: amount must be > 0`;
-    if (tx.transaction_type && !CARD_TX_TYPES.includes(tx.transaction_type)) {
-      return `Row ${i + 1}: transaction_type must be one of ${CARD_TX_TYPES.join(', ')}`;
-    }
-  }
-  return null;
-}
-```
+- [ ] **Step 2: Add `POST /card-statements/manual` endpoint**
 
-- [ ] **Step 2: Add the routes**
+Register BEFORE `/:id` param routes:
 
-Insert directly ABOVE `card.post('/import', …)` (mirroring the bank route from Task 3 — full code, do not share the handler):
-
-```ts
-// ── Manual entry (hand-keyed; optional source_file_id link) ──
+```typescript
+// ── Manual card statement entry (no OCR) ──
 card.post('/manual', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
@@ -426,37 +266,49 @@ card.post('/manual', async (c) => {
     card_issuer, card_network, card_number_last4, cardholder_name, currency,
     statement_year, statement_month, period_start, period_end,
     credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date,
-    source_file_id, transactions
-  } = body;
+    source_file_id, transactions,
+  } = body as any;
 
-  if (!card_issuer || !String(card_issuer).trim()) return c.json({ error: 'card_issuer required' }, 400);
-  if (!Array.isArray(transactions) || transactions.length === 0) return c.json({ error: 'transactions must be a non-empty array' }, 400);
-  if (transactions.length > 500) return c.json({ error: 'transactions: max 500 rows' }, 400);
-  const rowError = validateManualCardTransactions(transactions);
-  if (rowError) return c.json({ error: rowError }, 400);
+  if (!card_issuer?.trim()) return c.json({ error: 'card_issuer is required' }, 400);
+  if (!Array.isArray(transactions) || transactions.length === 0 || transactions.length > 500) {
+    return c.json({ error: 'transactions must be 1–500 rows' }, 400);
+  }
+
   if (source_file_id) {
-    const f = await db.prepare(
+    const fileRow = await db.prepare(
       'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
     ).bind(source_file_id, tenantId).first();
-    if (!f) return c.json({ error: `file_id ${source_file_id} not found for this account` }, 400);
+    if (!fileRow) return c.json({ error: `file_records id ${source_file_id} not found or not yours` }, 400);
+  }
+
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+    if (!tx.transaction_date || !/^\d{4}-\d{2}-\d{2}$/.test(tx.transaction_date)) {
+      return c.json({ error: `Row ${i + 1}: transaction_date must be YYYY-MM-DD` }, 400);
+    }
+    if (!tx.description?.trim()) {
+      return c.json({ error: `Row ${i + 1}: description is required` }, 400);
+    }
   }
 
   const id = `cs-${uuidv4().slice(0, 8)}`;
-  const ym = statement_year && statement_month ? ` ${statement_year}-${String(statement_month).padStart(2, '0')}` : '';
+  const fileName = `Manual — ${card_issuer.trim()} ${statement_year || ''}-${String(statement_month || '').padStart(2, '0')}`.trim();
+
   await db.prepare(
-    `INSERT INTO card_statements (id, user_id, file_name, file_type, r2_key,
+    `INSERT INTO card_statements (id, user_id, file_name, file_type, file_data, r2_key,
      card_issuer, card_network, card_number_last4, cardholder_name, currency,
      statement_year, statement_month, period_start, period_end,
      credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date,
-     status, source_file_id, source)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).bind(id, tenantId, `Manual — ${card_issuer}${ym}`, 'application/pdf', null,
-    card_issuer || null, card_network || null, card_number_last4 || null, cardholder_name || null,
+     ocr_text, status, source, source_file_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    id, tenantId, fileName, 'application/pdf', '', null,
+    card_issuer.trim(), card_network || null, card_number_last4 || null, cardholder_name || null,
     currency || 'HKD', statement_year || null, statement_month || null,
     period_start || null, period_end || null,
     credit_limit ?? null, opening_balance ?? null, closing_balance ?? null,
-    minimum_payment ?? null, payment_due_date || null,
-    'draft', source_file_id || null, 'manual').run();
+    minimum_payment ?? null, payment_due_date || null, '', 'draft', 'manual', source_file_id || null
+  ).run();
 
   for (let i = 0; i < transactions.length; i++) {
     const tx = transactions[i];
@@ -464,887 +316,871 @@ card.post('/manual', async (c) => {
       `INSERT INTO card_transactions (id, card_statement_id, user_id, transaction_date, posting_date,
        description, amount, transaction_type, foreign_currency, foreign_amount, category, reference, sort_order)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(`ct-${uuidv4().slice(0, 8)}`, id, tenantId,
-      tx.transaction_date, tx.posting_date || null, tx.description,
-      Number(tx.amount) || 0, tx.transaction_type || null, tx.foreign_currency || null,
-      tx.foreign_amount ?? null, tx.category || null, tx.reference || null, i).run();
+    ).bind(
+      `ct-${uuidv4().slice(0, 8)}`, id, tenantId,
+      tx.transaction_date, tx.posting_date || null, tx.description.trim(),
+      tx.amount || 0, tx.transaction_type || null, tx.foreign_currency || null,
+      tx.foreign_amount || null, tx.category || null, tx.reference || null, i
+    ).run();
   }
 
-  await auditLog(c.env.DB, user.id, 'create', 'card_statement', id, { source: 'manual', transactions: transactions.length, source_file_id: source_file_id || null });
-  return c.json({ id, status: 'draft', transactions_count: transactions.length }, 201);
+  await auditLog(db, tenantId, 'create', 'card_statement', id, {
+    source: 'manual', transactions: transactions.length, source_file_id: source_file_id || null,
+  });
+  return c.json({ id, transaction_count: transactions.length }, 201);
 });
+```
 
-// ── Link a manually-entered statement to a stored file (replace allowed) ──
+- [ ] **Step 3: Add `PUT /card-statements/:id/link-file` endpoint**
+
+```typescript
+// ── Link file to statement ──
 card.put('/:id/link-file', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
   const id = c.req.param('id');
-  const { file_id } = await c.req.json();
-  if (!file_id) return c.json({ error: 'file_id required' }, 400);
-  const stmt = await db.prepare(
-    'SELECT id, r2_key, source_file_id FROM card_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(id, tenantId).first<{ id: string; r2_key: string | null; source_file_id: string | null }>();
-  if (!stmt) return c.json({ error: 'Not found' }, 404);
-  if (stmt.r2_key) return c.json({ error: 'OCR-imported statements are already linked to their source file' }, 409);
-  const f = await db.prepare(
-    'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-  ).bind(file_id, tenantId).first();
-  if (!f) return c.json({ error: `file_id ${file_id} not found for this account` }, 400);
+  const body = await c.req.json();
+  const { file_id } = body as { file_id: string };
+
+  const existing = await db.prepare(
+    'SELECT id, source_file_id FROM card_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(id, tenantId).first<{ id: string; source_file_id: string | null }>();
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  if (file_id) {
+    const fileRow = await db.prepare(
+      'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(file_id, tenantId).first();
+    if (!fileRow) return c.json({ error: `file_records id ${file_id} not found or not yours` }, 400);
+  }
+
+  const replacedFileId = existing.source_file_id;
   await db.prepare(
-    "UPDATE card_statements SET source_file_id = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?"
-  ).bind(file_id, id, tenantId).run();
-  await auditLog(db, user.id, 'update', 'card_statement', id, { linked_file_id: file_id, replaced_file_id: stmt.source_file_id || null });
-  return c.json({ id, source_file_id: file_id });
+    "UPDATE card_statements SET source_file_id = ?, updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
+  ).bind(file_id || null, id).run();
+
+  await auditLog(db, tenantId, 'update', 'card_statement', id, {
+    linked_file_id: file_id || null, replaced_file_id: replacedFileId,
+  });
+  return c.json({ success: true, id });
 });
 ```
 
-Add the import at the top: `import { validateManualCardTransactions } from '../lib/manual-statements';` (and Task 3 added `import { validateManualRows } from '../lib/manual-statements';` to `bank-statements.ts` — the bank route's inline loop is replaced by `const rowError = validateManualRows(transactions); if (rowError) return c.json({ error: rowError }, 400);`).
-
-- [ ] **Step 3: Stamp `source='ocr'` + expose link fields**
-
-1. `card.post('/import')` INSERT (~line 264): add `source` column with `'ocr'` (note this INSERT currently hardcodes `'draft'` in the VALUES — follow its existing style, appending `source` as a bound column or the literal `'ocr'`).
-2. `card.get('/')` list SELECT (~line 102): prepend `id, r2_key, source_file_id, source,` after `SELECT`.
-3. `card.get('/:id', …)` detail SELECT (~line 493): add the same three columns.
-
-- [ ] **Step 4: Extend the test**
-
-Append to `tests/manual-statements.test.ts` (switching its import to the lib):
-
-```ts
-import { validateManualCardTransactions } from '../api/src/lib/manual-statements';
-ok(validateManualCardTransactions([{ transaction_date: '2026-07-03', description: 'X', amount: 120 }]) === null, 'card: valid row');
-ok(/amount/.test(validateManualCardTransactions([{ transaction_date: '2026-07-03', description: 'X', amount: 0 }]) || ''), 'card: zero amount rejected');
-ok(/transaction_type/.test(validateManualCardTransactions([{ transaction_date: '2026-07-03', description: 'X', amount: 5, transaction_type: 'wire' }]) || ''), 'card: bad type rejected');
-```
-
-- [ ] **Step 5: Run tests + typecheck; commit**
+- [ ] **Step 4: Verify tsc compiles**
 
 ```bash
-npx tsx tests/manual-statements.test.ts && cd api && npx tsc --noEmit 2>&1 | grep -c "error TS"
-git add api/src/routes/card-statements.ts api/src/lib/manual-statements.ts api/src/routes/bank-statements.ts
-git add -f tests/manual-statements.test.ts
-git commit -m "feat(api): manual card statement entry + link-file endpoint
+npx tsc --noEmit 2>&1 | head -20
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add api/src/routes/card-statements.ts
+git commit -m "feat(api): manual card statement endpoint + link-file + OCR source stamp
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 5: `linked-records` provenance labels
+### Task 4: Backend — Bank Statement Link-File + Linked-Records OR-Join
 
 **Files:**
-- Modify: `api/src/routes/file-storage.ts` (`files.get('/:id/linked-records')` at ~line 2074)
-- Modify: `api/src/lib/manual-booking.ts` (`buildFileLinks`)
-- Test: `tests/manual-statements.test.ts`
+- Modify: `api/src/routes/file-storage.ts`
 
 **Interfaces:**
-- Produces: `linked-records` response rows now join manual links; `buildFileLinks(fileRow, jeRows)` consumes new optional fields `stmt_source`, `card_source` on `fileRow` and appends provenance to labels.
-- Consumes: Task 1 columns.
+- Produces: `PUT /bank-statements/:id/link-file` (via bank-statements route); extended `GET /file-storage/:id/linked-records` with OR-join + provenance labels.
 
-- [ ] **Step 1: Extend the query**
+- [ ] **Step 1: Add `PUT /bank-statements/:id/link-file` to bank-statements.ts**
 
-In the `/:id/linked-records` handler, replace the statement JOINs:
+In `api/src/routes/bank-statements.ts`, add before `/:id` routes:
+
+```typescript
+// ── Link file to bank statement ──
+bank.put('/:id/link-file', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const { file_id } = body as { file_id: string };
+
+  const existing = await db.prepare(
+    'SELECT id, source_file_id FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(id, tenantId).first<{ id: string; source_file_id: string | null }>();
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  if (file_id) {
+    const fileRow = await db.prepare(
+      'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(file_id, tenantId).first();
+    if (!fileRow) return c.json({ error: `file_records id ${file_id} not found or not yours` }, 400);
+  }
+
+  const replacedFileId = existing.source_file_id;
+  await db.prepare(
+    "UPDATE bank_statements SET source_file_id = ?, updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
+  ).bind(file_id || null, id).run();
+
+  await auditLog(db, tenantId, 'update', 'bank_statement', id, {
+    linked_file_id: file_id || null, replaced_file_id: replacedFileId,
+  });
+  return c.json({ success: true, id });
+});
+```
+
+- [ ] **Step 2: Extend `linked-records` OR-join**
+
+In `api/src/routes/file-storage.ts`, find the `linked-records` endpoint (around line 2074). Replace the statement JOINs:
 
 ```sql
+-- Before:
+LEFT JOIN bank_statements bs ON bs.r2_key = fr.r2_key AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
+LEFT JOIN card_statements cs ON cs.r2_key = fr.r2_key AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
+
+-- After:
 LEFT JOIN bank_statements bs ON (bs.r2_key = fr.r2_key OR bs.source_file_id = fr.id)
   AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
 LEFT JOIN card_statements cs ON (cs.r2_key = fr.r2_key OR cs.source_file_id = fr.id)
   AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
 ```
 
-and add `bs.source as stmt_source, cs.source as card_source` to the SELECT list.
+Also add `bs.source as stmt_source, cs.source as card_source` to the SELECT list.
 
-- [ ] **Step 2: Label provenance in `buildFileLinks`**
+- [ ] **Step 3: Update `buildFileLinks` to show provenance**
 
-In `api/src/lib/manual-booking.ts`, change the two statement link pushes:
+In `api/src/lib/manual-booking.ts`, update the `buildFileLinks` function. Add `source` fields to the `FileLink` interface and use them:
 
-```ts
-  if (fileRow?.statement_id) {
-    const prov = fileRow.stmt_source === 'manual' ? ' (manually entered)' : ' (from AI-OCR)';
-    links.push({
-      kind: 'bank_statement', id: fileRow.statement_id,
-      label: `Bank statement${fileRow.stmt_bank_name ? ` — ${fileRow.stmt_bank_name}` : ''}${prov}`,
-    });
-  }
-  if (fileRow?.card_statement_id) {
-    const prov = fileRow.card_source === 'manual' ? ' (manually entered)' : ' (from AI-OCR)';
-    links.push({
-      kind: 'card_statement', id: fileRow.card_statement_id,
-      label: `Card statement${fileRow.card_issuer ? ` — ${fileRow.card_issuer}` : ''}${prov}`,
-    });
-  }
-```
-
-- [ ] **Step 3: Test the labels**
-
-Append to `tests/manual-statements.test.ts`:
-
-```ts
-import { buildFileLinks } from '../api/src/lib/manual-booking';
-const linksManual = buildFileLinks({ statement_id: 'bs-1', stmt_bank_name: 'HSBC', stmt_source: 'manual' }, []);
-ok(linksManual.some(l => l.label.includes('manually entered')), 'linked-records: manual statement labeled');
-const linksOcr = buildFileLinks({ card_statement_id: 'cs-1', card_issuer: 'Amex', card_source: 'ocr' }, []);
-ok(linksOcr.some(l => l.label.includes('AI-OCR')), 'linked-records: OCR statement labeled');
-ok(buildFileLinks({}, []).length === 0, 'linked-records: clean file → no links');
-```
-
-- [ ] **Step 4: Run + typecheck + commit**
-
-```bash
-npx tsx tests/manual-statements.test.ts && cd api && npx tsc --noEmit 2>&1 | grep -c "error TS"
-git add api/src/routes/file-storage.ts api/src/lib/manual-booking.ts
-git add -f tests/manual-statements.test.ts
-git commit -m "feat(api): linked-records includes manual statement links with provenance
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
-```
-
----
-
-### Task 6: Upload `skip_ocr` + `'ocr'` stamps in file-storage.ts
-
-**Files:**
-- Modify: `api/src/routes/file-storage.ts` (upload handler ~lines 2101-2205; INSERT sites ~168, ~409 bank / ~3094, ~3237 card / ~1243, ~1794 invoices)
-
-**Interfaces:**
-- Produces: `POST /file-storage/upload` accepts optional boolean `skip_ocr` → initial `ocr_status='skipped'`. All statements/invoices created by import in this file carry `source='ocr'`.
-
-- [x] **Step 1: Add the flag** — ✅ DONE 2026-08-27 by the Expenses-session (exact spec above, deployed with API v4c8cf9b6; verified by `tests/expenses-tabs.spec.ts` asserting `ocr_status='skipped'`). Skip to Step 2.
-
-In `files.post('/upload')`:
-1. Destructure `skip_ocr` alongside `description`.
-2. Replace `const ocrResult = { text: '', status: 'pending' };` with `const ocrResult = { text: '', status: skip_ocr ? 'skipped' : 'pending' };`
-
-Nothing else changes. (The `wsBroadcast` 'ocr_request' notification fires as before — informational only.)
-
-> NOTE (Expenses-session): `POST /file-storage/reprocess` — which would have
-> bulk-OCRs `'skipped'` files and overwritten their category/folder — was
-> commented out (UI-orphaned, dangerous). Do not revive it without excluding
-> `ocr_status='skipped'` from its WHERE clause.
-
-- [ ] **Step 2: Stamp `source='ocr'` on import-created records**
-
-Enumerate every INSERT this file makes into the three tables:
-
-```bash
-grep -n "INSERT INTO bank_statements\|INSERT INTO card_statements\|INSERT INTO invoices" api/src/routes/file-storage.ts
-```
-
-For each (expected: bank ~168 + ~409, card ~3094 + ~3237, invoices ~1243 + ~1794), add the `source` column with literal `'ocr'` following that INSERT's existing style (some hardcode literals in VALUES — e.g. the card one at ~3094 hardcodes `'draft'` — append the same way).
-
-- [ ] **Step 3: Verify consumers of `ocr_status`**
-
-```bash
-grep -rn "ocr_status" api/src/ | grep -v "file_records"
-```
-
-Confirm nothing branches on statuses in a way that treats an unknown value as processing/pending. The `/issues` count (`failed`/`unclear`) intentionally ignores `'skipped'`.
-
-- [ ] **Step 4: Typecheck + commit**
-
-```bash
-cd api && npx tsc --noEmit 2>&1 | grep -c "error TS"
-git add api/src/routes/file-storage.ts
-git commit -m "feat(api): skip_ocr upload flag + source='ocr' stamps on import path
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
-```
-
----
-
-### Task 7: `POST /invoices` optional `file_id`
-
-**Files:**
-- Modify: `api/src/routes/invoices.ts` (`createSchema` ~line 401, handler ~line 417)
-
-**Interfaces:**
-- Produces: `POST /invoices` accepts `file_id?: string` (tenancy-validated); created invoices carry `source='manual'` and the given `file_id`. Frontend Task 12 relies on both.
-
-- [ ] **Step 1: Extend the schema**
-
-In `createSchema`, add after the `expense_category` line:
-
-```ts
-  file_id: z.string().optional(),
-```
-
-- [ ] **Step 2: Extend the handler**
-
-After the duplicate-invoice check and before the subtotal computation, insert:
-
-```ts
-  if (data.file_id) {
-    const f = await db.prepare(
-      'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
-    ).bind(data.file_id, tenantId).first();
-    if (!f) return c.json({ error: `file_id ${data.file_id} not found for this account` }, 400);
-  }
-```
-
-Then in the `INSERT INTO invoices` statement: add `file_id, source` to the column list, two more `?` to VALUES, and bind `data.file_id || null, 'manual'` at the end of the bind list. Update the audit `changes` payload to `{ invoice_number: data.invoice_number, total, file_id: data.file_id || null }`.
-
-- [ ] **Step 3: Typecheck + commit**
-
-```bash
-cd api && npx tsc --noEmit 2>&1 | grep -c "error TS"
-git add api/src/routes/invoices.ts
-git commit -m "feat(api): POST /invoices accepts optional file_id; stamps source='manual'
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
-```
-
----
-
-### Task 8: DocumentPickerModal `max` prop + `FileAttachmentField`
-
-**Files:**
-- Modify: `frontend/src/components/DocumentPickerModal.tsx`
-- Create: `frontend/src/components/FileAttachmentField.tsx`
-
-**Interfaces:**
-- Produces: `DocumentPickerModal` accepts `max?: number` (default 10). `FileAttachmentField` props: `{ value: PickedFile | null; onChange: (f: PickedFile | null) => void; label?: string }` — used by Tasks 11 and 12.
-
-- [ ] **Step 1: Add the `max` prop to the picker**
-
-In `DocumentPickerModal.tsx`:
-
-1. Signature: add `max` to the props object and type: `… unlinkedOnly?: boolean; max?: number; }`.
-2. After the `CATEGORIES` array: `const cap = max ?? MAX_ATTACHMENTS;`
-3. Replace `const atCap = sel.length >= MAX_ATTACHMENTS;` with `const atCap = sel.length >= cap;`
-4. In `toggle`: `if (prev.length >= cap) return prev;`
-5. Footer count: `` `${sel.length}/${cap}` `` and the "Max 10" label becomes `` `${tr('Max', '最多', '最多')} ${cap}` ``.
-
-- [ ] **Step 2: Create `FileAttachmentField.tsx`**
-
-```tsx
-import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '../lib/api';
-import { tr } from '../lib/i18nHelpers';
-import { Paperclip, X, AlertTriangle } from 'lucide-react';
-import DocumentPickerModal, { PickedFile } from './DocumentPickerModal';
-
-/** Single-file attachment control with the "already linked elsewhere" warning. */
-export default function FileAttachmentField({ value, onChange, label }: {
-  value: PickedFile | null;
-  onChange: (f: PickedFile | null) => void;
-  label?: string;
-}) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const { data: linked } = useQuery({
-    queryKey: ['file-linked-records', value?.id],
-    queryFn: () => api(`/file-storage/${value!.id}/linked-records`),
-    enabled: !!value,
-  });
-  const links: { kind: string; id: string; label: string }[] = linked?.links || [];
-
-  return (
-    <div className="space-y-1">
-      <label className="text-xs text-muted-foreground">{label || tr('Supporting file', '附件', '附件')}</label>
-      {value ? (
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1 px-2 py-1 border rounded-md bg-muted/30 text-sm max-w-full">
-            <Paperclip className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{value.filename}</span>
-            <button type="button" onClick={() => onChange(null)} className="text-muted-foreground hover:text-destructive shrink-0">
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </span>
-          <button type="button" onClick={() => setPickerOpen(true)} className="text-xs text-primary hover:underline">
-            {tr('Change', '更換', '更换')}
-          </button>
-        </div>
-      ) : (
-        <button type="button" onClick={() => setPickerOpen(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-2 border rounded-md text-sm hover:bg-muted">
-          <Paperclip className="h-4 w-4" />
-          {tr('Attach file', '附加文件', '附加文件')}
-        </button>
-      )}
-      {links.length > 0 && (
-        <div className="flex items-start gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-md text-xs text-amber-800 dark:text-amber-200">
-          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-          <div>
-            <p className="font-medium">{tr('This file is already linked to:', '此文件已連結至：', '此文件已连结至：')}</p>
-            <ul className="list-disc ml-4 mt-0.5">
-              {links.map(l => <li key={`${l.kind}-${l.id}`}>{l.label}</li>)}
-            </ul>
-            <p className="mt-1 text-amber-700 dark:text-amber-300">{tr('You can still attach it.', '仍可繼續附加。', '仍可继续附加。')}</p>
-          </div>
-        </div>
-      )}
-      {pickerOpen && (
-        <DocumentPickerModal alreadyPicked={[]} max={1}
-          onPick={(picked) => onChange(picked[0] || null)}
-          onClose={() => setPickerOpen(false)} />
-      )}
-    </div>
-  );
+```typescript
+export interface FileLink {
+  kind: 'invoice' | 'receipt' | 'bank_statement' | 'card_statement' | 'journal_entry';
+  id: string; label: string;
+  source?: 'ocr' | 'manual';
 }
 ```
 
-- [ ] **Step 3: Build + commit**
+Update the bank_statement and card_statement blocks in `buildFileLinks`:
+
+```typescript
+if (fileRow?.statement_id) {
+  const provenance = fileRow.stmt_source === 'manual' ? ' (manually entered)' : ' (from AI-OCR)';
+  links.push({
+    kind: 'bank_statement', id: fileRow.statement_id,
+    label: `Bank statement${fileRow.stmt_bank_name ? ` — ${fileRow.stmt_bank_name}` : ''}${provenance}`,
+    source: fileRow.stmt_source || 'ocr',
+  });
+}
+if (fileRow?.card_statement_id) {
+  const provenance = fileRow.card_source === 'manual' ? ' (manually entered)' : ' (from AI-OCR)';
+  links.push({
+    kind: 'card_statement', id: fileRow.card_statement_id,
+    label: `Card statement${fileRow.card_issuer ? ` — ${fileRow.card_issuer}` : ''}${provenance}`,
+    source: fileRow.card_source || 'ocr',
+  });
+}
+```
+
+- [ ] **Step 4: Verify tsc compiles**
 
 ```bash
-cd frontend && npm run build
-git add src/components/DocumentPickerModal.tsx src/components/FileAttachmentField.tsx
-git commit -m "feat(frontend): picker max prop + FileAttachmentField with linked-records warning
+npx tsc --noEmit 2>&1 | head -20
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add api/src/routes/file-storage.ts api/src/routes/bank-statements.ts api/src/lib/manual-booking.ts
+git commit -m "feat(api): bank link-file + linked-records OR-join + provenance labels
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 9: FileUpload — "Save without AI Analysis"
+### Task 5: Backend — buildFileListSql OR-Join + Invoice file_id
 
 **Files:**
-- Modify: `frontend/src/pages/FileUpload.tsx` (new handler + button beside "Upload & Analyze" at ~line 720)
+- Modify: `api/src/lib/list-filters.ts`
+- Modify: `api/src/routes/invoices.ts`
 
 **Interfaces:**
-- Consumes: Task 6's `skip_ocr` body flag.
+- Produces: Extended `buildFileListSql` with OR-join and source columns; `POST /invoices` accepts optional `file_id`.
 
-- [ ] **Step 1: Add the no-AI upload path**
+- [ ] **Step 1: Extend `buildFileListSql` in list-filters.ts**
 
-Inside the `FileUpload` component (after `handleUpload`), add:
+Replace the bank/card JOINs:
 
-```tsx
-  const uploadOnly = async (file: File): Promise<void> => {
-    const token = localStorage.getItem('token');
-    const activeClient = localStorage.getItem('activeClient');
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
-    if (activeClient) {
-      try { const c = JSON.parse(activeClient); if (c?.id) headers['X-Active-Client'] = c.id; } catch {}
-    }
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsDataURL(file);
-    });
-    await api('/file-storage/upload', {
-      method: 'POST', baseUrl: WORKER_API_BASE,
-      body: {
-        filename: file.name, original_name: file.name, file_type: file.type, file_size: file.size,
-        file_data: base64, folder: channelDef.folder, description, skip_ocr: true,
-      },
-    });
-  };
+```sql
+-- Before:
+LEFT JOIN bank_statements bs ON bs.r2_key = fr.r2_key AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
+LEFT JOIN card_statements cs ON cs.r2_key = fr.r2_key AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
 
-  const handleUploadNoAi = async () => {
-    if (files.length === 0) return;
-    setUploading(true);
-    setFileErrors({});
-    setFileStatuses({});
-    let okCount = 0;
-    let idx = 0;
-    for (const file of files) {
-      const fileIdx = idx; idx++;
-      setFileStatuses(prev => ({ ...prev, [fileIdx]: 'processing' }));
-      try {
-        await uploadOnly(file);
-        okCount++;
-        setFileStatuses(prev => ({ ...prev, [fileIdx]: 'success' }));
-      } catch (e: any) {
-        setFileStatuses(prev => ({ ...prev, [fileIdx]: 'error' }));
-        setFileErrors(prev => ({ ...prev, [fileIdx]: e.message || 'Unknown error' }));
-        break;
-      }
-    }
-    setUploading(false);
-    if (okCount === 0) return;
-    setFiles([]);
-    setDescription('');
-    setRejected([]);
-    queryClient.invalidateQueries({ queryKey: ['file-storage'] });
-    toast.success(tr(
-      `Saved ${okCount} file(s) without AI analysis — run Analyze later from File Storage.`,
-      `已儲存 ${okCount} 個文件（未用 AI 分析）——之後可在文件庫按「分析」。',
-      `已储存 ${okCount} 个文件（未用 AI 分析）——之后可在文件库按「分析」。`,
-    ));
-    setTimeout(() => nav('/file-storage'), 800);
-  };
+-- After:
+LEFT JOIN bank_statements bs ON (bs.r2_key = fr.r2_key OR bs.source_file_id = fr.id)
+  AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
+LEFT JOIN card_statements cs ON (cs.r2_key = fr.r2_key OR cs.source_file_id = fr.id)
+  AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
 ```
 
-- [ ] **Step 2: Add the button**
+Add `bs.source as stmt_source, cs.source as card_source, i.source as inv_source` to the SELECT list.
 
-In the submit row (the `div` containing the Clear / Upload & Analyze buttons, ~line 717), insert between them:
+- [ ] **Step 2: Add `file_id` to invoice `createSchema`**
 
-```tsx
-              <button onClick={handleUploadNoAi} disabled={uploading}
-                className="px-4 py-2 border rounded-md text-sm font-medium hover:bg-muted disabled:opacity-50 flex items-center gap-2">
-                {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
-                {tr('Save without AI Analysis', '儲存（不用 AI）', '储存（不用 AI）')}
-              </button>
+In `api/src/routes/invoices.ts`, add to the `createSchema`:
+
+```typescript
+file_id: z.string().optional(),
 ```
 
-- [ ] **Step 3: Build + Playwright check + commit**
+- [ ] **Step 3: Handle `file_id` in invoice INSERT**
+
+In the `POST /invoices` handler, after the existing INSERT, add:
+
+```typescript
+if (data.file_id) {
+  const fileRow = await db.prepare(
+    'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(data.file_id, tenantId).first();
+  if (fileRow) {
+    await db.prepare(
+      "UPDATE invoices SET file_id = ?, source = 'manual' WHERE id = ?"
+    ).bind(data.file_id, id).run();
+  }
+}
+```
+
+Also update the audit payload to include `file_id`.
+
+- [ ] **Step 4: Stamp `source='ocr'` on invoice import**
+
+In `api/src/routes/file-storage.ts`, find the invoice INSERT in the `import-document` handler. Add `source = 'ocr'` to the INSERT column list and `'ocr'` to the VALUES. (This is the path where OCR creates invoices.)
+
+- [ ] **Step 5: Verify tsc compiles**
 
 ```bash
-cd frontend && npm run build
+npx tsc --noEmit 2>&1 | head -20
 ```
 
-Add to a new `tests/manual-statements.spec.ts` (route-intercepted, non-mutating — follow `tests/manual-booking.spec.ts` for the login/interception harness):
+- [ ] **Step 6: Commit**
 
-```ts
-test('upload page offers no-AI save', async ({ page }) => {
-  await page.goto('/file-upload');
-  await expect(page.getByRole('button', { name: /Save without AI Analysis|儲存（不用 AI）/ })).toBeVisible();
-});
+```bash
+git add api/src/lib/list-filters.ts api/src/routes/invoices.ts api/src/routes/file-storage.ts
+git commit -m "feat(api): buildFileListSql OR-join + invoice file_id + OCR source stamp
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
+
+---
+
+### Task 6: Mock-DB Tests
+
+**Files:**
+- Create: `tests/manual-statements.test.ts`
+
+**Interfaces:**
+- Consumes: All backend endpoints from Tasks 2–5.
+
+- [ ] **Step 1: Write test file**
+
+```typescript
+// tests/manual-statements.test.ts
+// Throwaway mock-db tests for manual statement entry + file linking
+// Run: npx tsx tests/manual-statements.test.ts
+
+import { buildFileListSql } from '../api/src/lib/list-filters';
+import { buildFileLinks } from '../api/src/lib/manual-booking';
+
+let passed = 0;
+let failed = 0;
+function assert(condition: boolean, msg: string) {
+  if (condition) { passed++; console.log(`  ✓ ${msg}`); }
+  else { failed++; console.error(`  ✗ ${msg}`); }
+}
+
+// ── buildFileListSql OR-join tests ──
+console.log('\nbuildFileListSql — OR-join for manual links');
+{
+  const { sql } = buildFileListSql({ tenantId: 't1' });
+  assert(sql.includes('bs.source_file_id = fr.id'), 'bank statement OR-join includes source_file_id');
+  assert(sql.includes('cs.source_file_id = fr.id'), 'card statement OR-join includes source_file_id');
+  assert(sql.includes('bs.source AS stmt_source'), 'SELECT includes stmt_source');
+  assert(sql.includes('cs.source AS card_source'), 'SELECT includes card_source');
+  assert(sql.includes('i.source AS inv_source'), 'SELECT includes inv_source');
+}
+
+console.log('\nbuildFileListSql — unlinked filter still works');
+{
+  const { sql, params } = buildFileListSql({ tenantId: 't1', unlinked: true });
+  assert(sql.includes('i.id IS NULL AND bs.id IS NULL AND cs.id IS NULL'), 'unlinked clause present');
+  assert(params.includes('t1'), 'tenantId in params');
+}
+
+// ── buildFileLinks provenance tests ──
+console.log('\nbuildFileLinks — provenance labels');
+{
+  const links = buildFileLinks(
+    { statement_id: 'bs-1', stmt_bank_name: 'HSBC', stmt_source: 'manual' }, []
+  );
+  assert(links.length === 1, 'one link returned');
+  assert(links[0].label.includes('manually entered'), 'manual provenance in label');
+  assert(links[0].source === 'manual', 'source field is manual');
+}
+{
+  const links = buildFileLinks(
+    { statement_id: 'bs-2', stmt_bank_name: 'HSBC', stmt_source: 'ocr' }, []
+  );
+  assert(links[0].label.includes('from AI-OCR'), 'OCR provenance in label');
+  assert(links[0].source === 'ocr', 'source field is ocr');
+}
+{
+  const links = buildFileLinks(
+    { card_statement_id: 'cs-1', card_issuer: 'Visa', card_source: 'manual' }, []
+  );
+  assert(links[0].label.includes('manually entered'), 'card manual provenance');
+}
+
+// ── Summary ──
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed > 0 ? 1 : 0);
+```
+
+- [ ] **Step 2: Run tests**
+
+```bash
+cd Tech_Connect_SME/Development_code/latest_code
+npx tsx tests/manual-statements.test.ts
+```
+
+Expected: all pass.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/manual-statements.test.ts
+git commit -m "test: mock-db tests for manual statement entry + file linking
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+---
+
+### Task 7: Frontend — FileUpload "Save without AI Analysis" Button
+
+**Files:**
+- Modify: `frontend/src/pages/FileUpload.tsx`
+
+**Interfaces:**
+- Consumes: `skip_ocr` flag on `POST /file-storage/upload` (already implemented in backend).
+
+- [ ] **Step 1: Add second submit handler**
+
+In `FileUpload.tsx`, find the main upload submit function (the one that calls `import-document` after upload). Create a new async function `handleSaveWithoutAI` that:
+
+1. Runs the same per-file loop (validation, description, channel/folder destination)
+2. Calls only `/file-storage/upload` with `skip_ocr: true`
+3. Does NOT call `import-document`
+4. Shows a success toast: "Saved N file(s) without AI analysis — run Analyze later from File Storage."
+5. Navigates to `/file-storage`
+
+```typescript
+const handleSaveWithoutAI = async () => {
+  // Same file validation loop as handleUpload, but:
+  // - Call POST /file-storage/upload with skip_ocr: true
+  // - Do NOT call import-document
+  // - Toast: "Saved N file(s) without AI analysis"
+  // - Navigate to /file-storage
+};
+```
+
+- [ ] **Step 2: Add the second submit button**
+
+Next to the existing "Upload & Analyze" button, add:
+
+```tsx
+<button
+  onClick={handleSaveWithoutAI}
+  disabled={uploading || files.length === 0}
+  className="px-4 py-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+>
+  {tr('Save without AI Analysis', '儲存（不用 AI 分析）', '储存（不用 AI 分析）')}
+</button>
+```
+
+- [ ] **Step 3: Verify build**
+
+```bash
+cd Tech_Connect_SME/Development_code/latest_code/frontend
+npm run build 2>&1 | tail -5
+```
+
+Expected: clean build.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add frontend/src/pages/FileUpload.tsx
-git add -f tests/manual-statements.spec.ts
-git commit -m "feat(frontend): Save-without-AI upload option
+git commit -m "feat(frontend): Save without AI Analysis button on FileUpload
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 10: FileStorage — skipped badge, Manually Linked split, Analyze action
+### Task 8: Frontend — FileStorage Skipped Badge + Analyze Action + Provenance Badges
 
 **Files:**
-- Modify: `frontend/src/pages/FileStorage.tsx` (`FileItem` ~line 105, `summaryStatus` ~line 46, actions area ~line 269)
+- Modify: `frontend/src/pages/FileStorage.tsx`
 
 **Interfaces:**
-- Consumes: Task 2's `stmt_source`/`card_source`/`inv_source` list fields; Task 6's `'skipped'` status; existing `/file-storage/:id/import-document`.
+- Consumes: `ocr_status === 'skipped'` from backend; `stmt_source`, `card_source`, `inv_source` from extended `buildFileListSql`.
 
-- [ ] **Step 1: Extend `FileItem`**
+- [ ] **Step 1: Add `source` fields to `FileItem` interface**
 
-Add after `ocr_status?: string;`:
-
-```ts
-  stmt_source?: string;
-  card_source?: string;
-  inv_source?: string;
-```
-
-- [ ] **Step 2: Rework `summaryStatus`**
-
-Replace the final `if (f.invoice_id || f.statement_id || f.card_statement_id)` block and the trailing `Stored` return with:
-
-```ts
-  if (f.invoice_id || f.statement_id || f.card_statement_id) {
-    const manual = f.stmt_source === 'manual' || f.card_source === 'manual' || f.inv_source === 'manual';
-    if (manual) {
-      return { label: 'Manually Linked', labelZh: '手動連結', labelCn: '手动连结', cls: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300', tip: 'Manually linked to a record you entered.', tipZh: '已手動連結至您輸入的記錄。', tipCn: '已手动连结至您输入的记录。' };
-    }
-    return { label: 'AI-OCR Processed', labelZh: 'AI-OCR 已處理', labelCn: 'AI-OCR 已处理', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300', tip: 'Auto-saved and linked to a record.', tipZh: '已自動儲存並連結至記錄。', tipCn: '已自动储存并连结至记录。' };
-  }
-  if (f.ocr_status === 'skipped') {
-    return { label: 'Stored (no AI)', labelZh: '已儲存（未分析）', labelCn: '已储存（未分析）', cls: 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300', tip: 'Saved without AI analysis. Click Analyze to extract data.', tipZh: '已儲存但未用 AI 分析。點擊「分析」以提取資料。', tipCn: '已储存但未用 AI 分析。点击「分析」以提取资料。' };
-  }
-  return { label: 'Stored', labelZh: '已儲存', labelCn: '已储存', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300', tip: 'Saved to File Storage only — not linked to a record yet.', tipZh: '僅儲存於文件庫，尚未連結任何記錄。', tipCn: '仅储存于文件库，尚未连结任何记录。' };
-```
-
-(Badge priority order stays: encrypted → processing/pending → failed/unclear → needs-review → linked (split) → skipped → stored — a skipped file that later got manually linked shows "Manually Linked".)
-
-- [ ] **Step 3: Add the Analyze button**
-
-Add a module-level component in `FileStorage.tsx` (after `summaryStatus`):
-
-```tsx
-function AnalyzeButton({ f, onEncrypted }: { f: FileItem; onEncrypted: (f: FileItem) => void }) {
-  const toast = useToast();
-  const queryClient = useQueryClient();
-  const [running, setRunning] = useState(false);
-  async function run() {
-    setRunning(true);
-    try {
-      const headers: Record<string, string> = { 'Authorization': `Bearer ${localStorage.getItem('token') || ''}` };
-      const activeClient = localStorage.getItem('activeClient');
-      if (activeClient) { try { const c = JSON.parse(activeClient); if (c?.id) headers['X-Active-Client'] = c.id; } catch {} }
-      const resp = await fetch(`${WORKER_API_BASE}/file-storage/${f.id}/import-document`, { method: 'POST', headers });
-      const result = await resp.json().catch(() => ({}));
-      if (result?.status === 'password_required' || result?.type === 'encrypted_pdf') { onEncrypted(f); return; }
-      if (result?.error) throw new Error(result.error);
-      if (result?.ocr_failed) throw new Error(tr(
-        'Could not read this document. The file may be blurry or in an unsupported format.',
-        '無法讀取此文件。文件可能模糊或格式不支援。',
-        '无法读取此文件。文件可能模糊或格式不支持。',
-      ));
-      toast.success(tr('Analysis complete — records are ready for review.', '分析完成——記錄已可審核。', '分析完成——记录已可审核。'));
-      queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0] || '').startsWith('file-storage') });
-    } catch (e: any) {
-      toast.error(e?.message || tr('Analysis failed', '分析失敗', '分析失败'));
-    } finally {
-      setRunning(false);
-    }
-  }
-  return (
-    <button onClick={(e) => { e.stopPropagation(); run(); }} disabled={running}
-      title={tr('Run AI analysis on this file', '對此文件執行 AI 分析', '对此文件执行 AI 分析')}
-      className="p-1 hover:bg-amber-100 rounded text-amber-600 inline-flex disabled:opacity-50">
-      {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-    </button>
-  );
+```typescript
+interface FileItem {
+  // ... existing fields ...
+  stmt_source?: 'ocr' | 'manual';
+  card_source?: 'ocr' | 'manual';
+  inv_source?: 'ocr' | 'manual';
 }
 ```
 
-Ensure `Loader2` and `Sparkles` are imported from `lucide-react` (add to the existing import if missing). In the file-row actions `<div className="flex gap-1 ml-2 shrink-0">`, add as the FIRST action:
+- [ ] **Step 2: Extend `summaryStatus` for skipped + provenance**
+
+In the `summaryStatus` function, add the `'skipped'` branch **after** the needsReview and linked checks:
+
+```typescript
+// After the needsReview block, before the linked block:
+if (f.ocr_status === 'skipped') {
+  return {
+    label: 'Stored (no AI)', labelZh: '已儲存（無 AI）', labelCn: '已储存（无 AI）',
+    cls: 'bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400',
+    tip: 'Saved without AI analysis. Click Analyze to extract data.',
+    tipZh: '未經 AI 分析儲存。點擊「分析」以提取資料。',
+    tipCn: '未经 AI 分析储存。点击「分析」以提取资料。',
+  };
+}
+```
+
+Update the linked/processed branch to split by provenance:
+
+```typescript
+if (f.invoice_id || f.statement_id || f.card_statement_id) {
+  const isManual = f.stmt_source === 'manual' || f.card_source === 'manual' || f.inv_source === 'manual';
+  if (isManual) {
+    return {
+      label: 'Manually Linked', labelZh: '手動連結', labelCn: '手动连结',
+      cls: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300',
+      tip: 'Linked to a manually entered record.',
+      tipZh: '已連結至手動輸入的記錄。',
+      tipCn: '已连结至手动输入的记录。',
+    };
+  }
+  return {
+    label: 'AI-OCR Processed', labelZh: 'AI-OCR 已處理', labelCn: 'AI-OCR 已处理',
+    cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
+    tip: 'Auto-saved and linked to a record.',
+    tipZh: '已自動儲存並連結至記錄。',
+    tipCn: '已自动储存并连结至记录。',
+  };
+}
+```
+
+- [ ] **Step 3: Add Analyze action button for skipped files**
+
+Find the row actions area in FileStorage.tsx (where download/delete buttons are). For rows with `ocr_status === 'skipped'`, add:
 
 ```tsx
-                {f.ocr_status === 'skipped' && (
-                  <AnalyzeButton f={f} onEncrypted={onUnlockEncrypted} />
-                )}
+{f.ocr_status === 'skipped' && (
+  <button
+    onClick={() => handleAnalyze(f.id)}
+    disabled={analyzingId === f.id}
+    className="p-1 hover:bg-muted rounded"
+    title={tr('Analyze', '分析', '分析')}
+  >
+    {analyzingId === f.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+  </button>
+)}
 ```
 
-(`onUnlockEncrypted` is already threaded through `FolderTree` and opens the page-level `EncryptedPdfModal` via `setEncryptedPdf` — verify by reading the page's handler before wiring.)
+Add state `const [analyzingId, setAnalyzingId] = useState<string | null>(null)` and the handler:
 
-- [ ] **Step 4: Build + Playwright check + commit**
-
-Add to `tests/manual-statements.spec.ts`:
-
-```ts
-test('file storage badge states render', async ({ page }) => {
-  // route-intercept GET */file-storage → one skipped file, one manually-linked file
-  await page.route('**/api/file-storage?**', route => route.fulfill({ json: { data: [
-    { id: 'fs-skip', filename: 'a.pdf', file_type: 'application/pdf', file_size: 100, folder: 'Bank Statements', created_at: '2026-08-27T00:00:00Z', ocr_status: 'skipped' },
-    { id: 'fs-manual', filename: 'b.pdf', file_type: 'application/pdf', file_size: 100, folder: 'Bank Statements', created_at: '2026-08-27T00:00:00Z', ocr_status: 'skipped', statement_id: 'bs-1', stmt_source: 'manual' },
-  ] } }));
-  await page.goto('/file-storage');
-  await expect(page.getByText('Stored (no AI)')).toBeVisible();
-  await expect(page.getByText('Manually Linked')).toBeVisible();
-});
+```typescript
+const handleAnalyze = async (fileId: string) => {
+  setAnalyzingId(fileId);
+  try {
+    await api(`/file-storage/${fileId}/import-document`, { method: 'POST' });
+    toast.success(tr('Analysis complete', '分析完成', '分析完成'));
+    queryClient.invalidateQueries({ queryKey: ['file-storage'] });
+  } catch (err: any) {
+    if (err?.message?.includes('password_required')) {
+      // Open encrypted PDF modal — reuse existing pattern
+    } else {
+      toast.error(tr('Analysis failed', '分析失敗', '分析失败'));
+    }
+  } finally {
+    setAnalyzingId(null);
+  }
+};
 ```
 
-Adapt the route URL/pattern to how the page actually fetches (read the page's `useQuery` first; match its real key and endpoint).
+- [ ] **Step 4: Verify build**
 
 ```bash
-cd frontend && npm run build
-git add frontend/src/pages/FileStorage.tsx && git add -f tests/manual-statements.spec.ts
-git commit -m "feat(frontend): skipped/no-AI badge, Manually Linked split, Analyze action
+npm run build 2>&1 | tail -5
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add frontend/src/pages/FileStorage.tsx
+git commit -m "feat(frontend): skipped badge + Analyze action + provenance badges on FileStorage
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 11: Statement pages — manual entry editors + Link File
+### Task 9: Frontend — BankStatements Manual Entry Editor
 
 **Files:**
-- Create: `frontend/src/components/ManualStatementEntry.tsx`
-- Modify: `frontend/src/pages/BankStatements.tsx` (header ~line 410, expanded statement detail area, row rendering)
-- Modify: `frontend/src/pages/CardStatements.tsx` (header ~line 199, expanded detail, row rendering)
+- Modify: `frontend/src/pages/BankStatements.tsx`
 
 **Interfaces:**
-- Consumes: Task 3/4 endpoints; Task 8's `FileAttachmentField`; Tasks 3/4's list fields `r2_key`, `source_file_id`, `source`.
-- Produces: `ManualBankStatementEntry` and `ManualCardStatementEntry` components, props `{ open: boolean; onClose: () => void }` — they navigate to the review page themselves on save.
+- Consumes: `POST /bank-statements/manual` endpoint.
 
-- [ ] **Step 1: Create the editors**
+- [ ] **Step 1: Add state for manual entry panel**
 
-Create `frontend/src/components/ManualStatementEntry.tsx`. Bank editor (complete):
+```typescript
+const [showManualEntry, setShowManualEntry] = useState(false);
+```
+
+- [ ] **Step 2: Add "+ Manual Entry" button in page header**
+
+Find the page header area (where existing action buttons are). Add:
 
 ```tsx
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '../lib/api';
-import { useToast } from '../components/Toast';
-import { tr } from '../lib/i18nHelpers';
-import { Plus, Trash2, Loader2, FilePlus } from 'lucide-react';
-import FileAttachmentField from './FileAttachmentField';
-import { PickedFile } from './DocumentPickerModal';
+<button
+  onClick={() => setShowManualEntry(!showManualEntry)}
+  className="flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
+>
+  <FilePlus className="h-4 w-4" />
+  {tr('Manual Entry', '手動輸入', '手动输入')}
+</button>
+```
 
-interface BankRow { date: string; desc: string; deposit: string; withdrawal: string; balance: string }
-const emptyBankRow: BankRow = { date: '', desc: '', deposit: '', withdrawal: '', balance: '' };
+- [ ] **Step 3: Create the inline editor panel component**
 
-export function ManualBankStatementEntry({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const nav = useNavigate();
-  const toast = useToast();
-  const queryClient = useQueryClient();
+Add a `ManualBankStatementEditor` component (can be in the same file or extracted). It includes:
+- Header row: bank name input, account number, year/month pickers, currency, opening/closing balance
+- Transaction grid: date · description · deposit · withdrawal · balance · add/remove row
+- Attach file chip (using `DocumentPickerModal` in single-select mode)
+- Save / Cancel buttons
+
+Key logic:
+- Entering a deposit zeroes the withdrawal cell and vice-versa
+- Balance auto-fills as previous balance + deposit − withdrawal but stays editable
+- Save calls `POST /bank-statements/manual`, shows toast, navigates to `/bank-statements/review/:id`
+
+```tsx
+function ManualBankStatementEditor({ onSave, onCancel }: { onSave: (data: any) => void; onCancel: () => void }) {
   const [bankName, setBankName] = useState('');
   const [accountNumber, setAccountNumber] = useState('');
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
-  const [openingBalance, setOpeningBalance] = useState('');
-  const [closingBalance, setClosingBalance] = useState('');
-  const [rows, setRows] = useState<BankRow[]>([{ ...emptyBankRow }]);
-  const [file, setFile] = useState<PickedFile | null>(null);
+  const [currency, setCurrency] = useState('HKD');
+  const [openingBalance, setOpeningBalance] = useState<number | ''>('');
+  const [closingBalance, setClosingBalance] = useState<number | ''>('');
+  const [transactions, setTransactions] = useState([
+    { transaction_date: '', description: '', deposit_amount: 0, withdrawal_amount: 0, balance: 0, reference: '' }
+  ]);
+  const [pickedFile, setPickedFile] = useState<PickedFile | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
 
-  const saveMut = useMutation({
-    mutationFn: (body: any) => api('/bank-statements/manual', { method: 'POST', body }),
-    onSuccess: (r: any) => {
-      queryClient.invalidateQueries({ queryKey: ['bank-statements'] });
-      queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0] || '').startsWith('file-storage') });
-      toast.success(tr('Manual statement created — review to post.', '已建立手動月結單——審核後入帳。', '已建立手动月结单——审核后入账。'));
-      onClose();
-      nav(`/bank-statements/review/${r.id}`);
-    },
-    onError: (e: any) => toast.error(e?.message || tr('Create failed', '建立失敗', '建立失败')),
-  });
-
-  if (!open) return null;
-
-  function setRow(i: number, patch: Partial<BankRow>) {
-    setRows(prev => prev.map((r, idx) => {
-      if (idx !== i) return r;
-      const next = { ...r, ...patch };
-      if (patch.deposit !== undefined && Number(patch.deposit) > 0) next.withdrawal = '';
-      if (patch.withdrawal !== undefined && Number(patch.withdrawal) > 0) next.deposit = '';
-      return next;
-    }));
-  }
-
-  function submit() {
-    if (!bankName.trim()) { toast.error(tr('Bank name is required', '請填寫銀行名稱', '请填写银行名称')); return; }
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(r.date)) { toast.error(tr(`Row ${i + 1}: date must be YYYY-MM-DD`, `第 ${i + 1} 行：日期格式須為 YYYY-MM-DD`, `第 ${i + 1} 行：日期格式须为 YYYY-MM-DD`)); return; }
-      if (!r.desc.trim()) { toast.error(tr(`Row ${i + 1}: description required`, `第 ${i + 1} 行：請填寫描述`, `第 ${i + 1} 行：请填写描述`)); return; }
-      if (!(Number(r.deposit) > 0) && !(Number(r.withdrawal) > 0)) { toast.error(tr(`Row ${i + 1}: enter a deposit or a withdrawal`, `第 ${i + 1} 行：請填寫存款或提款金額`, `第 ${i + 1} 行：请填写存款或提款金额`)); return; }
-    }
-    saveMut.mutate({
-      bank_name: bankName.trim(),
-      account_number: accountNumber.trim() || null,
-      statement_year: year, statement_month: month,
-      opening_balance: openingBalance === '' ? null : Number(openingBalance),
-      closing_balance: closingBalance === '' ? null : Number(closingBalance),
-      source_file_id: file?.id || null,
-      transactions: rows.map(r => ({
-        transaction_date: r.date, description: r.desc.trim(),
-        deposit_amount: Number(r.deposit) || 0, withdrawal_amount: Number(r.withdrawal) || 0,
-        balance: r.balance === '' ? 0 : Number(r.balance),
-      })),
-    });
-  }
+  // ... grid logic, add/remove row, deposit/withdrawal mutual exclusion, balance auto-fill ...
 
   return (
-    <div className="bg-card border rounded-xl p-4 mb-4 space-y-3">
-      <h3 className="font-bold flex items-center gap-2"><FilePlus className="h-4 w-4" /> {tr('Manual Bank Statement', '手動銀行月結單', '手动银行月结单')}</h3>
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
-        <input value={bankName} onChange={e => setBankName(e.target.value)} placeholder={tr('Bank name *', '銀行名稱 *', '银行名称 *')} className="px-3 py-2 border rounded-md bg-background text-sm col-span-2" />
-        <input value={accountNumber} onChange={e => setAccountNumber(e.target.value)} placeholder={tr('Account no.', '帳號', '账号')} className="px-3 py-2 border rounded-md bg-background text-sm col-span-2" />
-        <input type="number" value={year} onChange={e => setYear(Number(e.target.value))} className="px-3 py-2 border rounded-md bg-background text-sm" />
-        <select value={month} onChange={e => setMonth(Number(e.target.value))} className="px-3 py-2 border rounded-md bg-background text-sm">
-          {Array.from({ length: 12 }, (_, i) => i + 1).map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-        <input value={openingBalance} onChange={e => setOpeningBalance(e.target.value)} type="number" step="0.01" placeholder={tr('Opening bal.', '期初結餘', '期初结余')} className="px-3 py-2 border rounded-md bg-background text-sm" />
-        <input value={closingBalance} onChange={e => setClosingBalance(e.target.value)} type="number" step="0.01" placeholder={tr('Closing bal.', '期末結餘', '期末结余')} className="px-3 py-2 border rounded-md bg-background text-sm" />
-      </div>
-      <FileAttachmentField value={file} onChange={setFile} />
-      <div className="border rounded-md overflow-hidden">
-        <div className="grid grid-cols-[110px_1fr_100px_100px_110px_28px] gap-1 px-2 py-1 bg-muted/50 text-xs font-medium">
-          <span>{tr('Date', '日期', '日期')}</span><span>{tr('Description', '描述', '描述')}</span>
-          <span>{tr('Deposit', '存款', '存款')}</span><span>{tr('Withdrawal', '提款', '提款')}</span><span>{tr('Balance', '結餘', '结余')}</span><span />
-        </div>
-        {rows.map((r, i) => (
-          <div key={i} className="grid grid-cols-[110px_1fr_100px_100px_110px_28px] gap-1 px-2 py-1 border-t items-center">
-            <input type="date" value={r.date} onChange={e => setRow(i, { date: e.target.value })} className="px-1.5 py-1 border rounded bg-background text-xs" />
-            <input value={r.desc} onChange={e => setRow(i, { desc: e.target.value })} className="px-1.5 py-1 border rounded bg-background text-xs" />
-            <input type="number" step="0.01" value={r.deposit} onChange={e => setRow(i, { deposit: e.target.value })} className="px-1.5 py-1 border rounded bg-background text-xs" />
-            <input type="number" step="0.01" value={r.withdrawal} onChange={e => setRow(i, { withdrawal: e.target.value })} className="px-1.5 py-1 border rounded bg-background text-xs" />
-            <input type="number" step="0.01" value={r.balance} onChange={e => setRow(i, { balance: e.target.value })} className="px-1.5 py-1 border rounded bg-background text-xs" />
-            <button type="button" onClick={() => setRows(prev => prev.length > 1 ? prev.filter((_, idx) => idx !== i) : prev)} className="text-destructive" title={tr('Remove row', '刪除行', '删除行')}><Trash2 className="h-3.5 w-3.5" /></button>
-          </div>
-        ))}
-        <button type="button" onClick={() => setRows(prev => [...prev, { ...emptyBankRow }])}
-          className="flex items-center gap-1 px-2 py-1.5 text-xs text-primary hover:underline border-t w-full">
-          <Plus className="h-3 w-3" /> {tr('Add row', '加一行', '加一行')}
-        </button>
-      </div>
-      <div className="flex justify-end gap-2">
-        <button onClick={onClose} className="px-4 py-2 border rounded-md text-sm">{tr('Cancel', '取消', '取消')}</button>
-        <button onClick={submit} disabled={saveMut.isPending}
-          className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium flex items-center gap-2 disabled:opacity-50">
-          {saveMut.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-          {tr('Save & Review', '儲存並審核', '储存并审核')}
-        </button>
-      </div>
+    <div className="border rounded-lg p-4 mb-4 bg-muted/30">
+      {/* Header fields */}
+      {/* Transaction grid */}
+      {/* File attachment chip */}
+      {/* Save / Cancel */}
     </div>
   );
 }
 ```
 
-Then add `ManualCardStatementEntry` in the same file — identical chrome, differing grid/model:
+- [ ] **Step 4: Wire up the panel**
 
-- Header fields: `card_issuer *`, `card_network` (text), `card_number_last4`, `cardholder_name`, year, month (same pickers).
-- Grid columns: date · description · amount (positive) · type (`select`: purchase/payment/refund/fee/interest/cash_advance, optional blank) — `grid-cols-[110px_1fr_100px_130px_28px]`.
-- POST body: `card_statements/manual` with `transactions: rows.map(r => ({ transaction_date: r.date, description: r.desc, amount: Number(r.amount) || 0, transaction_type: r.type || null }))`.
-- Validation: issuer required; per row: date, description, `amount > 0`.
-- On success: invalidate `['card-statements']` + file-storage; `nav(\`/card-statements/review/${r.id}\`)`.
+```tsx
+{showManualEntry && (
+  <ManualBankStatementEditor
+    onSave={async (data) => {
+      const res = await api('/bank-statements/manual', { method: 'POST', body: JSON.stringify(data) });
+      toast.success(tr('Manual statement created — review to post', '手動報表已建立——請審核後入帳', '手动报表已建立——请审核后入账'));
+      setShowManualEntry(false);
+      navigate(`/bank-statements/review/${res.id}`);
+    }}
+    onCancel={() => setShowManualEntry(false)}
+  />
+)}
+```
 
-- [ ] **Step 2: Wire the pages**
+- [ ] **Step 5: Add "Link File" action on expanded rows**
 
-For **BankStatements.tsx**:
-1. Import `{ ManualBankStatementEntry }` from the new component file, plus `DocumentPickerModal`; add state: `const [manualOpen, setManualOpen] = useState(false);` and `const [linkFileFor, setLinkFileFor] = useState<string | null>(null);`.
-2. In the header actions cluster (near `<h2 className="text-2xl font-bold">{t('bank.title')}</h2>`, ~line 410), add a button:
-   ```tsx
-   <button onClick={() => setManualOpen(true)}
-     className="flex items-center gap-1.5 bg-primary text-primary-foreground px-3 py-2 rounded-md text-sm font-medium hover:opacity-90">
-     <FilePlus className="h-4 w-4" /> {tr('Manual Entry', '手動輸入', '手动输入')}
-   </button>
-   ```
-   (import `FilePlus` — already in the page's lucide import list).
-3. Render `<ManualBankStatementEntry open={manualOpen} onClose={() => setManualOpen(false)} />` directly above the statements list.
-4. In each statement row's summary line, where `file_name`/bank info renders, add a provenance chip when `s.source === 'manual'`:
-   ```tsx
-   {s.source === 'manual' && (
-     <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300">{tr('Manual', '手動', '手动')}</span>
-   )}
-   ```
-5. In the expanded statement detail area (where the CSV import button renders, ~line 567), add a **Link File** button when `!detail?.r2_key`:
-   ```tsx
-   {!detail?.r2_key && (
-     <button onClick={() => setLinkFileFor(detail?.id || null)}
-       className="flex items-center gap-1 px-2 py-0.5 text-xs rounded border hover:bg-muted"
-       title={tr('Link a supporting file to this manually-entered statement', '為此手動月結單連結附件', '为此手动月结单连结附件')}>
-       <Link2 className="h-3 w-3" /> {tr(detail?.source_file_id ? 'Change File' : 'Link File', '連結文件', '连结文件')}
-     </button>
-   )}
-   ```
-   And at page bottom, the picker + mutation:
-   ```tsx
-   {linkFileFor && (
-     <DocumentPickerModal alreadyPicked={[]} max={1}
-       onPick={async (picked) => {
-         const id = linkFileFor; setLinkFileFor(null);
-         if (!picked[0]) return;
-         try {
-           await api(`/bank-statements/${id}/link-file`, { method: 'PUT', body: { file_id: picked[0].id } });
-           toast.success(tr('File linked.', '已連結文件。', '已连结文件。'));
-           queryClient.invalidateQueries({ queryKey: ['bank-statements'] });
-           queryClient.invalidateQueries({ queryKey: ['bank-statement', id] });
-         } catch (e: any) { toast.error(e?.message || tr('Link failed', '連結失敗', '连结失败')); }
-       }}
-       onClose={() => setLinkFileFor(null)} />
-   )}
-   ```
-   (Check the page's actual detail-query key — it is keyed by the expanded id; reuse that key. `DocumentPickerModal` and `Link2` need imports.)
-6. Spec §6.4 — the linked file renders as a chip next to the Link File button once `detail?.source_file_id` is set:
-   ```tsx
-   {detail?.source_file_id && (
-     <a href={`/file-storage?highlight=${detail.source_file_id}`}
-       className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-border text-xs hover:bg-muted"
-       title={tr('Open the linked file in File Storage', '到文件庫開啟已連結文件', '到文件库开启已连结文件')}>
-       <Link2 className="h-3 w-3" /> {tr('Linked file', '已連結文件', '已连结文件')}
-     </a>
-   )}
-   ```
+In the expanded row for statements with `r2_key IS NULL` (i.e. `source='manual'`), add a "Link File" button that opens `DocumentPickerModal` in single-select mode, then calls `PUT /bank-statements/:id/link-file`.
 
-For **CardStatements.tsx**: mirror every step (header button at ~line 199 using `ManualCardStatementEntry`, provenance chip, Link File + linked-file chip in the expanded area with `PUT /card-statements/:id/link-file`, detail key `['card-statement', id]`).
+- [ ] **Step 6: Verify build**
 
-- [ ] **Step 3: Build + Playwright check + commit**
+```bash
+npm run build 2>&1 | tail -5
+```
 
-Add to `tests/manual-statements.spec.ts`:
+- [ ] **Step 7: Commit**
 
-```ts
-test('statement pages offer manual entry', async ({ page }) => {
-  await page.goto('/bank-statements');
-  await expect(page.getByRole('button', { name: /Manual Entry|手動輸入/ })).toBeVisible();
-  await page.goto('/card-statements');
-  await expect(page.getByRole('button', { name: /Manual Entry|手動輸入/ })).toBeVisible();
+```bash
+git add frontend/src/pages/BankStatements.tsx
+git commit -m "feat(frontend): manual bank statement entry editor + link file action
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+---
+
+### Task 10: Frontend — CardStatements Manual Entry Editor
+
+**Files:**
+- Modify: `frontend/src/pages/CardStatements.tsx`
+
+**Interfaces:**
+- Consumes: `POST /card-statements/manual` endpoint.
+
+- [ ] **Step 1: Add "+ Manual Entry" button and editor panel**
+
+Same pattern as Task 9 but with card-specific fields: card issuer, card network, last-4, cardholder name, credit limit, minimum payment, payment due date. Transaction grid uses single `amount` column (positive) with `transaction_type` dropdown.
+
+- [ ] **Step 2: Add "Link File" action on expanded rows**
+
+Same as Task 9 Step 5 but calling `PUT /card-statements/:id/link-file`.
+
+- [ ] **Step 3: Verify build**
+
+```bash
+npm run build 2>&1 | tail -5
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add frontend/src/pages/CardStatements.tsx
+git commit -m "feat(frontend): manual card statement entry editor + link file action
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+---
+
+### Task 11: Frontend — Invoice Create Modal File Attachment
+
+**Files:**
+- Modify: `frontend/src/pages/Invoices.tsx`
+
+**Interfaces:**
+- Consumes: `file_id` on `POST /invoices`.
+
+- [ ] **Step 1: Add file attachment state and picker**
+
+In the Create Invoice modal component, add:
+
+```typescript
+const [pickedFile, setPickedFile] = useState<PickedFile | null>(null);
+const [showPicker, setShowPicker] = useState(false);
+```
+
+- [ ] **Step 2: Add file attachment section in the modal**
+
+Before the submit button, add:
+
+```tsx
+<div className="border-t pt-3 mt-3">
+  <label className="text-sm font-medium mb-1 block">
+    {tr('Attach supporting file (optional)', '附加證明文件（可選）', '附加证明文件（可选）')}
+  </label>
+  {pickedFile ? (
+    <div className="flex items-center gap-2">
+      <span className="text-sm bg-muted px-2 py-1 rounded">{pickedFile.filename}</span>
+      <button onClick={() => setPickedFile(null)} className="text-destructive text-xs">✕</button>
+    </div>
+  ) : (
+    <button onClick={() => setShowPicker(true)} type="button" className="text-sm text-primary hover:underline">
+      + {tr('Choose file', '選擇文件', '选择文件')}
+    </button>
+  )}
+  {showPicker && (
+    <DocumentPickerModal
+      alreadyPicked={[]}
+      onPick={(picked) => { setPickedFile(picked[0] || null); setShowPicker(false); }}
+      onClose={() => setShowPicker(false)}
+    />
+  )}
+</div>
+```
+
+- [ ] **Step 3: Pass `file_id` in submit**
+
+In the form submit handler, add `file_id: pickedFile?.id || undefined` to the POST body.
+
+- [ ] **Step 4: Verify build**
+
+```bash
+npm run build 2>&1 | tail -5
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add frontend/src/pages/Invoices.tsx
+git commit -m "feat(frontend): file attachment in Create Invoice modal
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+---
+
+### Task 12: Playwright Non-Mutating Checks
+
+**Files:**
+- Create: `tests/manual-statements.spec.ts`
+
+**Interfaces:**
+- Consumes: All frontend changes from Tasks 7–11.
+
+- [ ] **Step 1: Write Playwright spec**
+
+```typescript
+// tests/manual-statements.spec.ts
+// Non-mutating Playwright checks for manual statement entry features
+import { test, expect } from '@playwright/test';
+
+test.describe('Manual Statement Entry', () => {
+  test('FileUpload shows Save without AI Analysis button', async ({ page }) => {
+    await page.goto('/file-upload');
+    await expect(page.getByRole('button', { name: /Save without AI/i })).toBeVisible();
+  });
+
+  test('BankStatements shows Manual Entry button', async ({ page }) => {
+    await page.goto('/bank-statements');
+    await expect(page.getByRole('button', { name: /Manual Entry/i })).toBeVisible();
+  });
+
+  test('CardStatements shows Manual Entry button', async ({ page }) => {
+    await page.goto('/card-statements');
+    await expect(page.getByRole('button', { name: /Manual Entry/i })).toBeVisible();
+  });
+
+  test('FileStorage shows Stored (no AI) badge for skipped files', async ({ page }) => {
+    // Route-intercept to return a file with ocr_status='skipped'
+    await page.route('**/file-storage*', (route) => {
+      route.fulfill({
+        json: {
+          data: [{
+            id: 'fs-test1', filename: 'test.pdf', original_name: 'test.pdf',
+            file_type: 'application/pdf', file_size: 1000, folder: 'Bank Statements',
+            ocr_status: 'skipped', created_at: '2026-08-27',
+          }],
+        },
+      });
+    });
+    await page.goto('/file-storage');
+    await expect(page.getByText('Stored (no AI)')).toBeVisible();
+  });
+
+  test('Invoices Create modal shows file attachment option', async ({ page }) => {
+    await page.goto('/invoices');
+    await page.getByRole('button', { name: /Create Invoice/i }).first().click();
+    await expect(page.getByText(/Attach supporting file/i)).toBeVisible();
+  });
 });
 ```
 
+- [ ] **Step 2: Run Playwright (non-mutating)**
+
 ```bash
-cd frontend && npm run build
-git add frontend/src/components/ManualStatementEntry.tsx frontend/src/pages/BankStatements.tsx frontend/src/pages/CardStatements.tsx
-git add -f tests/manual-statements.spec.ts
-git commit -m "feat(frontend): manual statement entry editors + Link File on statement pages
+npx playwright test tests/manual-statements.spec.ts --project=chromium
+```
+
+Expected: all pass.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/manual-statements.spec.ts
+git commit -m "test: Playwright non-mutating checks for manual statement entry
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 12: Invoice create modals — file attachment (3 pages)
+### Task 13: Deploy & Smoke Test
 
-**Files:**
-- Modify: `frontend/src/pages/Invoices.tsx` (Create Receipt modal; `form` state ~line 60, modal ~line 452)
-- Modify: `frontend/src/pages/AR.tsx` (create modal, mutation at ~line 104)
-- Modify: `frontend/src/pages/AP.tsx` (create modal, mutation at ~line 106)
+**Files:** None (operational)
 
-**Interfaces:**
-- Consumes: Task 7's `file_id` on `POST /invoices`; Task 8's `FileAttachmentField`.
-
-- [ ] **Step 1: Wire each modal identically**
-
-In each of the three pages:
-1. Import `FileAttachmentField` and `PickedFile`.
-2. Add state near the form state: `const [attachFile, setAttachFile] = useState<PickedFile | null>(null);`
-3. Inside the create modal's form (after the items/total section, before the Cancel/Create buttons), add:
-   ```tsx
-   <FileAttachmentField value={attachFile} onChange={setAttachFile} label={tr('Attach supporting file', '附加文件', '附加文件')} />
-   ```
-4. In the submit handler's `createMut.mutate({ … })` body, add `file_id: attachFile?.id || undefined,`.
-5. In the mutation's `onSuccess`, add `setAttachFile(null);`.
-
-Read each page's actual handler first — Invoices.tsx's `handleSubmit` (~line 145) and the AR/AP equivalents; the spread bodies differ slightly but the two insertions are the same shape.
-
-- [ ] **Step 2: Build + commit**
+- [ ] **Step 1: Run migration on production**
 
 ```bash
-cd frontend && npm run build
-git add frontend/src/pages/Invoices.tsx frontend/src/pages/AR.tsx frontend/src/pages/AP.tsx
-git commit -m "feat(frontend): attach supporting file in all three invoice create modals
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
+wrangler d1 execute opcc-crm-db --file=api/src/db/migration-manual-statements.sql --remote
+wrangler d1 execute opcc-crm-db --command="PRAGMA table_info(bank_statements)" --remote | grep source
 ```
+
+- [ ] **Step 2: Deploy API worker**
+
+```bash
+cd Tech_Connect_SME/Development_code/latest_code
+wrangler deploy
+```
+
+- [ ] **Step 3: Smoke test backend**
+
+```bash
+# Test skip_ocr upload
+curl -X POST .../file-storage/upload -d '{"skip_ocr": true, ...}' # expect ocr_status: 'skipped'
+
+# Test manual bank statement
+curl -X POST .../bank-statements/manual -d '{"bank_name":"HSBC","transactions":[...]}' # expect 201
+
+# Test manual card statement
+curl -X POST .../card-statements/manual -d '{"card_issuer":"Visa","transactions":[...]}' # expect 201
+
+# Test linked-records with manual link
+curl .../file-storage/:id/linked-records # expect provenance labels
+```
+
+- [ ] **Step 4: Deploy frontend**
+
+```bash
+cd Tech_Connect_SME/Development_code/latest_code/frontend
+npm run build
+# Deploy to Cloudflare Pages
+```
+
+- [ ] **Step 5: Live round-trip verification**
+
+1. Upload a PDF with "Save without AI Analysis" → badge "Stored (no AI)"
+2. Create manual bank statement linked to that file → badge changes to "Manually Linked"
+3. File no longer appears in `?unlinked=1`
+4. Review/confirm the statement → JEs generate
+5. Clean up all test rows
+
+- [ ] **Step 6: Record deployed URLs in memory**
 
 ---
 
-### Task 13: Deploy + live round-trip
+## Self-Review Checklist
 
-**Files:**
-- Create: `tests/manual-statements-live.ts` (throwaway, force-add)
-
-**Interfaces:** Consumes everything; produces deployed URLs recorded in memory.
-
-- [ ] **Step 1: Run the migration on remote D1 + verify**
-
-```bash
-cd api
-npx wrangler d1 execute opcc-crm-db --remote --file=src/db/migration-manual-statements.sql
-npx wrangler d1 execute opcc-crm-db --remote --command "PRAGMA table_info(bank_statements)"
-npx wrangler d1 execute opcc-crm-db --remote --command "PRAGMA table_info(card_statements)"
-npx wrangler d1 execute opcc-crm-db --remote --command "PRAGMA table_info(invoices)"
-```
-
-Each PRAGMA must list the new columns.
-
-- [ ] **Step 2: Deploy the API worker**
-
-```bash
-cd api && npx wrangler deploy
-```
-
-Record the version id from the output.
-
-- [ ] **Step 3: Write and run the live round-trip**
-
-`tests/manual-statements-live.ts` (tsx, follows `tests/manual-booking-live.ts`'s login + cleanup patterns; test tenant: Joseph Lin → client `u-8e3759d7` or `u-a21aaae1` via `X-Active-Client` — see the `pnr-context` skill for credentials):
-
-1. Login once (avoid repeated `/auth/login` — shared worker throttles it).
-2. Upload a small test PDF with `skip_ocr: true` → assert `ocr_status === 'skipped'` in the file list; assert the file appears in `GET /file-storage?unlinked=1`.
-3. `POST /bank-statements/manual` with 2 transactions + `source_file_id` from step 2 → assert 201; assert `status='draft'`.
-4. Assert the file no longer appears in `?unlinked=1`; `GET /file-storage/:id/linked-records` → one `bank_statement` link labeled "manually entered".
-5. Validation checks: row with both amounts → 400; `source_file_id` of another tenant → 400.
-6. `PUT /bank-statements/:id/link-file` with a second uploaded file → replace works (200), audit reflects old→new.
-7. `POST /card-statements/manual` minimal (issuer + 1 tx) → 201.
-8. `POST /invoices` with `file_id` → 201; linked-records shows the invoice.
-9. Statement review round-trip: `GET /bank-statements/:id/review` → confirm (existing flow) → JEs generated → `GET /bookkeeping/entries?reference_type=bank_transaction` finds them.
-10. **Cleanup (hard):** delete the created JEs (tombstone via DELETE /bookkeeping/entries/:id or direct D1 cleanup script following the manual-booking-live pattern), delete statements (`DELETE /bank-statements/:id` cascades transactions), hard-delete both test `file_records` rows + R2 objects (pattern in `api/hard-delete-joseph-uploads.sql`), delete the test invoice, delete audit rows for all created ids.
-
-- [ ] **Step 4: Deploy the frontend**
-
-Use the project's standard Pages deploy command — read `DEPLOYMENT_CONTEXT.md` first and match how previous deploys were made (historically `npx wrangler pages deploy` from `frontend/` against the `opcc-crm` Pages project / `opcc-crm-testing` for test builds).
-
-- [ ] **Step 5: Verify on the deployed frontend**
-
-Log in as Joseph Lin, pick the test client, and click through: Bank Statements → Manual Entry → editor opens; FileUpload → both buttons visible; FileStorage → Analyze on a skipped file. Fix anything broken, redeploy, re-verify.
-
-- [ ] **Step 6: Record + report**
-
-Commit the live script (`git add -f tests/manual-statements-live.ts` + commit). Save deployed URLs (API version + Pages URL) to memory per the TeCS convention, and **report the frontend testing URL to the user** (house rule after every deploy).
-
----
-
-## Self-Review notes (already applied)
-
-- Spec §5.2's "no closed-period guard on creation" is honored — manual routes create drafts only; the period guard applies at JE confirm (existing).
-- Spec §5.6's "unlinked filter needs no change" is honored — Task 2 only extends joins.
-- The plan deliberately does NOT add period-dedup 409s to the manual endpoints (spec §5.2 validation list is exhaustive; manual entry is a deliberate action — re-keying a corrected period is legitimate).
-- `import-csv` endpoints already exist on statements (`POST /:id/import-csv`) — untouched, no conflict with `/manual` (different literal).
+- [ ] All spec sections covered by tasks
+- [ ] No TBD/TODO/placeholders in any step
+- [ ] Type names consistent across tasks (FileLink, PickedFile, FileItem, etc.)
+- [ ] Every commit uses explicit paths
+- [ ] `tsc` and `npm run build` checkpoints in every relevant task

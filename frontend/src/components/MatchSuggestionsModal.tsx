@@ -32,11 +32,15 @@ interface ReceiptMatch {
   receipt_number: string;
   receipt_total: number;
   receipt_vendor: string;
-  invoice_id: string;
-  invoice_number: string;
+  invoice_id?: string;
+  invoice_number?: string;
   invoice_total: number;
-  invoice_vendor: string;
+  invoice_vendor?: string;
   direction: string;
+  // Combined-payment suggestion (one receipt settles several invoices)
+  invoice_ids?: string[];
+  invoices?: { invoice_id: string; total: number }[];
+  reason?: string;
 }
 
 type TabKey = 'bank-invoice' | 'bank-card' | 'receipt';
@@ -56,7 +60,7 @@ const confidenceBadge = (c: string) => {
 
 // ── Component ──
 
-export default function MatchSuggestionsModal({ onClose }: { onClose: () => void }) {
+export default function MatchSuggestionsModal({ onClose, useAI = true, onToggleAI }: { onClose: () => void; useAI?: boolean; onToggleAI?: (enabled: boolean) => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabKey>('bank-invoice');
@@ -86,10 +90,16 @@ export default function MatchSuggestionsModal({ onClose }: { onClose: () => void
         const bc = bcRes.status === 'fulfilled' ? (bcRes.value as any)?.matched || [] : [];
         const rIn = rInRes.status === 'fulfilled' ? (rInRes.value as any)?.matched || [] : [];
         const rOut = rOutRes.status === 'fulfilled' ? (rOutRes.value as any)?.matched || [] : [];
+        // Defensive dedupe: a receipt must never appear twice (the backend now
+        // assigns each receipt to a single direction run, but old deploys and
+        // races could double-list, and Accept All would then double-link).
+        const seenReceipts = new Set<string>();
+        const receipts = [...rIn, ...rOut].filter((m: ReceiptMatch) =>
+          seenReceipts.has(m.receipt_id) ? false : (seenReceipts.add(m.receipt_id), true));
         setTabData({
           'bank-invoice': bi,
           'bank-card': bc,
-          receipt: [...rIn, ...rOut],
+          receipt: receipts,
         });
         // Default to first non-empty tab
         if (bi.length > 0) setActiveTab('bank-invoice');
@@ -142,8 +152,11 @@ export default function MatchSuggestionsModal({ onClose }: { onClose: () => void
   });
 
   const confirmReceiptMut = useMutation({
-    mutationFn: ({ receiptId, invoiceId }: { receiptId: string; invoiceId: string }) =>
-      api('/invoices/confirm-receipt-match', { method: 'POST', body: { receipt_id: receiptId, invoice_id: invoiceId } }),
+    mutationFn: ({ receiptId, invoiceId, invoiceIds }: { receiptId: string; invoiceId?: string; invoiceIds?: string[] }) =>
+      api('/invoices/confirm-receipt-match', {
+        method: 'POST',
+        body: invoiceIds?.length ? { receipt_id: receiptId, invoice_ids: invoiceIds } : { receipt_id: receiptId, invoice_id: invoiceId },
+      }),
     onSuccess: (_: any, vars: any) => {
       setConfirmed(prev => new Set(prev).add('rcpt-' + vars.receiptId));
       toast.success(tr('Receipt matched', '收據已配對', '收据已配对'));
@@ -179,9 +192,22 @@ export default function MatchSuggestionsModal({ onClose }: { onClose: () => void
               {tr('Review and confirm suggested matches across all document types.', '審核並確認所有文件類型的建議配對。', '审核并确认所有文件类型的建议配对。')}
             </p>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-muted rounded-lg">
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-3">
+            {onToggleAI && (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useAI}
+                  onChange={e => onToggleAI(e.target.checked)}
+                  className="rounded border-muted-foreground/30"
+                />
+                {tr('Use AI matching', '使用 AI 配對', '使用 AI 配对')}
+              </label>
+            )}
+            <button onClick={onClose} className="p-1.5 hover:bg-muted rounded-lg">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* Tab bar */}
@@ -248,16 +274,20 @@ export default function MatchSuggestionsModal({ onClose }: { onClose: () => void
                 </span>
                 {pending.length > 0 && (
                   <button
-                    onClick={() => {
-                      pending.forEach((m: any) => {
-                        if (activeTab === 'bank-invoice') {
-                          confirmBankInvMut.mutate({ txId: m.transaction_id, invoiceId: m.invoice_id });
-                        } else if (activeTab === 'bank-card') {
-                          confirmBankCardMut.mutate({ txId: m.transaction_id, csId: m.card_statement_id });
-                        } else {
-                          confirmReceiptMut.mutate({ receiptId: m.receipt_id, invoiceId: m.invoice_id });
-                        }
-                      });
+                    onClick={async () => {
+                      // Sequential: parallel confirms raced (two suggestions
+                      // touching the same invoice could both land pre-guard).
+                      for (const m of pending as any[]) {
+                        try {
+                          if (activeTab === 'bank-invoice') {
+                            await confirmBankInvMut.mutateAsync({ txId: m.transaction_id, invoiceId: m.invoice_id });
+                          } else if (activeTab === 'bank-card') {
+                            await confirmBankCardMut.mutateAsync({ txId: m.transaction_id, csId: m.card_statement_id });
+                          } else {
+                            await confirmReceiptMut.mutateAsync({ receiptId: m.receipt_id, invoiceId: m.invoice_id, invoiceIds: m.invoice_ids });
+                          }
+                        } catch { /* per-row toast already shown */ }
+                      }
                     }}
                     disabled={
                       (activeTab === 'bank-invoice' && confirmBankInvMut.isPending) ||
@@ -281,7 +311,7 @@ export default function MatchSuggestionsModal({ onClose }: { onClose: () => void
                     onConfirm={() => {
                       if (activeTab === 'bank-invoice') confirmBankInvMut.mutate({ txId: m.transaction_id, invoiceId: m.invoice_id });
                       else if (activeTab === 'bank-card') confirmBankCardMut.mutate({ txId: m.transaction_id, csId: m.card_statement_id });
-                      else confirmReceiptMut.mutate({ receiptId: m.receipt_id, invoiceId: m.invoice_id });
+                      else confirmReceiptMut.mutate({ receiptId: m.receipt_id, invoiceId: m.invoice_id, invoiceIds: m.invoice_ids });
                     }}
                     onReject={() => {
                       if (activeTab === 'bank-invoice') rejectBankInvMut.mutate(m.transaction_id);
@@ -368,7 +398,13 @@ function MatchRow({ type, match, onConfirm, onReject, isProcessing }: {
             </span>
             <span className="text-sm font-medium">Receipt #{match.receipt_number}</span>
             <span className="text-xs text-muted-foreground">→</span>
-            <span className="text-sm font-medium">Invoice #{match.invoice_number}</span>
+            {match.invoice_ids?.length ? (
+              <span className="text-sm font-medium">
+                {match.invoice_ids.length} {tr('invoices (combined)', '張發票（合併）', '张发票（合并）')}
+              </span>
+            ) : (
+              <span className="text-sm font-medium">Invoice #{match.invoice_number}</span>
+            )}
             <span className="text-xs text-muted-foreground">
               {tr('HKD', '港幣', '港币')} {match.receipt_total?.toLocaleString()} → {match.invoice_total?.toLocaleString()}
             </span>

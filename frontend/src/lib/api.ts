@@ -152,3 +152,97 @@ export async function streamChat(
   }
 }
 
+/**
+ * SSE streaming for LLM match analysis.
+ * Returns an object with a cancel function.
+ */
+export function matchAnalyze(
+  params: { type: string; direction?: string },
+  handlers: {
+    onProgress?: (data: any) => void;
+    onSuggestions?: (data: any[]) => void;
+    onTokens?: (data: { prompt: number; completion: number; total: number }) => void;
+    onDone?: (data: any) => void;
+    onError?: (data: any) => void;
+    onCancelled?: () => void;
+  }
+): { cancel: () => Promise<void>; sessionId: Promise<string | null> } {
+  const token = localStorage.getItem('token') || '';
+  let sessionIdResolve: (id: string | null) => void = () => {};
+  const sessionIdPromise = new Promise<string | null>(resolve => { sessionIdResolve = resolve; });
+
+  const abortController = new AbortController();
+
+  (async () => {
+    try {
+      const resp = await fetch(`${WORKER_API_BASE}/match/llm-analyze`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(params),
+        signal: abortController.signal,
+      });
+
+      if (!resp.ok) {
+        handlers.onError?.({ message: `Server error: ${resp.status}` });
+        return;
+      }
+
+      const reader = resp.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) return;
+
+      let buffer = '';
+      let currentEvent = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const data = JSON.parse(line.slice(6));
+
+            if (data.sessionId) sessionIdResolve(data.sessionId);
+
+            switch (currentEvent) {
+              case 'progress': handlers.onProgress?.(data); break;
+              case 'suggestions': handlers.onSuggestions?.(data); break;
+              case 'tokens': handlers.onTokens?.(data); break;
+              case 'done': handlers.onDone?.(data); break;
+              case 'error': handlers.onError?.(data); break;
+              case 'cancelled': handlers.onCancelled?.(); break;
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        handlers.onError?.({ message: err.message });
+      }
+    }
+  })();
+
+  return {
+    cancel: async () => {
+      abortController.abort();
+      const sid = await sessionIdPromise;
+      if (sid) {
+        await fetch(`${WORKER_API_BASE}/match/cancel/${sid}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }).catch(() => {});
+      }
+    },
+    sessionId: sessionIdPromise,
+  };
+}
+

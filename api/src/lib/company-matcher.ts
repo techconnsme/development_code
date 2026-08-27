@@ -313,6 +313,8 @@ export const HK_BANK_ALIASES: Record<string, BankAlias> = {
       'hsbc', 'thehongkongandshanghaibankingcorporationlimited',
       'hongkongandshanghaibankingcorporationlimited', 'hongkongandshanghaibankingcorporation',
       'hongkongshanghaibank', 'hongkongandshanghaibank',
+      // eStatement product banner — AI parsers often extract this instead of 'HSBC'
+      'hsbcbusinessdirect', 'hsbchongkong',
       '匯豐銀行', '汇丰银行', '匯豐', '汇丰', '香港上海匯豐銀行', '香港上海汇丰银行',
     ],
   },
@@ -336,6 +338,9 @@ export const HK_BANK_ALIASES: Record<string, BankAlias> = {
     aliases: [
       'boc', 'bankofchina', 'bankofchinahongkong', 'bochk',
       'bankofchinalimited', 'bochongkong',
+      // 'Bank of China (Hong Kong)' normalizes to 'bankofhongkong' because
+      // 'china' is stripped as a legal suffix — keep it resolvable anyway
+      'bankofhongkong',
       '中國銀行', '中国银行', '中銀', '中银', '中銀香港', '中银香港', '中國銀行香港',
     ],
   },
@@ -418,6 +423,41 @@ export function matchBankName(input: string | null | undefined): string | null {
   }
 
   return null;
+}
+
+/**
+ * Canonicalize a bank name supplied by AI parsing or user input.
+ * Returns the canonical HK bank name, or null if unknown/empty — callers
+ * decide whether to keep the raw value.
+ */
+export function canonicalizeBankName(input: string | null | undefined): string | null {
+  if (!input || !input.trim()) return null;
+  return matchBankName(input);
+}
+
+/**
+ * Bank name to STORE on a bank_statement: canonical for known HK banks,
+ * raw (trimmed) value for unknown banks. All statements of the same account
+ * thus share one name, differing only by the year-month prefix.
+ */
+export function normalizeBankNameForStorage(input: string | null | undefined): string | null {
+  if (!input || !input.trim()) return null;
+  return matchBankName(input) || input.trim();
+}
+
+/**
+ * Resolve bank_name for a statement import, in priority order:
+ *   1. AI/client-supplied name — canonicalized, unknown banks kept verbatim
+ *   2. OCR text — canonical match only
+ *   3. file name — canonical match only
+ */
+export function resolveStatementBankName(
+  suppliedName: string | null | undefined,
+  ocrText?: string | null,
+  fileName?: string | null,
+): string | null {
+  if (suppliedName && suppliedName.trim()) return normalizeBankNameForStorage(suppliedName);
+  return matchBankName(ocrText || '') || matchBankName(fileName || '') || null;
 }
 
 /**

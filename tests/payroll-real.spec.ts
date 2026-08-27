@@ -22,8 +22,9 @@ test('payroll toggle: demo default intact, real view renders and persists', asyn
   // Toggle → Real mode
   await page.getByText(/Real data|實際資料|实际资料/).first().click();
   await expect(page.getByText(/Add employee|新增員工|新增员工/).first()).toBeVisible();
-  // Demo chip hidden in real mode
-  await expect(page.getByText(/Demo data|演示數據|演示数据/).filter({ visible: true })).toHaveCount(0);
+  // Demo-only subtitle hidden in real mode (the toggle itself still says "Demo data",
+  // so we cannot count that string — assert the demo view content is gone)
+  await expect(page.getByText(/Sample payroll for demonstration\.|薪資演示樣本。|薪资演示样本。/)).toBeHidden();
   await page.screenshot({ path: 'test-results/payroll-real.png', fullPage: true });
 
   // Persistence across reload

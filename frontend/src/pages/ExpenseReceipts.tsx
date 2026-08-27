@@ -40,9 +40,11 @@ export default function ExpenseReceipts() {
     queryFn: () => api(`/invoices?doc_type=receipt&limit=200${statusFilter ? `&status=${statusFilter}` : ''}${search ? `&q=${search}` : ''}`),
   });
 
+  // Manual link targets: ANY unpaid non-receipt invoice (AR or AP) — the old
+  // outgoing+sent-only filter left AP receipts unlinkable (2026-08-26 fix).
   const { data: invoiceData } = useQuery({
     queryKey: ['invoices-for-linking'],
-    queryFn: () => api('/invoices?direction=outgoing&status=sent&limit=100'),
+    queryFn: () => api('/invoices?limit=200'),
   });
 
   const { data: receiptDetail } = useQuery({
@@ -76,7 +78,8 @@ export default function ExpenseReceipts() {
   const receipts = linkFilter === 'all' ? allReceipts
     : linkFilter === 'linked' ? allReceipts.filter((r: any) => r.linked_invoice_id)
     : allReceipts.filter((r: any) => !r.linked_invoice_id);
-  const arInvoices = (invoiceData as any)?.data || [];
+  const arInvoices = ((invoiceData as any)?.data || []).filter((inv: any) =>
+    !inv.receipt_number && !inv.linked_invoice_id && !['paid', 'cancelled'].includes(inv.status));
 
   const statusLabel = (s: string) => {
     const labels: Record<string, string> = {
@@ -236,7 +239,7 @@ export default function ExpenseReceipts() {
                 placeholder={tr('Payment method (optional)', '付款方式（可選）', '付款方式（可选）')} className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
               <select value={form.linked_invoice_id} onChange={(e) => setForm({ ...form, linked_invoice_id: e.target.value })}
                 className="w-full px-3 py-2 border rounded-md bg-background text-sm">
-                <option value="">{tr('— Link to AR invoice (optional) —', '— 連結到 AR 發票（可選）—', '— 连结到 AR 发票（可选）—')}</option>
+                <option value="">{tr('— Link to invoice (optional) —', '— 連結到發票（可選）—', '— 连结到发票（可选）—')}</option>
                 {arInvoices.map((inv: any) => (
                   <option key={inv.id} value={inv.id}>{inv.invoice_number} — {inv.customer_name || inv.vendor_name} — {inv.currency} {inv.total?.toLocaleString()}</option>
                 ))}

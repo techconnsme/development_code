@@ -62,6 +62,23 @@ All sampled real eStatements (`Tech_Connect_SME/test-sample-real/EHSIA/eStatemen
 5. Generated samples (`test-samples-generated/generate.py`) confirm formats for HSBC
    BusinessDirect/Hang Seng/SC: `BANK CHARGES-MONTHLY FEE`, `FPS INWARD-*`, `PAYROLL-*`,
    `AUTO DEBIT-HKT TELECOM`, `INTEREST-SAVINGS ACCOUNT`, `INTEREST CREDIT`
+6. Several date lines carry **multiple transactions** — one `17 Jun` block on
+   eStatement202506 holds three separate txs (CHARGES 5.00 / SMART CITY 7,800 /
+   MR LAI KIN CHEONG 3,000), each amount on its own continuation line.
+
+**Multi-invoice & split payments (audited 2026-08-24; full list in
+`test-sample-real/LINKS_REPORT.txt` §4):**
+- One bank transaction can settle **2-3 invoices**: PASTEL TECH 19 Sep 57,580.80 =
+  #001414 + #001417v2; 5 Nov 55,000 = #001441 + #001442; 5 Feb 27,544 =
+  #001458v2 + #001467-v2 + #001484-v2. EHSIA side: none (all 1:1). Relevant to
+  §4.6.1: a tx with `invoice_id` is a payment leg — combined payments mean one leg
+  may settle several invoices, so skip logic must not assume 1 tx = 1 invoice.
+- Split payments exist in the other direction: VEII 2025006 (38,544) = two ECQ
+  deposits 11,550 + 26,994 on the same day; founders' funding 52,000 each =
+  50,000 + 2,000 (PNR), and EHSIA funding RS = 50,000 + 2,000.
+- Net-zero test transfers appear on both accounts: PNR 09 Jan +100/−100
+  (047-711106-833) and PNR/EHSIA 03 Oct +10/−10 (521-305565-838) — covered by the
+  internal_transfer handling in §4.6.1.
 
 ## 3. Goals / Non-goals
 

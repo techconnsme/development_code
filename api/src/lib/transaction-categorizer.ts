@@ -308,7 +308,7 @@ export async function resolveBankAccountCode(db: any, userId: string, bankName?:
     const created = [0];
     await ensureMissingAccounts(db, userId, ['10000', '11000', '11100'], created);
     await db.prepare(
-      "INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, 'asset', ?)"
+      "INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, 'asset', ?)"
     ).bind(`acc-${uuidv4().slice(0, 8)}`, userId, code, known.name, '11100').run();
     return code;
   }

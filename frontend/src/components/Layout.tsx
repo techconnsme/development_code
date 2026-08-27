@@ -207,6 +207,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   const [sidebarReviewCount, setSidebarReviewCount] = React.useState(0);
   const reviewCount = sidebarReviewCount;
+  const [matchActivity, setMatchActivity] = React.useState<{ message: string; phase: string } | null>(null);
+  const [matchActivityRead, setMatchActivityRead] = React.useState(false);
+
+  // Expose setMatchActivity globally so pages can trigger chat notifications
+  React.useEffect(() => {
+    (window as any).__setMatchActivity = (msg: string, phase: string) => {
+      setMatchActivity({ message: msg, phase });
+      setMatchActivityRead(false);
+    };
+    return () => { delete (window as any).__setMatchActivity; };
+  }, []);
 
   // Parse features from live company data (or fallback to AuthContext)
   const features: Record<string, boolean> = React.useMemo(() => {
@@ -510,7 +521,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               : <ChevronLeft className="h-3.5 w-3.5" />}
           </button>
           <div className="h-full" style={{ width: chatWidth }}>
-            <Chatbot onClose={() => setChatDesktopOpen(false)} className="h-full" />
+            <Chatbot
+              onClose={() => setChatDesktopOpen(false)}
+              className="h-full"
+              matchStatus={matchActivity}
+              onMatchStatusRead={() => setMatchActivityRead(true)}
+            />
           </div>
         </aside>
       </div>
@@ -518,10 +534,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Desktop chat reopen button (when closed) */}
       {!chatDesktopOpen && (
         <button
-          onClick={() => setChatDesktopOpen(true)}
-          className="hidden lg:flex fixed right-0 top-1/2 -translate-y-1/2 z-30 w-6 h-12 items-center justify-center bg-card border rounded-l-md hover:bg-muted cursor-pointer shadow-sm"
+          onClick={() => { setChatDesktopOpen(true); setMatchActivityRead(true); }}
+          className={`hidden lg:flex fixed right-0 top-1/2 -translate-y-1/2 z-30 w-6 h-12 items-center justify-center bg-card border rounded-l-md hover:bg-muted cursor-pointer shadow-sm ${matchActivity && !matchActivityRead ? 'animate-pulse bg-blue-100 border-blue-300' : ''}`}
           title="展開 AI 對話">
-          <MessageCircle className="h-4 w-4" />
+          <MessageCircle className={`h-4 w-4 ${matchActivity && !matchActivityRead ? 'text-blue-600' : ''}`} />
+          {matchActivity && !matchActivityRead && (
+            <span className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full animate-ping" />
+          )}
         </button>
       )}
 

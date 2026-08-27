@@ -43,6 +43,7 @@ import payrollRoutes from './routes/payroll';
 import { emailDashRoutes } from './routes/email-dash';
 import { waitlistRoutes } from './routes/waitlist';
 import { reviewQueueRoutes } from './routes/review-queue';
+import matchRoutes from './routes/match';
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -193,6 +194,7 @@ app.route('/api/plans', plansRoutes);
 app.route('/api/email-dash', emailDashRoutes);
 app.route('/api/waitlist', waitlistRoutes);
 app.route('/api/review-queue', reviewQueueRoutes);
+app.route('/api/match', matchRoutes);
 
 // 404
 app.notFound((c) => c.json({ error: 'Not found' }, 404));

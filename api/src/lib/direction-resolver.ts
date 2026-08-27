@@ -113,6 +113,29 @@ export function resolveDirection(input: DirectionInput): DirectionResult {
   const vOurs = ownKnown && scoreVsOwn(effVendor) >= MATCH_MIN;
   const cOurs = ownKnown && scoreVsOwn(effCustomer) >= MATCH_MIN;
 
+  // ── Positional letterhead cross-check (used only when no A/C Name) ───────
+  // On letterhead documents the ISSUER's name prints first (top of page) and
+  // the billed party appears later in the Bill-To block. When both parties are
+  // extracted but nothing corroborates the AI's role assignment, first-
+  // appearance order catches AI vendor/customer swaps — e.g. LTE25-I-000175F
+  // (Smart City → EHSIA) stored as outgoing on 2026-08-26 because the doc has
+  // no A/C Name block. Full alphanumeric normalization also defeats spaced
+  // pdf-text OCR ("L i m i te d") that breaks the letterhead regex upstream.
+  const positionalOwnFirst = ((): boolean | null => {
+    if (!ownKnown || !hasV || !hasC || acName) return null;
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const nt = norm(input.ocrText || '');
+    if (!nt) return null;
+    const other = vOurs ? effCustomer : effVendor;
+    if (!other) return null;
+    const ownPos = Math.min(
+      ...own.map((o) => { const i = nt.indexOf(norm(o)); return i === -1 ? Infinity : i; }),
+    );
+    const otherPos = nt.indexOf(norm(other));
+    if (!isFinite(ownPos) || otherPos === -1 || ownPos === otherPos) return null;
+    return ownPos < otherPos;
+  })();
+
   let isIncoming = false;
   let counterparty: string | null = null;
   let review = false;
@@ -130,6 +153,16 @@ export function resolveDirection(input: DirectionInput): DirectionResult {
     counterparty = effVendor;
     review = false;
     notDetected = false;
+    if (positionalOwnFirst === true) {
+      // Letterhead shows OUR name first → we are the issuer; the AI had the
+      // roles backwards. Flip to outgoing (counterparty = the billed party).
+      isIncoming = false;
+      counterparty = effVendor;
+      swapped = true;
+    } else if (positionalOwnFirst === null) {
+      // Role assignment uncorroborated (no A/C Name, no positional signal).
+      review = true;
+    }
   } else if (vOurs) {
     // We are the issuer → outgoing, UNLESS the A/C Name says otherwise.
     isIncoming = false;
@@ -155,6 +188,21 @@ export function resolveDirection(input: DirectionInput): DirectionResult {
       // A/C Name contradicts the parse (payment goes to an unrelated third
       // party while we're listed as issuer) → flag for review.
       review = true;
+      notDetected = false;
+    } else if (!acName) {
+      // Both parties extracted, no A/C Name: the AI's role assignment stands
+      // alone. Trust it only when the letterhead position agrees; flip when
+      // it contradicts; flag when positional evidence is unavailable.
+      if (positionalOwnFirst === false) {
+        isIncoming = true;
+        counterparty = effCustomer;
+        swapped = true;
+        review = false;
+      } else if (positionalOwnFirst === null) {
+        review = true;
+      } else {
+        review = false;
+      }
       notDetected = false;
     } else {
       review = false;

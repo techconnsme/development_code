@@ -541,7 +541,7 @@ export default function AP() {
       {/* View Bill Modal */}
       {viewId && invoiceDetail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setViewId(null)}>
-          <div className="bg-card border rounded-xl p-6 w-[90vw] max-w-[90vw] h-[85vh] mx-4 flex gap-6" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-card border rounded-xl p-6 w-[90vw] max-w-[90vw] h-[80vh] mx-4 flex gap-6" onClick={(e) => e.stopPropagation()}>
             {/* Left: details */}
             <div className="w-[45%] flex flex-col min-h-0 overflow-y-auto pr-2 space-y-4">
               <div className="flex justify-between items-center">

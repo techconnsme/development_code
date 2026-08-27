@@ -53,7 +53,7 @@ export async function ensureMissingAccounts(db: any, tenantId: string, codes: st
     const type = info?.type || getCodeType(code);
     const parentCode = info?.parent || null;
     await db.prepare(
-      'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
     ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, code, name, type, parentCode).run();
     created[0]++;
   }

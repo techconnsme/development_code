@@ -1649,10 +1649,12 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
   const suggestions: any[] = [];
 
   const txRows = await db.prepare(
-    `SELECT bt.*, i.invoice_number, i.supplier_id, bs.bank_name, bs.account_number
+    `SELECT bt.*, i.invoice_number, i.supplier_id, i.file_id as invoice_file_id,
+            bs.bank_name, bs.account_number, fr.id as stmt_file_id
      FROM bank_transactions bt
      LEFT JOIN invoices i ON bt.invoice_id = i.id
      LEFT JOIN bank_statements bs ON bt.bank_statement_id = bs.id
+     LEFT JOIN file_records fr ON fr.r2_key = bs.r2_key AND fr.user_id = bs.user_id
      WHERE bt.user_id = ?
      AND bt.deleted_at IS NULL
      AND bt.match_status != 'confirmed'
@@ -1765,6 +1767,7 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
         contra_account_name: lines[0].code === stmtBankCode ? (lines[1]?.name || lines[0].name) : lines[0].name,
         confidence,
         reason,
+        file_id: tx.invoice_file_id || tx.stmt_file_id || null,
       });
     } else {
       // Original INSERT logic (unchanged)

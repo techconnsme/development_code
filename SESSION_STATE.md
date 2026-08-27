@@ -1,3 +1,41 @@
+# Session State — 2026-08-27 (custom depreciation scheduling)
+
+## Custom Depreciation Schedule — completed and deployed
+
+**Design:** `docs/superpowers/specs/2026-08-27-custom-depreciation-design.md`
+**Plan:** `docs/superpowers/plans/2026-08-27-custom-depreciation.md`
+**Task reports:** `.superpowers/sdd/2026-08-27-custom-depreciation/task-{2,3,4,5}-report.md`
+
+**API:** https://opcc-crm-api.ruhan-farhan.workers.dev (v95301004 → bef73c2a)
+**Frontend:** https://opcc-crm-testing.pages.dev (production branch = main)
+
+### What was built
+
+1. **Depreciation unit tests (TDD)** — `api/src/lib/depreciation.ts` extracted from `fixed-assets.ts`
+   - `calculateMonthlyDepreciation()`, `calculatePeriodDepreciation()`, `buildDepreciationLines()`, `generateDepreciationEntryNumber()`, `isEligibleForDepreciation()`
+   - Tests: `tests/depreciation.test.ts` (41 cases), `tests/depreciation-custom.test.ts` (13 cases), `tests/depreciation-custom-integration.test.ts` (14 cases)
+   - Fixed gaps: `buildDepreciationLines` now returns Dr/Cr pairs, `isEligibleForDepreciation` checks `is_active`
+
+2. **Custom depreciation schedule** — per-period rates or amounts instead of straight-line only
+   - **DB migration:** `migration-custom-depreciation.sql` — adds `custom_schedule TEXT` column (JSON) to `fixed_assets`
+   - **API:** `POST /fixed-assets` accepts `depreciation_method` ('custom') + `custom_schedule` JSON; `PATCH /:id` allows schedule updates; `POST /run-depreciation` handles custom period lookup + auto-fill for remaining periods
+   - **Frontend:** Tabbed "Depreciation Details" section — "Constant" (straight-line) | "Custom" (dynamic rows with rate/amount per period, period type monthly/yearly)
+
+3. **UI redesign** — "Add Fixed Asset" modal with visible labels, section headers, grouped fields
+
+### Deployment fix
+
+- Cloudflare Pages `production_branch` was set to `main`, but `--branch=production` creates preview deployments
+- Fix: deploy with `--branch=main` to update production alias
+- API token refreshed — value withheld from git history (kept locally, not committed)
+
+### Notes
+
+- `tests/` is gitignored — specs are local-only
+- TypeScript errors in `FileUpload.tsx` (`cash_invoice` type) are pre-existing, non-blocking (esbuild ignores them)
+
+---
+
 # Session State — 2026-08-27 (expanded GJE modal feature)
 
 ## Expenses page rework (Receipts | Petty Cash | Others) — completed and deployed
@@ -40,6 +78,8 @@
   `fc81f9d` (bookkeeping.ts hunks). `file-storage.ts` diff + new files still uncommitted.
 
 ## Direct (non-OCR) attachment upload in Petty Cash & Others — completed and deployed
+
+**Committed `d62ff1b` + pushed to `origin/main`** (2026-08-27; push also published the 13 pending local commits from the suggestion-panel session). New/changed files for both Expenses features: `api/src/lib/list-filters.ts`, `api/src/routes/file-storage.ts`, `frontend/src/pages/{Invoices,PettyCash,ExpensesOthers,ChartOfAccounts}.tsx`, `frontend/src/components/{DocumentPickerModal,Layout,ExpenseAttachments}.tsx`, `frontend/src/lib/attachment-upload.ts`, `frontend/src/App.tsx`. (bookkeeping.ts changes rode in the other session's `fc81f9d`.)
 
 **Tests:** `tests/expenses-tabs.spec.ts` TC-EXP-03/05 extended (5/5 green) · `tests/reconciliation-audit.spec.ts` TC-AD-03 flipped (endpoint-disable check, green)
 **Frontend:** https://b675c4a7.opcc-crm-testing.pages.dev · **API:** worker v6d403622
