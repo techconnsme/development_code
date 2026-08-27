@@ -55,10 +55,10 @@ function summaryStatus(f: FileItem): { label: string; labelZh: string; labelCn: 
     (f.statement_id && (f.stmt_status === 'draft' || f.stmt_status === 'pending_review')) ||
     (f.card_statement_id && f.card_status === 'draft');
   if (needsReview) {
-    return { label: 'Needs Review', labelZh: '需審核', labelCn: '需审核', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300', tip: 'A record was created, but some fields need confirmation before it is posted.', tipZh: '已建立記錄，但部分欄位需確認後才會入帳。', tipCn: '已建立记录，但部分字段需确认后才会入账。' };
+    return { label: 'Manually Processed', labelZh: '需人工處理', labelCn: '需人工处理', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300', tip: 'A record was created, but some fields need confirmation before it is posted.', tipZh: '已建立記錄，但部分欄位需確認後才會入帳。', tipCn: '已建立记录，但部分字段需确认后才会入账。' };
   }
   if (f.invoice_id || f.statement_id || f.card_statement_id) {
-    return { label: 'Processed', labelZh: '已處理', labelCn: '已处理', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300', tip: 'Auto-saved and linked to a record.', tipZh: '已自動儲存並連結至記錄。', tipCn: '已自动储存并连结至记录。' };
+    return { label: 'AI-OCR Processed', labelZh: 'AI-OCR 已處理', labelCn: 'AI-OCR 已处理', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300', tip: 'Auto-saved and linked to a record.', tipZh: '已自動儲存並連結至記錄。', tipCn: '已自动储存并连结至记录。' };
   }
   return { label: 'Stored', labelZh: '已儲存', labelCn: '已储存', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300', tip: 'Saved to File Storage only — not linked to a record yet.', tipZh: '僅儲存於文件庫，尚未連結任何記錄。', tipCn: '仅储存于文件库，尚未连结任何记录。' };
 }
@@ -368,6 +368,9 @@ export default function FileStorage() {
   const highlightFileId = searchParams.get('highlight') || null;
   const [processingMsg, setProcessingMsg] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  // Restored 2026-08-26: the upload input was lost in a refactor (handleFileInput
+  // was dead code), leaving File Storage with no way to upload at all.
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const batchRef = useRef({ total: 0, done: 0, errors: 0, bank: 0, invoice: 0, receipt: 0, card: 0, navigated: false, queue: [] as {docType:string, reviewId:string, filename:string, flags:string}[] });
   const [folder, setFolder] = useState('');
   const [description, setDescription] = useState('');
@@ -1169,6 +1172,12 @@ export default function FileStorage() {
         <span className="text-xs text-muted-foreground">
           {tr(`${fileList.length} file${fileList.length === 1 ? '' : 's'}`, `${fileList.length} 個檔案`, `${fileList.length} 个档案`)}
         </span>
+        <input ref={fileInputRef} type="file" multiple className="hidden"
+          accept=".pdf,.xlsx,.xls,.csv,.txt,.png,.jpg,.jpeg,.webp,.gif" onChange={handleFileInput} />
+        <button onClick={() => fileInputRef.current?.click()} disabled={uploading}
+          className="flex items-center gap-1 px-3 py-2 bg-primary text-primary-foreground rounded-md text-xs hover:opacity-90 disabled:opacity-40">
+          <Upload className="h-3 w-3" /> {tr('Upload', '上傳', '上传')}
+        </button>
         <button onClick={() => autoMatchMut.mutate()} disabled={autoMatchMut.isPending}
           className="flex items-center gap-1 px-3 py-2 bg-primary text-primary-foreground rounded-md text-xs hover:opacity-90 disabled:opacity-40">
           <Zap className="h-3 w-3" /> {tr('Match Invoices', '配對發票', '配对发票')}
