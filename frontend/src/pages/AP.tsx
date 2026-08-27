@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
-import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, CornerUpRight, Link2, FileText, Zap, History } from 'lucide-react';
+import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, CornerUpRight, Link2, Link2Off, FileText, Zap, History } from 'lucide-react';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import AuditTrailModal from '../components/AuditTrailModal';
 import InvoiceDetailPanel from '../components/InvoiceDetailPanel';
@@ -42,8 +42,12 @@ export default function AP() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
+  const [linkFilter, setLinkFilter] = useState<'all' | 'linked' | 'unlinked'>(
+    (searchParams.get('linkFilter') as 'all' | 'linked' | 'unlinked') || 'all'
+  );
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [viewId, setViewId] = useState<string | null>(null);
@@ -161,7 +165,11 @@ export default function AP() {
     createMut.mutate({ ...form, direction: 'incoming', total: sub + tax - disc, subtotal: sub, tax_amount: tax, discount_amount: disc });
   }
 
-  const invoices = data?.data || [];
+  const invoicesRaw = data?.data || [];
+  const invoices = linkFilter === 'linked'
+    ? invoicesRaw.filter((r: any) => r.linked_invoice_id)
+    : linkFilter === 'unlinked' ? invoicesRaw.filter((r: any) => !r.linked_invoice_id)
+    : invoicesRaw;
 
   // Deep-link highlight: scroll + ring the target invoice row.
   const highlightFiredRef = useRef<string | null>(null);
@@ -187,12 +195,13 @@ export default function AP() {
   }, [highlightId, data]);
 
   const statusLabel = (s: string) => {
-    const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '應付', '应付'), paid: tr('Paid', '已付', '已付'), overdue: tr('Overdue', '逾期未付', '逾期未付'), cancelled: tr('Cancelled', '已取消', '已取消') };
+    const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), active: tr('Active', '已建立', '已建立'), sent: tr('Sent', '應付', '应付'), paid: tr('Paid', '已付', '已付'), overdue: tr('Overdue', '逾期未付', '逾期未付'), cancelled: tr('Cancelled', '已取消', '已取消') };
     return labels[s] || s;
   };
   const statusTooltip = (s: string) => {
     const tips: Record<string, string> = {
       draft: tr('Invoice created but not yet sent to supplier', '帳單已建立但尚未發送給供應商', '账单已建立但尚未发送给供应商'),
+      active: tr('Invoice is active and ready to be sent', '帳單已建立並準備發送', '账单已建立并准备发送'),
       sent: tr('Invoice sent to supplier, awaiting payment', '帳單已發送給供應商，等待付款', '账单已发送给供应商，等待付款'),
       paid: tr('Payment has been made to supplier', '已向供應商付款', '已向供应商付款'),
       overdue: tr('Payment is past the due date', '付款已過期', '付款已过期'),
@@ -201,7 +210,7 @@ export default function AP() {
     return tips[s] || '';
   };
   const statusBadge = (s: string) => {
-    const colors: Record<string, string> = { draft: 'bg-gray-100 text-gray-700', sent: 'bg-orange-100 text-orange-700', paid: 'bg-green-100 text-green-700', overdue: 'bg-red-100 text-red-700', cancelled: 'bg-gray-100 text-gray-500' };
+    const colors: Record<string, string> = { draft: 'bg-gray-100 text-gray-700', active: 'bg-blue-100 text-blue-700', sent: 'bg-orange-100 text-orange-700', paid: 'bg-green-100 text-green-700', overdue: 'bg-red-100 text-red-700', cancelled: 'bg-gray-100 text-gray-500' };
     return `px-2 py-0.5 rounded-full text-xs font-medium ${colors[s] || 'bg-gray-100'}`;
   };
 
@@ -262,6 +271,28 @@ export default function AP() {
         </select>
       </div>
 
+      {/* Link filter tabs */}
+      <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit">
+        {([
+          { key: 'all' as const, label: tr('All AP', '全部應付', '全部应付'), count: invoicesRaw.length },
+          { key: 'unlinked' as const, label: tr('Without Receipt', '未連收據', '未连收据'), count: invoicesRaw.filter((r: any) => !r.linked_invoice_id).length },
+          { key: 'linked' as const, label: tr('With Receipt', '已連收據', '已连收据'), count: invoicesRaw.filter((r: any) => r.linked_invoice_id).length },
+        ]).map(t => (
+          <button
+            key={t.key}
+            onClick={() => { setLinkFilter(t.key); setPage(1); }}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              linkFilter === t.key
+                ? 'bg-background shadow-sm text-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {t.label}
+            <span className="ml-1.5 text-xs text-muted-foreground">({t.count})</span>
+          </button>
+        ))}
+      </div>
+
       {isLoading ? <div className="text-center py-12 text-muted-foreground">{tr('Loading...', '載入中...', '载入中...')}</div> :
        invoices.length === 0 ? <div className="text-center py-12 text-muted-foreground">{tr('No payable records', '未有應付記錄', '未有应付记录')}</div> : (
         <div className="bg-card border rounded-xl overflow-hidden">
@@ -284,6 +315,11 @@ export default function AP() {
                   <td className="p-3 font-medium">
                     <span className="inline-flex items-center gap-1.5">
                       {inv.invoice_number}
+                      {!inv.linked_invoice_id && (
+                        <span title={tr('No receipt linked', '未連結收據', '未连结收据')}>
+                          <Link2Off className="h-3.5 w-3.5 text-amber-500" />
+                        </span>
+                      )}
                       {inv.needs_review?.includes('direction') && (
                         <span title={tr('AI OCR could not determine if this is AR (you issued) or AP (you received). Please review.', 'AI OCR 無法判斷此為 AR（你開出）或 AP（你接收）。請審核。', 'AI OCR 无法判断此为 AR（你开出）或 AP（你接收）。请审核。')}>
                           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />

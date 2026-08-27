@@ -178,12 +178,13 @@ export default function AR() {
   }, [highlightId, invoices?.data]);
 
   const statusLabel = (s: string) => {
-    const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '應收', '应收'), paid: tr('Paid', '已收', '已收'), overdue: tr('Overdue', '逾期未收', '逾期未收'), cancelled: tr('Cancelled', '已取消', '已取消') };
+    const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), active: tr('Active', '已建立', '已建立'), sent: tr('Sent', '應收', '应收'), paid: tr('Paid', '已收', '已收'), overdue: tr('Overdue', '逾期未收', '逾期未收'), cancelled: tr('Cancelled', '已取消', '已取消') };
     return labels[s] || s;
   };
   const statusTooltip = (s: string) => {
     const tips: Record<string, string> = {
       draft: tr('Invoice created but not yet sent to customer', '帳單已建立但尚未發送給客戶', '账单已建立但尚未发送给客户'),
+      active: tr('Invoice is active and ready to be sent', '帳單已建立並準備發送', '账单已建立并准备发送'),
       sent: tr('Invoice sent to customer, awaiting payment', '帳單已發送給客戶，等待收款', '账单已发送给客户，等待收款'),
       paid: tr('Payment has been received from customer', '已收到客戶付款', '已收到客户付款'),
       overdue: tr('Payment is past the due date', '收款已過期', '收款已过期'),
@@ -192,7 +193,7 @@ export default function AR() {
     return tips[s] || '';
   };
   const statusBadge = (s: string) => {
-    const colors: Record<string, string> = { draft: 'bg-gray-100 text-gray-700', sent: 'bg-blue-100 text-blue-700', paid: 'bg-green-100 text-green-700', overdue: 'bg-red-100 text-red-700', cancelled: 'bg-gray-100 text-gray-500' };
+    const colors: Record<string, string> = { draft: 'bg-gray-100 text-gray-700', active: 'bg-blue-100 text-blue-700', sent: 'bg-blue-100 text-blue-700', paid: 'bg-green-100 text-green-700', overdue: 'bg-red-100 text-red-700', cancelled: 'bg-gray-100 text-gray-500' };
     return `px-2 py-0.5 rounded-full text-xs font-medium ${colors[s] || 'bg-gray-100'}`;
   };
 
