@@ -57,7 +57,7 @@ export default function Invoices() {
   const { startDate, endDate } = useDateFilter();
   const [viewId, setViewId] = useState<string | null>(null);
   const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
-  const [form, setForm] = useState({ invoice_number: '', customer_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, discount_type: 'flat' as string, discount_value: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
+  const [form, setForm] = useState({ invoice_number: '', customer_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, discount_type: 'flat' as string, discount_value: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', file_id: '' as string, items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   const [productSearch, setProductSearch] = useState<Record<number, string>>({});
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
@@ -157,6 +157,7 @@ export default function Invoices() {
       subtotal: sub,
       tax_amount: tax,
       discount_amount: disc,
+      file_id: form.file_id || undefined,
       items: form.items.length > 0 ? form.items : [{ description: form.attn || 'Receipt item', quantity: 1, unit_price: 0, amount: 0 }],
     });
   }
@@ -505,6 +506,23 @@ export default function Invoices() {
 
               <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
                 placeholder={tr("Notes", "備註 Notes", "备注 Notes")} className="w-full px-3 py-2 border rounded-md bg-background text-sm" rows={2} />
+
+              <div className="border-t pt-3 mt-3">
+                <label className="text-sm font-medium mb-1 block">
+                  {tr('Attach supporting file (optional)', '附加證明文件（可選）', '附加证明文件（可选）')}
+                </label>
+                {form.file_id ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm bg-muted px-2 py-1 rounded">{tr('File linked', '文件已連結', '文件已连结')}</span>
+                    <button type="button" onClick={() => setForm({ ...form, file_id: '' })} className="text-destructive text-xs">✕</button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {tr('Upload a file to File Storage first, then link it here.', '請先將文件上傳至檔案儲存庫，然後在此連結。', '请先将文件上传至文件存储库，然后在此连结。')}
+                  </p>
+                )}
+              </div>
+
               <div className="flex gap-3 justify-end">
                 <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 border rounded-md text-sm">{tr('Cancel', '取消', '取消')}</button>
                 <button type="submit" disabled={createMut.isPending}
@@ -518,7 +536,7 @@ export default function Invoices() {
       {/* View Receipt Modal */}
       {viewId && invoiceDetail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setViewId(null)}>
-          <div className="bg-card border rounded-xl p-6 w-[90vw] max-w-[90vw] h-[85vh] mx-4 flex gap-6" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-card border rounded-xl p-6 w-[90vw] max-w-[90vw] h-[80vh] mx-4 flex gap-6" onClick={(e) => e.stopPropagation()}>
             {/* Left: details */}
             <div className="w-[45%] flex flex-col min-h-0 overflow-y-auto pr-2 space-y-4">
               <div className="flex justify-between items-center">
