@@ -6,6 +6,7 @@ import { api, WORKER_API_BASE } from '../lib/api';
 import EncryptedPdfModal from '../components/EncryptedPdfModal';
 import { useToast } from '../components/Toast';
 import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye, CornerUpRight } from 'lucide-react';
+import Tooltip from '../components/Tooltip';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import { useAuth } from '../contexts/AuthContext';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
@@ -221,16 +222,21 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                     {f.created_at && <FileTimeLabel createdAt={f.created_at} />}
                     {f.invoice_number && <span className="font-mono text-[10px] text-blue-600">{f.invoice_number}</span>}
                     {(() => { const s = summaryStatus(f); return s ? (
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${s.cls}`} title={tr(s.tip, s.tipZh, s.tipCn)}>{tr(s.label, s.labelZh, s.labelCn)}</span>
+                      <Tooltip content={tr(s.tip, s.tipZh, s.tipCn)}>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${s.cls}`}>{tr(s.label, s.labelZh, s.labelCn)}</span>
+                      </Tooltip>
                     ) : null; })()}
                     {(() => { const r = recordStatus(f); return r ? (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium border border-border text-muted-foreground"
-                        title={r.tip ? `${tr('Linked record status', '關聯記錄狀態', '关联记录状态')} — ${tr(r.tip, r.tipZh, r.tipCn)}` : tr('Linked record status', '關聯記錄狀態', '关联记录状态')}>{tr(r.label, r.labelZh, r.labelCn)}</span>
+                      <Tooltip content={r.tip ? `${tr('Linked record status', '關聯記錄狀態', '关联记录状态')} — ${tr(r.tip, r.tipZh, r.tipCn)}` : tr('Linked record status', '關聯記錄狀態', '关联记录状态')}>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium border border-border text-muted-foreground">{tr(r.label, r.labelZh, r.labelCn)}</span>
+                      </Tooltip>
                     ) : null; })()}
                     {f.category === 'invoice' && f.direction && (
-                      <span title={f.direction === 'outgoing' ? tr('Outgoing invoice issued by your company (Accounts Receivable).', '貴公司開出的銷貨發票（應收帳款）。', '贵公司开出的销货发票（应收账款）。') : tr('Incoming invoice billed to your company (Accounts Payable).', '供應商開給貴公司的進貨發票（應付帳款）。', '供应商开给贵公司的进货发票（应付账款）。')} className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                        f.direction === 'outgoing' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'
-                      }`}>{f.direction === 'outgoing' ? tr('Sales', '銷售', '销售') : tr('Purchase', '採購', '采购')}</span>
+                      <Tooltip content={f.direction === 'outgoing' ? tr('Outgoing invoice issued by your company (Accounts Receivable).', '貴公司開出的銷貨發票（應收帳款）。', '贵公司开出的销货发票（应收账款）。') : tr('Incoming invoice billed to your company (Accounts Payable).', '供應商開給貴公司的進貨發票（應付帳款）。', '供应商开给你的进货发票（应付账款）。')}>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                          f.direction === 'outgoing' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'
+                        }`}>{f.direction === 'outgoing' ? tr('Sales', '銷售', '销售') : tr('Purchase', '採購', '采购')}</span>
+                      </Tooltip>
                     )}
                     {f.category === 'invoice' && f.payment_status && f.payment_status !== 'unmatched' && (
                       <span title={f.payment_status === 'received' ? tr('Payment marked as received.', '款項已標記為已收。', '款项已标记为已收。') : f.payment_status === 'paid' ? tr('Payment marked as paid.', '款項已標記為已付。', '款项已标记为已付。') : undefined} className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
