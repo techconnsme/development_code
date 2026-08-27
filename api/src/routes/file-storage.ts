@@ -2081,13 +2081,15 @@ files.get('/:id/linked-records', async (c) => {
     `SELECT fr.id, fr.filename,
       i.id as invoice_id, i.invoice_number, i.total as invoice_total, i.vendor_name,
       cust.name as customer_name,
-      bs.id as statement_id, bs.bank_name as stmt_bank_name,
-      cs.id as card_statement_id, cs.card_issuer
+      bs.id as statement_id, bs.bank_name as stmt_bank_name, bs.source as stmt_source,
+      cs.id as card_statement_id, cs.card_issuer, cs.source as card_source
     FROM file_records fr
     LEFT JOIN invoices i ON i.file_id = fr.id AND i.user_id = fr.user_id AND i.deleted_at IS NULL
     LEFT JOIN customers cust ON i.customer_id = cust.id
-    LEFT JOIN bank_statements bs ON bs.r2_key = fr.r2_key AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
-    LEFT JOIN card_statements cs ON cs.r2_key = fr.r2_key AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
+    LEFT JOIN bank_statements bs ON (bs.r2_key = fr.r2_key OR bs.source_file_id = fr.id)
+      AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
+    LEFT JOIN card_statements cs ON (cs.r2_key = fr.r2_key OR cs.source_file_id = fr.id)
+      AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
     WHERE fr.id = ? AND fr.user_id = ? AND fr.deleted_at IS NULL`
   ).bind(id, tenantId).first();
 

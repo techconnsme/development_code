@@ -5,6 +5,7 @@ export interface SimilarEntry {
 export interface FileLink {
   kind: 'invoice' | 'receipt' | 'bank_statement' | 'card_statement' | 'journal_entry';
   id: string; label: string;
+  source?: 'ocr' | 'manual';
 }
 
 export async function nextManualVoucherNumber(db: any, tenantId: string, date: string): Promise<string> {
@@ -58,15 +59,19 @@ export function buildFileLinks(fileRow: any, jeRows: any[]): FileLink[] {
     });
   }
   if (fileRow?.statement_id) {
+    const provenance = fileRow.stmt_source === 'manual' ? ' (manually entered)' : ' (from AI-OCR)';
     links.push({
       kind: 'bank_statement', id: fileRow.statement_id,
-      label: `Bank statement${fileRow.stmt_bank_name ? ` — ${fileRow.stmt_bank_name}` : ''}`,
+      label: `Bank statement${fileRow.stmt_bank_name ? ` — ${fileRow.stmt_bank_name}` : ''}${provenance}`,
+      source: fileRow.stmt_source || 'ocr',
     });
   }
   if (fileRow?.card_statement_id) {
+    const provenance = fileRow.card_source === 'manual' ? ' (manually entered)' : ' (from AI-OCR)';
     links.push({
       kind: 'card_statement', id: fileRow.card_statement_id,
-      label: `Card statement${fileRow.card_issuer ? ` — ${fileRow.card_issuer}` : ''}`,
+      label: `Card statement${fileRow.card_issuer ? ` — ${fileRow.card_issuer}` : ''}${provenance}`,
+      source: fileRow.card_source || 'ocr',
     });
   }
   for (const je of jeRows || []) {
