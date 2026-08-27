@@ -1,9 +1,11 @@
 import { Fragment, useState, useEffect, useRef, ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
+import { useToast } from '../components/Toast';
 import { tr } from '../lib/i18nHelpers';
-import { Eye, Trash2, AlertTriangle, CheckCircle, ChevronDown, Pencil, FileText, CreditCard, Building2, Download } from 'lucide-react';
+import { Eye, Trash2, AlertTriangle, CheckCircle, ChevronDown, Pencil, FileText, CreditCard, Building2, Download, FilePlus } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
 import TxPostingPanel, { PostingLine } from '../components/TxPostingPanel';
 import SlideOpen from '../components/SlideOpen';
@@ -93,11 +95,145 @@ function monthLabel(year: number | null, month: number | null): string {
   return `${MONTHS[month - 1]} ${year}`;
 }
 
+interface CardTxRow {
+  transaction_date: string;
+  description: string;
+  amount: number;
+  transaction_type: string;
+  reference: string;
+}
+
+function ManualCardStatementEditor({ onSave, onCancel }: { onSave: (data: any) => void; onCancel: () => void }) {
+  const { t } = useTranslation();
+  const [cardIssuer, setCardIssuer] = useState('');
+  const [cardNetwork, setCardNetwork] = useState('');
+  const [cardLast4, setCardLast4] = useState('');
+  const [cardholderName, setCardholderName] = useState('');
+  const [currency, setCurrency] = useState('HKD');
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [creditLimit, setCreditLimit] = useState<number | ''>('');
+  const [openingBalance, setOpeningBalance] = useState<number | ''>('');
+  const [closingBalance, setClosingBalance] = useState<number | ''>('');
+  const [txRows, setTxRows] = useState<CardTxRow[]>([
+    { transaction_date: '', description: '', amount: 0, transaction_type: 'purchase', reference: '' },
+  ]);
+
+  const addRow = () => setTxRows([...txRows, { transaction_date: '', description: '', amount: 0, transaction_type: 'purchase', reference: '' }]);
+  const removeRow = (idx: number) => setTxRows(txRows.filter((_, i) => i !== idx));
+  const updateRow = (idx: number, field: keyof CardTxRow, value: any) => {
+    const rows = [...txRows];
+    (rows[idx] as any)[field] = value;
+    setTxRows(rows);
+  };
+
+  const canSave = cardIssuer.trim() && txRows.length > 0 && txRows.every(tx => tx.transaction_date && tx.description);
+
+  return (
+    <div className="border rounded-lg p-4 bg-muted/30 space-y-4">
+      <h3 className="font-semibold text-sm">{tr('Manual Card Statement Entry', '手動信用卡月結單輸入', '手动信用卡月结单输入')}</h3>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div>
+          <label className="text-xs font-medium">{tr('Card Issuer', '發卡機構', '发卡机构')} *</label>
+          <input value={cardIssuer} onChange={e => setCardIssuer(e.target.value)} className="w-full border rounded px-2 py-1 text-sm" placeholder="HSBC" />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Card Network', '卡組織', '卡组织')}</label>
+          <select value={cardNetwork} onChange={e => setCardNetwork(e.target.value)} className="w-full border rounded px-2 py-1 text-sm">
+            <option value="">—</option><option value="Visa">Visa</option><option value="MasterCard">MasterCard</option><option value="Amex">Amex</option><option value="UnionPay">UnionPay</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Last 4 Digits', '末四碼', '末四码')}</label>
+          <input value={cardLast4} onChange={e => setCardLast4(e.target.value)} className="w-full border rounded px-2 py-1 text-sm" maxLength={4} />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Cardholder Name', '持卡人姓名', '持卡人姓名')}</label>
+          <input value={cardholderName} onChange={e => setCardholderName(e.target.value)} className="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Currency', '貨幣', '货币')}</label>
+          <select value={currency} onChange={e => setCurrency(e.target.value)} className="w-full border rounded px-2 py-1 text-sm">
+            <option value="HKD">HKD</option><option value="USD">USD</option><option value="CNY">CNY</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Year', '年份', '年份')}</label>
+          <input type="number" value={year} onChange={e => setYear(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Month', '月份', '月份')}</label>
+          <select value={month} onChange={e => setMonth(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm">
+            {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Opening Balance', '期初餘額', '期初余额')}</label>
+          <input type="number" step="0.01" value={openingBalance} onChange={e => setOpeningBalance(e.target.value ? Number(e.target.value) : '')} className="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Closing Balance', '期末餘額', '期末余额')}</label>
+          <input type="number" step="0.01" value={closingBalance} onChange={e => setClosingBalance(e.target.value ? Number(e.target.value) : '')} className="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-xs text-muted-foreground">
+              <th className="py-1 px-1 w-28">{tr('Date', '日期', '日期')} *</th>
+              <th className="py-1 px-1">{tr('Description', '描述', '描述')} *</th>
+              <th className="py-1 px-1 w-28 text-right">{tr('Amount', '金額', '金额')}</th>
+              <th className="py-1 px-1 w-28">{tr('Type', '類型', '类型')}</th>
+              <th className="py-1 px-1 w-24">{tr('Ref', '參考', '参考')}</th>
+              <th className="py-1 px-1 w-8"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {txRows.map((tx, idx) => (
+              <tr key={idx} className="border-b">
+                <td className="py-1 px-1"><input type="date" value={tx.transaction_date} onChange={e => updateRow(idx, 'transaction_date', e.target.value)} className="w-full border rounded px-1 py-0.5 text-xs" /></td>
+                <td className="py-1 px-1"><input value={tx.description} onChange={e => updateRow(idx, 'description', e.target.value)} className="w-full border rounded px-1 py-0.5 text-xs" /></td>
+                <td className="py-1 px-1"><input type="number" step="0.01" value={tx.amount || ''} onChange={e => updateRow(idx, 'amount', Number(e.target.value) || 0)} className="w-full border rounded px-1 py-0.5 text-xs text-right" /></td>
+                <td className="py-1 px-1">
+                  <select value={tx.transaction_type} onChange={e => updateRow(idx, 'transaction_type', e.target.value)} className="w-full border rounded px-1 py-0.5 text-xs">
+                    <option value="purchase">{tr('Purchase', '消費', '消费')}</option><option value="payment">{tr('Payment', '還款', '还款')}</option><option value="refund">{tr('Refund', '退款', '退款')}</option><option value="fee">{tr('Fee', '費用', '费用')}</option><option value="interest">{tr('Interest', '利息', '利息')}</option>
+                  </select>
+                </td>
+                <td className="py-1 px-1"><input value={tx.reference} onChange={e => updateRow(idx, 'reference', e.target.value)} className="w-full border rounded px-1 py-0.5 text-xs" /></td>
+                <td className="py-1 px-1">{txRows.length > 1 && <button onClick={() => removeRow(idx)} className="text-destructive text-xs">✕</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <button onClick={addRow} className="text-xs text-primary hover:underline">+ {tr('Add Row', '新增列', '新增列')}</button>
+
+      <div className="flex justify-end gap-2">
+        <button onClick={onCancel} className="px-3 py-1.5 border rounded-md text-sm hover:bg-muted">{tr('Cancel', '取消', '取消')}</button>
+        <button onClick={() => {
+          onSave({
+            card_issuer: cardIssuer, card_network: cardNetwork, card_number_last4: cardLast4,
+            cardholder_name: cardholderName, currency, statement_year: year, statement_month: month,
+            credit_limit: creditLimit || null, opening_balance: openingBalance || null, closing_balance: closingBalance || null,
+            transactions: txRows.map((tx, i) => ({ ...tx, sort_order: i })),
+          });
+        }} disabled={!canSave}
+          className="px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50">
+          {tr('Save & Review', '儲存並審核', '储存并审核')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function CardStatements() {
   const nav = useNavigate();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [showManualEntry, setShowManualEntry] = useState(false);
 
   const { data: stmtsResp, isLoading } = useQuery({
     queryKey: ['card-statements'],
@@ -202,8 +338,29 @@ export default function CardStatements() {
           <p className="text-sm text-muted-foreground mt-1">
             {tr('Upload credit card statements, review transactions, categorize expenses.', '上傳信用卡月結單、檢視交易、分類支出。', '上传信用卡月结单、检视交易、分类支出。')}
           </p>
+          <button onClick={() => setShowManualEntry(!showManualEntry)}
+            className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90">
+            <FilePlus className="h-4 w-4" />
+            {tr('Manual Entry', '手動輸入', '手动输入')}
+          </button>
         </div>
       </div>
+
+      {showManualEntry && (
+        <ManualCardStatementEditor
+          onSave={async (data) => {
+            try {
+              const res = await api('/card-statements/manual', { method: 'POST', body: data }) as any;
+              toast.success(tr('Manual card statement created — review to confirm', '手動信用卡月結單已建立——請審核後確認', '手动信用卡月结单已建立——请审核后确认'));
+              setShowManualEntry(false);
+              nav(`/card-statements/review/${res.id}`);
+            } catch (e: any) {
+              toast.error(e?.message || 'Failed to create manual card statement');
+            }
+          }}
+          onCancel={() => setShowManualEntry(false)}
+        />
+      )}
 
       {/* Drafts banner */}
       {drafts.length > 0 && (
