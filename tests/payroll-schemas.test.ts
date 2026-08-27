@@ -21,5 +21,10 @@ ok(!runCreateSchema.safeParse({ period_month: 'Aug 2026' }).success, 'run create
 ok(markPaidSchema.safeParse({ bank_account_code: '11102' }).success, 'mark-paid valid');
 ok(!markPaidSchema.safeParse({}).success, 'mark-paid requires bank_account_code');
 
+// Lifecycle guard (re-checked here so route wiring regressions surface in this suite)
+import { canTransition } from '../api/src/lib/payroll-core';
+ok(!canTransition('paid', 'cancelled'), 'void refused once paid');
+ok(canTransition('accrued', 'cancelled'), 'void allowed while merely accrued');
+
 console.log(`payroll-schemas: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
