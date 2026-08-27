@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { tr } from '../lib/i18nHelpers';
 import { cn } from '../lib/utils';
 import DemoPayroll from './payroll/DemoPayroll';
+import RealPayroll from './payroll/RealPayroll';
 
 type PayrollMode = 'demo' | 'real';
 const MODE_KEY = 'payroll.mode';
@@ -42,7 +43,7 @@ export default function Payroll() {
         </div>
       </div>
 
-      {mode === 'demo' ? <DemoPayroll /> : null /* Task 7 swaps in RealPayroll */}
+      {mode === 'demo' ? <DemoPayroll /> : <RealPayroll />}
     </div>
   );
 }
