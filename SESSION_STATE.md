@@ -1,3 +1,65 @@
+# Session State — 2026-08-27 (expanded GJE modal feature)
+
+## Expanded GJE modal — completed and deployed
+
+**Spec:** `docs/superpowers/specs/2026-08-27-gje-expanded-modal-design.md`  
+**Plan:** `docs/superpowers/plans/2026-08-27-gje-expanded-modal.md`  
+**Task reports:** `.superpowers/sdd/2026-08-27-gje-expanded-modal/task-{1..12}-report.md`
+
+### What was built
+
+1. **Database migration** (`api/src/db/migration-gje-expanded.sql`):
+   - `journal_entry_files` junction table linking journal entries to `file_records`
+   - `created_by TEXT` column on `journal_entries` (operator snapshot JSON)
+   - Backfill: existing `entry_source='auto'` rows without `reference_type` → `'manual'`
+
+2. **Shared helpers** (`api/src/lib/manual-booking.ts`):
+   - `nextManualVoucherNumber(db, tenantId, date)` → `MJ-YYYYMM-NNN` (never reuses tombstoned numbers)
+   - `hasSharedAccount(entryLineCodes, newCodes)` — duplicate‑check predicate
+   - `findSimilarEntryCandidates(db, tenantId, entryDate, totalDebit)` — 409 candidates
+   - `buildFileLinks(fileRow, jeRows)` — linked‑records labels
+
+3. **Extended `POST /bookkeeping/entries`**:
+   - `entry_number` optional → auto‑assigned when omitted
+   - `file_ids: string[]` optional → stored in `journal_entry_files`
+   - `entry_source='manual'` stamped; `created_by` populated
+   - Duplicate check → 409 `similar_entry_exists` unless `duplicate_acknowledged: true`
+
+4. **New endpoints**:
+   - `GET /bookkeeping/entries/manual` — filtered list of hand‑keyed vouchers (excludes petty cash & auto‑entries)
+   - `GET /bookkeeping/entries/next-number?date=` — preview voucher number
+   - `GET /file-storage/:id/linked-records` — reverse lookup of where a file is attached
+
+5. **Reverse & delete changes**:
+   - `DELETE /entries/:id` now tombstones (`deleted_at`) instead of hard delete
+   - `POST /entries/:id/reverse` rejects tombstoned originals; stamps `entry_source='manual'` + `created_by`; enforces period guard on reversal date
+
+6. **Frontend** (`frontend/src/pages/Bookkeeping.tsx`):
+   - GJE modal expanded: voucher preview, attachments section with `DocumentPickerModal`, no‑document confirm, similar‑entry warning dialog
+   - Reverse button on each row in the manual entries list
+   - Closed‑period hint on date picker; Post disabled inside closed periods
+   - `created_by` column visible in list
+
+7. **Document Picker Modal** (`frontend/src/components/DocumentPickerModal.tsx`):
+   - Search + type filter (bank/card statements, invoices, receipts, other)
+   - Multi‑select checkboxes, preview pane, cap 10 attachments
+
+8. **Tests**:
+   - `tests/manual-booking.test.ts` — 14 mock‑db cases (voucher sequencing, similarity, file links)
+   - `tests/manual-booking.spec.ts` — Playwright non‑mutating (3 checks: auto‑number preview, attachments section, reverse button)
+   - `tests/manual-booking-live.ts` — live round‑trip (19 steps) on production, cleaned up
+
+### Deployed URLs
+
+| | URL / version |
+|---|---|
+| **API worker** | `https://opcc-crm-api.ruhan-farhan.workers.dev` (version `ff514cd6`) |
+| **Frontend (test)** | `https://439548c6.opcc-crm-testing.pages.dev` |
+
+Migration applied to remote D1 (`opcc-crm-db`); schema verified with `PRAGMA table_info`.
+
+---
+
 # Session State — 2026-08-24 (both-side Dr/Cr account badges on statement lists)
 
 ## Credit interest → link auto-N/A (deployed v73118ed0)
@@ -210,4 +272,4 @@ Auto bank→invoice matching now links ONE bank tx to MULTIPLE invoices (combine
 
 **Follow-up (same day):** hardened verify-onetomany-live.ts landed (a87d76b) �X PARTIAL=1 read-only mode, finally-unlink cleanup guarantee, strict reversion gate (invoices unpaid AND tx unmatched AND invoice_id NULL), exit-code gate; regression-tests/REGRESSION_SUITE.md now records the 3 multi-invoice checks + 1 split-payment case. Fresh PARTIAL=1 production run: exit 0, all 3 group suggestions correct.
 
-**Deferred-minors sweep (2026-08-25):** all remaining 1:N review nits closed or explicitly waived �X matcher JSDoc accuracy + 3 new group tests (27 total), stmtFileIdFor single-JOIN perf fix, typed/expanded validator tests (13), collision-safe COMBINED pane keys, truthful modal consumer list, auto-link-onetomany.spec.ts now git-tracked with shape-aware group logging. Commits f27c452 bf2e260 ad916db 32c2a97; full evidence in .superpowers/sdd ledger.
+**Deferred-minors sweep (2026-08-25):** all remaining 1:N review nits closed or explicitly waived �X matcher JSDoc accuracy + 3 new group tests (27 total), stmtFileIdFor single-JOIN perf fix, typed/expanded validator tests (13), collision-safe COMBINED pane keys, truthful modal consumer list, auto-link-onetomany.spec.ts now git-tracked with shape-aware group logging. Commits f27c452 bf2e260 ad916db 32c2a97; full evidence in .superpowers/sdd ledger.
