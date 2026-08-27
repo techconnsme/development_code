@@ -265,8 +265,8 @@ card.post('/import', async (c) => {
      card_issuer, card_network, card_number_last4, cardholder_name, currency,
      statement_year, statement_month, period_start, period_end,
      credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date,
-     ocr_text, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`
+     ocr_text, status, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'ocr')`
   ).bind(id, tenantId, file_name || null, file_type || 'application/pdf', file_data || '', r2_key || null,
     card_issuer || null, card_network || null, card_number_last4 || null, cardholder_name || null,
     currency || 'HKD', statement_year || null, statement_month || null,
@@ -289,6 +289,113 @@ card.post('/import', async (c) => {
   await auditLog(c.env.DB, tenantId, 'import', 'card_statement', id, { card_issuer, statement_year, statement_month });
   return c.json({ id, status: 'draft', transactions_count: transactions?.length || 0 }, 201);
 });
+
+// ── Manual card statement entry (no OCR) ──
+card.post('/manual', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const body = await c.req.json();
+  const {
+    card_issuer, card_network, card_number_last4, cardholder_name, currency,
+    statement_year, statement_month, period_start, period_end,
+    credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date,
+    source_file_id, transactions,
+  } = body as any;
+
+  if (!card_issuer?.trim()) return c.json({ error: 'card_issuer is required' }, 400);
+  if (!Array.isArray(transactions) || transactions.length === 0 || transactions.length > 500) {
+    return c.json({ error: 'transactions must be 1–500 rows' }, 400);
+  }
+
+  if (source_file_id) {
+    const fileRow = await db.prepare(
+      'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(source_file_id, tenantId).first();
+    if (!fileRow) return c.json({ error: `file_records id ${source_file_id} not found or not yours` }, 400);
+  }
+
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+    if (!tx.transaction_date || !/^\d{4}-\d{2}-\d{2}$/.test(tx.transaction_date)) {
+      return c.json({ error: `Row ${i + 1}: transaction_date must be YYYY-MM-DD` }, 400);
+    }
+    if (!tx.description?.trim()) {
+      return c.json({ error: `Row ${i + 1}: description is required` }, 400);
+    }
+  }
+
+  const id = `cs-${uuidv4().slice(0, 8)}`;
+  const fileName = `Manual — ${card_issuer.trim()} ${statement_year || ''}-${String(statement_month || '').padStart(2, '0')}`.trim();
+
+  await db.prepare(
+    `INSERT INTO card_statements (id, user_id, file_name, file_type, file_data, r2_key,
+     card_issuer, card_network, card_number_last4, cardholder_name, currency,
+     statement_year, statement_month, period_start, period_end,
+     credit_limit, opening_balance, closing_balance, minimum_payment, payment_due_date,
+     ocr_text, status, source, source_file_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    id, tenantId, fileName, 'application/pdf', '', null,
+    card_issuer.trim(), card_network || null, card_number_last4 || null, cardholder_name || null,
+    currency || 'HKD', statement_year || null, statement_month || null,
+    period_start || null, period_end || null,
+    credit_limit ?? null, opening_balance ?? null, closing_balance ?? null,
+    minimum_payment ?? null, payment_due_date || null, '', 'draft', 'manual', source_file_id || null
+  ).run();
+
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+    await db.prepare(
+      `INSERT INTO card_transactions (id, card_statement_id, user_id, transaction_date, posting_date,
+       description, amount, transaction_type, foreign_currency, foreign_amount, category, reference, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      `ct-${uuidv4().slice(0, 8)}`, id, tenantId,
+      tx.transaction_date, tx.posting_date || null, tx.description.trim(),
+      tx.amount || 0, tx.transaction_type || null, tx.foreign_currency || null,
+      tx.foreign_amount || null, tx.category || null, tx.reference || null, i
+    ).run();
+  }
+
+  await auditLog(db, tenantId, 'create', 'card_statement', id, {
+    source: 'manual', transactions: transactions.length, source_file_id: source_file_id || null,
+  });
+  return c.json({ id, transaction_count: transactions.length }, 201);
+});
+
+// ── Link file to card statement ──
+card.put('/:id/link-file', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const { file_id } = body as { file_id: string };
+
+  const existing = await db.prepare(
+    'SELECT id, source_file_id FROM card_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(id, tenantId).first<{ id: string; source_file_id: string | null }>();
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  if (file_id) {
+    const fileRow = await db.prepare(
+      'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(file_id, tenantId).first();
+    if (!fileRow) return c.json({ error: `file_records id ${file_id} not found or not yours` }, 400);
+  }
+
+  const replacedFileId = existing.source_file_id;
+  await db.prepare(
+    "UPDATE card_statements SET source_file_id = ?, updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
+  ).bind(file_id || null, id).run();
+
+  await auditLog(db, tenantId, 'update', 'card_statement', id, {
+    linked_file_id: file_id || null, replaced_file_id: replacedFileId,
+  });
+  return c.json({ success: true, id });
+});
+
 // ── Confirm draft → active ──
 card.post('/:id/confirm', async (c) => {
   const user = c.get('user');
