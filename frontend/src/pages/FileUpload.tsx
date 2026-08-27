@@ -595,6 +595,73 @@ export default function FileUpload() {
     }
   };
 
+  const handleSaveWithoutAI = async () => {
+    if (files.length === 0) return;
+    setUploading(true);
+    setFileErrors({});
+    setFileStatuses({});
+    setBatchProgress({ done: 0, total: files.length, currentFile: '' });
+
+    let ok = 0;
+    let hasError = false;
+    let idx = 0;
+    for (const file of files) {
+      idx++;
+      const fileIdx = idx - 1;
+      setFileStatuses(prev => ({ ...prev, [fileIdx]: 'processing' }));
+      try {
+        setBatchProgress(prev => ({ ...prev, currentFile: file.name }));
+
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error('Failed to read file'));
+          reader.readAsDataURL(file);
+        });
+
+        const activeClient = localStorage.getItem('activeClient');
+        const headers: Record<string, string> = {};
+        try { const c = JSON.parse(activeClient || '{}'); if (c?.id) headers['X-Active-Client'] = c.id; } catch {}
+
+        await api('/file-storage/upload', {
+          method: 'POST', baseUrl: WORKER_API_BASE,
+          body: {
+            filename: file.name, original_name: file.name,
+            file_type: file.type, file_size: file.size,
+            file_data: base64,
+            folder: (CHANNELS.find(ch => ch.key === channel)?.folder) || 'Others',
+            description, skip_ocr: true,
+          },
+        });
+
+        ok++;
+        setFileStatuses(prev => ({ ...prev, [fileIdx]: 'success' }));
+      } catch (e: any) {
+        hasError = true;
+        setFileStatuses(prev => ({ ...prev, [fileIdx]: 'error' }));
+        setFileErrors(prev => ({ ...prev, [fileIdx]: e.message || 'Unknown error' }));
+        break;
+      }
+    }
+
+    setUploading(false);
+    if (hasError) return;
+
+    setFiles([]);
+    setDescription('');
+    setRejected([]);
+
+    if (ok > 0) {
+      queryClient.invalidateQueries({ queryKey: ['file-storage'] });
+      toast.success(tr(
+        `Saved ${ok} file(s) without AI analysis. Run Analyze later from File Storage.`,
+        `已儲存 ${ok} 個文件（未經 AI 分析）。可稍後在檔案儲存庫中執行分析。`,
+        `已储存 ${ok} 个文件（未经 AI 分析）。可稍后在文件存储库中执行分析。`,
+      ));
+      setTimeout(() => nav('/file-storage'), 800);
+    }
+  };
+
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <h2 className="text-2xl font-bold flex items-center gap-2">
@@ -723,6 +790,10 @@ export default function FileUpload() {
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-2">
                 {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
                 {tr('Upload & Analyze', '上傳並分析', '上传并分析')}
+              </button>
+              <button onClick={handleSaveWithoutAI} disabled={uploading || files.length === 0}
+                className="px-4 py-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground rounded-md text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
+                {tr('Save without AI Analysis', '儲存（不用 AI 分析）', '储存（不用 AI 分析）')}
               </button>
             </div>
           </>
