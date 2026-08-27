@@ -37,7 +37,7 @@ test.describe('Cancel upload rollback', () => {
       await expect(page.locator('h2').filter({ hasText: 'File Upload' }).first()).toBeVisible({ timeout: 10000 });
 
       // Choose "Others" so the OCR-detected bank statement mismatches the channel
-      await page.locator('button').filter({ hasText: /^Others$/ }).first().click();
+      await page.locator('button').filter({ hasText: /^Others \(Receipts, Cash Payments etc\.\)$/ }).first().click();
 
       const fileInput = page.locator('input[type="file"]').first();
       await fileInput.setInputFiles(tmpPath);

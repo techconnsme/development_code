@@ -13,7 +13,7 @@ import { validateFiles, ACCEPT_ATTR, MAX_FILE_BYTES, type RejectedFile, type Rej
 
 // ── Channel types ─────────────────────────────────────────────────────────
 
-type UploadChannel = 'bank_statement' | 'card_statement' | 'sales_invoice' | 'purchase_invoice' | 'cash_invoice' | 'petty_cash' | 'others';
+type UploadChannel = 'bank_statement' | 'card_statement' | 'sales_invoice' | 'purchase_invoice' | 'petty_cash' | 'others';
 
 interface ChannelDef {
   key: UploadChannel;
@@ -30,9 +30,8 @@ const CHANNELS: ChannelDef[] = [
   { key: 'card_statement', label: 'Card Statement', labelZh: '信用卡月結單', labelCn: '信用卡月结单', folder: 'Card Statements', category: 'card_statement' },
   { key: 'sales_invoice', label: 'Sales Invoice', labelZh: '銷售發票', labelCn: '销售发票', folder: 'Invoices', category: 'invoice', direction: 'outgoing' },
   { key: 'purchase_invoice', label: 'Purchase Invoice', labelZh: '採購發票', labelCn: '采购发票', folder: 'Invoices', category: 'invoice', direction: 'incoming' },
-  { key: 'cash_invoice', label: 'Cash Payment', labelZh: '現金付款', labelCn: '现金付款', folder: 'Invoices', category: 'cash_invoice' },
   { key: 'petty_cash', label: 'Petty Cash', labelZh: '零用金', labelCn: '零用金', folder: 'Petty Cash', category: 'petty_cash' },
-  { key: 'others', label: 'Others', labelZh: '其他', labelCn: '其他', folder: 'Others', category: 'general' },
+  { key: 'others', label: 'Others (Receipts, Cash Payments etc.)', labelZh: '其他（收據、現金付款等）', labelCn: '其他（收据、现金付款等）', folder: 'Others', category: 'general' },
 ];
 
 function channelLabel(ch: ChannelDef): string {
@@ -349,7 +348,7 @@ export default function FileUpload() {
       : detectedType;
 
     if ((detectedType && detectedType !== channel) || invoiceDirectionMismatch) {
-      const isInvoiceChannel = channel === 'sales_invoice' || channel === 'purchase_invoice' || channel === 'cash_invoice';
+      const isInvoiceChannel = channel === 'sales_invoice' || channel === 'purchase_invoice';
       const isInvoiceDetected = detectedType === 'invoice';
       if (!(isInvoiceChannel && isInvoiceDetected && !invoiceDirectionMismatch)) {
         const action = await showMismatchDialog({
@@ -433,7 +432,7 @@ export default function FileUpload() {
         return 'review';  // prevent handleUpload from doing a default redirect over us
       }
       return 'ok';
-    } else if ((channel === 'sales_invoice' || channel === 'purchase_invoice' || channel === 'cash_invoice') && result?.invoice_id) {
+    } else if ((channel === 'sales_invoice' || channel === 'purchase_invoice') && result?.invoice_id) {
       const flags = reviewPageFlags(result);
       if (needsReview) {
         if (skipNavigation) { pushToQueue('invoice', result.invoice_id, file.name, flags); return 'review'; }
