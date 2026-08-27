@@ -13,6 +13,7 @@ import { categorizeTransaction, resolveBankAccountCode } from '../lib/transactio
 import { findParentAccountError } from '../lib/account-guard';
 import { getTemporaryAccount } from '../lib/coa-temporary';
 import { checkPeriodOpen } from '../lib/period-guard';
+import { referenceTypeClause } from '../lib/list-filters';
 import { nextManualVoucherNumber, findSimilarEntryCandidates, hasSharedAccount } from '../lib/manual-booking';
 import { createSnapshot, getLatestSnapshot, getSnapshots } from '../lib/journal-snapshots';
 
@@ -166,11 +167,14 @@ bookkeeping.get('/entries', async (c) => {
   const offset = (page - 1) * limit;
   const startDate = c.req.query('start_date');
   const endDate = c.req.query('end_date');
+  // Optional reference_type filter (e.g. other_expense for the Expenses → Others tab);
+  // absent param keeps the historical "all live entries" behavior.
+  const refType = referenceTypeClause(c.req.query('reference_type'));
 
   let query = `SELECT je.*, SUM(jl.debit) as total_debit, SUM(jl.credit) as total_credit
     FROM journal_entries je LEFT JOIN journal_lines jl ON je.id = jl.entry_id
-    WHERE je.user_id = ? AND ${jeLive()}`;
-  const params: any[] = [tenantId];
+    WHERE je.user_id = ? AND ${jeLive()}` + refType.sql;
+  const params: any[] = [tenantId, ...refType.params];
   if (startDate) { query += ' AND je.entry_date >= ?'; params.push(startDate); }
   if (endDate) { query += ' AND je.entry_date <= ?'; params.push(endDate); }
   query += ' GROUP BY je.id ORDER BY je.entry_date DESC, je.created_at DESC LIMIT ? OFFSET ?';
@@ -253,7 +257,12 @@ bookkeeping.get('/entries/:id', async (c) => {
   const entry = await db.prepare('SELECT * FROM journal_entries WHERE id = ? AND user_id = ?').bind(c.req.param('id'), tenantId).first();
   if (!entry) return c.json({ error: 'Entry not found' }, 404);
   const lines = await db.prepare('SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY sort_order').bind(c.req.param('id')).all();
-  return c.json({ ...entry, lines: lines.results });
+  const files = await db.prepare(
+    `SELECT fr.id, fr.filename FROM journal_entry_files jef
+     JOIN file_records fr ON fr.id = jef.file_record_id
+     WHERE jef.entry_id = ?`
+  ).bind(c.req.param('id')).all();
+  return c.json({ ...entry, lines: lines.results, files: files.results });
 });
 
 bookkeeping.get('/entries/:id/audit-trail', async (c) => {
@@ -747,7 +756,7 @@ async function repairCOA(db: any, tenantId: string) {
     if (existingSet.has(pc)) continue;
     const info = toCreate.get(pc)!;
     await db.prepare(
-      'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
     ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, pc, info.name, info.type, info.parent).run();
     existingSet.add(pc);
   }
@@ -783,7 +792,7 @@ bookkeeping.post('/accounts/ensure', bookkeeperMiddleware, async (c) => {
     const grandParent = info?.parent || null;
     try {
       await db.prepare(
-        'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
+        'INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
       ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, pc, name, type, grandParent).run();
       created.push(pc);
       existingSet.add(pc);
@@ -798,7 +807,7 @@ bookkeeping.post('/accounts/ensure', bookkeeperMiddleware, async (c) => {
     const parent = info?.parent || null;
     try {
       await db.prepare(
-        'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
+        'INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
       ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, code, name, type, parent).run();
       created.push(code);
     } catch { skipped.push(code); }
@@ -856,14 +865,14 @@ bookkeeping.post('/accounts', bookkeeperMiddleware, zValidator('json', createAcc
     const pType = info?.type || getCodeType(pc);
     const pParent = info?.parent || null;
     await db.prepare(
-      'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code) VALUES (?, ?, ?, ?, ?, ?)'
     ).bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, pc, pName, pType, pParent).run();
     existingSet.add(pc);
   }
 
   const id = `acc-${uuidv4().slice(0, 8)}`;
   await db.prepare(
-    'INSERT INTO accounts (id, user_id, account_code, account_name, account_type, parent_code, opening_balance) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    'INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type, parent_code, opening_balance) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).bind(id, tenantId, data.account_code, accountName, data.account_type, data.parent_code || null, data.opening_balance || 0).run();
 
   await auditLog(db, user.id, 'create', 'account', data.account_code, { account_name: accountName, account_type: data.account_type });
@@ -1616,6 +1625,7 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const db = c.env.DB;
+  const dryRun = c.req.query('dry_run') === 'true';
 
   // Count and delete tombstoned entries so they can be regenerated
   const staleCount = await db.prepare(
@@ -1636,6 +1646,7 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
      WHERE user_id = ? AND reference_type = 'bank_transaction' AND ${jeLive('journal_entries')}`
   ).bind(tenantId).all();
   const refSet = new Set((existingRefs.results as any[]).map(r => r.reference_id));
+  const suggestions: any[] = [];
 
   const txRows = await db.prepare(
     `SELECT bt.*, i.invoice_number, i.supplier_id, bs.bank_name, bs.account_number
@@ -1731,17 +1742,48 @@ bookkeeping.post('/auto-generate-entries', bookkeeperMiddleware, async (c) => {
 
     if (lines.length === 0) continue;
 
-    await db.prepare(
-      'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).bind(entryId, tenantId, entryNum, tx.transaction_date, desc + invInfo, 'bank_transaction', tx.id).run();
+    // Determine confidence based on categorization source
+    const confidence = cat?.confidence === 'exact' ? 'confirmed' : 'needs_review';
+    const reason = cat?.tag
+      ? `${cat.tag} rule matched`
+      : isDirector(desc)
+        ? 'Director name detected'
+        : cat?.confidence === 'fuzzy'
+          ? 'Fuzzy keyword match'
+          : 'Fallback / unmapped';
 
-    for (let i = 0; i < lines.length; i++) {
-      const l = lines[i];
+    if (dryRun) {
+      suggestions.push({
+        transaction_id: tx.id,
+        description: desc + invInfo,
+        amount: tx.deposit_amount || tx.withdrawal_amount,
+        direction: dir,
+        transaction_date: tx.transaction_date,
+        bank_account_code: stmtBankCode,
+        bank_account_name: nameOf(stmtBankCode),
+        contra_account_code: lines[0].code === stmtBankCode ? (lines[1]?.code || lines[0].code) : lines[0].code,
+        contra_account_name: lines[0].code === stmtBankCode ? (lines[1]?.name || lines[0].name) : lines[0].name,
+        confidence,
+        reason,
+      });
+    } else {
+      // Original INSERT logic (unchanged)
       await db.prepare(
-        'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).bind(`jl-${uuidv4().slice(0, 8)}`, entryId, l.code, l.name, desc + invInfo, l.debit, l.credit, i).run();
+        'INSERT INTO journal_entries (id, user_id, entry_number, entry_date, description, reference_type, reference_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(entryId, tenantId, entryNum, tx.transaction_date, desc + invInfo, 'bank_transaction', tx.id).run();
+
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        await db.prepare(
+          'INSERT INTO journal_lines (id, entry_id, account_code, account_name, description, debit, credit, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(`jl-${uuidv4().slice(0, 8)}`, entryId, l.code, l.name, desc + invInfo, l.debit, l.credit, i).run();
+      }
+      created++;
     }
-    created++;
+  }
+
+  if (dryRun) {
+    return c.json({ suggestions, total_unposted: txRows.results.length, skipped_noise: created });
   }
 
   if (created > 0) {
@@ -2003,7 +2045,7 @@ bookkeeping.post('/profits-tax-provision', bookkeeperMiddleware, async (c) => {
   for (const [code, name, type] of [['81101', 'Current Year Profits Tax 本年度利得稅', 'expense'], ['21301', 'Profits Tax Payable 應付利得稅', 'liability']] as const) {
     const ex = await db.prepare('SELECT id FROM accounts WHERE user_id = ? AND account_code = ?').bind(tenantId, code).first();
     if (!ex) {
-      await db.prepare('INSERT INTO accounts (id, user_id, account_code, account_name, account_type) VALUES (?,?,?,?,?)')
+      await db.prepare('INSERT OR IGNORE INTO accounts (id, user_id, account_code, account_name, account_type) VALUES (?,?,?,?,?)')
         .bind(`acc-${uuidv4().slice(0, 8)}`, tenantId, code, name, type).run();
     }
   }
