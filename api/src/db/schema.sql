@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   pdf_url TEXT,
   receipt_number TEXT,
   paid_date TEXT,
+  source TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(user_id, invoice_number)
@@ -561,9 +562,13 @@ CREATE TABLE IF NOT EXISTS bank_statements (
   page_count INTEGER,
   ocr_text TEXT,
   status TEXT NOT NULL DEFAULT 'active',
+  source TEXT,
+  source_file_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_bank_stmt_source_file ON bank_statements(source_file_id);
 
 -- Bank Transactions (individual records within a statement)
 CREATE TABLE IF NOT EXISTS bank_transactions (
