@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
 import { useToast } from '../components/Toast';
+import DocumentPickerModal, { type PickedFile } from '../components/DocumentPickerModal';
 import { Eye, Trash2, Landmark, ChevronDown, ChevronRight, FileText, Link2, Check, X, Zap, Search, Tag, Download, Upload, FilePlus, Pencil, CreditCard, AlertTriangle, Ban, Sparkles, CheckCircle2 } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
 import { useDateFilter } from '../contexts/DateFilterContext';
@@ -209,20 +210,16 @@ function ManualBankStatementEditor({ onSave, onCancel }: { onSave: (data: any) =
       </div>
 
       {showPicker && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-background rounded-lg p-4 max-w-lg w-full max-h-[80vh] overflow-y-auto">
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="font-semibold">{tr('Choose File', '選擇文件', '选择文件')}</h3>
-              <button onClick={() => setShowPicker(false)} className="p-1 hover:bg-muted rounded">✕</button>
-            </div>
-            <p className="text-sm text-muted-foreground mb-3">
-              {tr('Select a file from File Storage to link to this statement.', '從檔案儲存庫選擇要連結到此月結單的文件。', '从文件存储库选择要连结到此月结单的文件。')}
-            </p>
-            <button onClick={() => { setShowPicker(false); }} className="text-sm text-primary hover:underline">
-              {tr('Open File Storage in new tab', '在新分頁打開檔案儲存庫', '在新标签页打开文件存储库')}
-            </button>
-          </div>
-        </div>
+        <DocumentPickerModal
+          alreadyPicked={[]}
+          onPick={(picked: PickedFile[]) => {
+            if (picked[0]) {
+              setSourceFileId(picked[0].id);
+              setPickedFileName(picked[0].filename);
+            }
+          }}
+          onClose={() => setShowPicker(false)}
+        />
       )}
     </div>
   );

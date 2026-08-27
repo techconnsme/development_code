@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
+import DocumentPickerModal, { type PickedFile } from '../components/DocumentPickerModal';
 import { tr } from '../lib/i18nHelpers';
 import { Eye, Trash2, AlertTriangle, CheckCircle, ChevronDown, Pencil, FileText, CreditCard, Building2, Download, FilePlus } from 'lucide-react';
 import ContinuityChain from '../components/ContinuityChain';
@@ -118,6 +119,9 @@ function ManualCardStatementEditor({ onSave, onCancel }: { onSave: (data: any) =
   const [txRows, setTxRows] = useState<CardTxRow[]>([
     { transaction_date: '', description: '', amount: 0, transaction_type: 'purchase', reference: '' },
   ]);
+  const [sourceFileId, setSourceFileId] = useState<string | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickedFileName, setPickedFileName] = useState<string | null>(null);
 
   const addRow = () => setTxRows([...txRows, { transaction_date: '', description: '', amount: 0, transaction_type: 'purchase', reference: '' }]);
   const removeRow = (idx: number) => setTxRows(txRows.filter((_, i) => i !== idx));
@@ -175,6 +179,19 @@ function ManualCardStatementEditor({ onSave, onCancel }: { onSave: (data: any) =
           <label className="text-xs font-medium">{tr('Closing Balance', '期末餘額', '期末余额')}</label>
           <input type="number" step="0.01" value={closingBalance} onChange={e => setClosingBalance(e.target.value ? Number(e.target.value) : '')} className="w-full border rounded px-2 py-1 text-sm" />
         </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Attach File (optional)', '附加文件（可選）', '附加文件（可选）')}</label>
+          {pickedFileName ? (
+            <div className="flex items-center gap-1 text-sm bg-background border rounded px-2 py-1">
+              <span className="truncate">{pickedFileName}</span>
+              <button type="button" onClick={() => { setSourceFileId(null); setPickedFileName(null); }} className="text-destructive text-xs ml-1">✕</button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => setShowPicker(true)} className="w-full text-left border rounded px-2 py-1 text-sm text-muted-foreground hover:bg-background">
+              + {tr('Choose file', '選擇文件', '选择文件')}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -216,6 +233,7 @@ function ManualCardStatementEditor({ onSave, onCancel }: { onSave: (data: any) =
             card_issuer: cardIssuer, card_network: cardNetwork, card_number_last4: cardLast4,
             cardholder_name: cardholderName, currency, statement_year: year, statement_month: month,
             credit_limit: creditLimit || null, opening_balance: openingBalance || null, closing_balance: closingBalance || null,
+            source_file_id: sourceFileId,
             transactions: txRows.map((tx, i) => ({ ...tx, sort_order: i })),
           });
         }} disabled={!canSave}
@@ -223,6 +241,19 @@ function ManualCardStatementEditor({ onSave, onCancel }: { onSave: (data: any) =
           {tr('Save & Review', '儲存並審核', '储存并审核')}
         </button>
       </div>
+
+      {showPicker && (
+        <DocumentPickerModal
+          alreadyPicked={[]}
+          onPick={(picked: PickedFile[]) => {
+            if (picked[0]) {
+              setSourceFileId(picked[0].id);
+              setPickedFileName(picked[0].filename);
+            }
+          }}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
     </div>
   );
 }
