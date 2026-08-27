@@ -65,6 +65,169 @@ interface Transaction {
   payment_entry_number?: string | null;
 }
 
+interface ManualTxRow {
+  transaction_date: string;
+  description: string;
+  deposit_amount: number;
+  withdrawal_amount: number;
+  balance: number;
+  reference: string;
+}
+
+function ManualBankStatementEditor({ onSave, onCancel }: { onSave: (data: any) => void; onCancel: () => void }) {
+  const { t } = useTranslation();
+  const [bankName, setBankName] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [currency, setCurrency] = useState('HKD');
+  const [openingBalance, setOpeningBalance] = useState<number | ''>('');
+  const [closingBalance, setClosingBalance] = useState<number | ''>('');
+  const [sourceFileId, setSourceFileId] = useState<string | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickedFileName, setPickedFileName] = useState<string | null>(null);
+  const [txRows, setTxRows] = useState<ManualTxRow[]>([
+    { transaction_date: '', description: '', deposit_amount: 0, withdrawal_amount: 0, balance: 0, reference: '' },
+  ]);
+
+  const addRow = () => setTxRows([...txRows, { transaction_date: '', description: '', deposit_amount: 0, withdrawal_amount: 0, balance: 0, reference: '' }]);
+  const removeRow = (idx: number) => setTxRows(txRows.filter((_, i) => i !== idx));
+
+  const updateRow = (idx: number, field: keyof ManualTxRow, value: any) => {
+    const rows = [...txRows];
+    (rows[idx] as any)[field] = value;
+    if (field === 'deposit_amount' && (value as number) > 0) rows[idx].withdrawal_amount = 0;
+    if (field === 'withdrawal_amount' && (value as number) > 0) rows[idx].deposit_amount = 0;
+    // Auto-fill balance
+    if (field === 'deposit_amount' || field === 'withdrawal_amount' || field === 'balance') {
+      if (idx > 0) {
+        const prevBalance = rows[idx - 1].balance || 0;
+        rows[idx].balance = prevBalance + (rows[idx].deposit_amount || 0) - (rows[idx].withdrawal_amount || 0);
+      }
+    }
+    setTxRows(rows);
+  };
+
+  const canSave = bankName.trim() && txRows.length > 0 && txRows.every(tx => tx.transaction_date && tx.description);
+
+  return (
+    <div className="border rounded-lg p-4 bg-muted/30 space-y-4">
+      <h3 className="font-semibold text-sm">{tr('Manual Bank Statement Entry', '手動銀行月結單輸入', '手动银行月结单输入')}</h3>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div>
+          <label className="text-xs font-medium">{tr('Bank Name', '銀行名稱', '银行名称')} *</label>
+          <input value={bankName} onChange={e => setBankName(e.target.value)} className="w-full border rounded px-2 py-1 text-sm" placeholder="HSBC" />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Account Number', '賬號', '账号')}</label>
+          <input value={accountNumber} onChange={e => setAccountNumber(e.target.value)} className="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Year', '年份', '年份')}</label>
+          <input type="number" value={year} onChange={e => setYear(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Month', '月份', '月份')}</label>
+          <select value={month} onChange={e => setMonth(Number(e.target.value))} className="w-full border rounded px-2 py-1 text-sm">
+            {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>{i + 1}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Currency', '貨幣', '货币')}</label>
+          <select value={currency} onChange={e => setCurrency(e.target.value)} className="w-full border rounded px-2 py-1 text-sm">
+            <option value="HKD">HKD</option><option value="USD">USD</option><option value="CNY">CNY</option><option value="EUR">EUR</option><option value="GBP">GBP</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Opening Balance', '期初餘額', '期初余额')}</label>
+          <input type="number" step="0.01" value={openingBalance} onChange={e => setOpeningBalance(e.target.value ? Number(e.target.value) : '')} className="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Closing Balance', '期末餘額', '期末余额')}</label>
+          <input type="number" step="0.01" value={closingBalance} onChange={e => setClosingBalance(e.target.value ? Number(e.target.value) : '')} className="w-full border rounded px-2 py-1 text-sm" />
+        </div>
+        <div>
+          <label className="text-xs font-medium">{tr('Attach File (optional)', '附加文件（可選）', '附加文件（可选）')}</label>
+          {pickedFileName ? (
+            <div className="flex items-center gap-1 text-sm bg-background border rounded px-2 py-1">
+              <span className="truncate">{pickedFileName}</span>
+              <button onClick={() => { setSourceFileId(null); setPickedFileName(null); }} className="text-destructive text-xs ml-1">✕</button>
+            </div>
+          ) : (
+            <button onClick={() => setShowPicker(true)} type="button" className="w-full text-left border rounded px-2 py-1 text-sm text-muted-foreground hover:bg-background">
+              + {tr('Choose file', '選擇文件', '选择文件')}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Transaction grid */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-xs text-muted-foreground">
+              <th className="py-1 px-1 w-28">{tr('Date', '日期', '日期')} *</th>
+              <th className="py-1 px-1">{tr('Description', '描述', '描述')} *</th>
+              <th className="py-1 px-1 w-28 text-right">{tr('Deposit', '存入', '存入')}</th>
+              <th className="py-1 px-1 w-28 text-right">{tr('Withdrawal', '支出', '支出')}</th>
+              <th className="py-1 px-1 w-28 text-right">{tr('Balance', '餘額', '余额')}</th>
+              <th className="py-1 px-1 w-24">{tr('Ref', '參考', '参考')}</th>
+              <th className="py-1 px-1 w-8"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {txRows.map((tx, idx) => (
+              <tr key={idx} className="border-b">
+                <td className="py-1 px-1"><input type="date" value={tx.transaction_date} onChange={e => updateRow(idx, 'transaction_date', e.target.value)} className="w-full border rounded px-1 py-0.5 text-xs" /></td>
+                <td className="py-1 px-1"><input value={tx.description} onChange={e => updateRow(idx, 'description', e.target.value)} className="w-full border rounded px-1 py-0.5 text-xs" /></td>
+                <td className="py-1 px-1"><input type="number" step="0.01" value={tx.deposit_amount || ''} onChange={e => updateRow(idx, 'deposit_amount', Number(e.target.value) || 0)} className="w-full border rounded px-1 py-0.5 text-xs text-right" /></td>
+                <td className="py-1 px-1"><input type="number" step="0.01" value={tx.withdrawal_amount || ''} onChange={e => updateRow(idx, 'withdrawal_amount', Number(e.target.value) || 0)} className="w-full border rounded px-1 py-0.5 text-xs text-right" /></td>
+                <td className="py-1 px-1"><input type="number" step="0.01" value={tx.balance} onChange={e => updateRow(idx, 'balance', Number(e.target.value) || 0)} className="w-full border rounded px-1 py-0.5 text-xs text-right" /></td>
+                <td className="py-1 px-1"><input value={tx.reference} onChange={e => updateRow(idx, 'reference', e.target.value)} className="w-full border rounded px-1 py-0.5 text-xs" /></td>
+                <td className="py-1 px-1">{txRows.length > 1 && <button onClick={() => removeRow(idx)} className="text-destructive text-xs">✕</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <button onClick={addRow} className="text-xs text-primary hover:underline">+ {tr('Add Row', '新增列', '新增列')}</button>
+
+      <div className="flex justify-end gap-2">
+        <button onClick={onCancel} className="px-3 py-1.5 border rounded-md text-sm hover:bg-muted">{tr('Cancel', '取消', '取消')}</button>
+        <button onClick={() => {
+          onSave({
+            bank_name: bankName, account_number: accountNumber, currency,
+            statement_year: year, statement_month: month,
+            opening_balance: openingBalance || null, closing_balance: closingBalance || null,
+            source_file_id: sourceFileId,
+            transactions: txRows.map((tx, i) => ({ ...tx, sort_order: i })),
+          });
+        }} disabled={!canSave}
+          className="px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50">
+          {tr('Save & Review', '儲存並審核', '储存并审核')}
+        </button>
+      </div>
+
+      {showPicker && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-background rounded-lg p-4 max-w-lg w-full max-h-[80vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="font-semibold">{tr('Choose File', '選擇文件', '选择文件')}</h3>
+              <button onClick={() => setShowPicker(false)} className="p-1 hover:bg-muted rounded">✕</button>
+            </div>
+            <p className="text-sm text-muted-foreground mb-3">
+              {tr('Select a file from File Storage to link to this statement.', '從檔案儲存庫選擇要連結到此月結單的文件。', '从文件存储库选择要连结到此月结单的文件。')}
+            </p>
+            <button onClick={() => { setShowPicker(false); }} className="text-sm text-primary hover:underline">
+              {tr('Open File Storage in new tab', '在新分頁打開檔案儲存庫', '在新标签页打开文件存储库')}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function BankStatements() {
   const { t, i18n } = useTranslation();
   const toast = useToast();
@@ -98,6 +261,7 @@ export default function BankStatements() {
   const [hideReconciledCoa, setHideReconciledCoa] = useState(false);
   const [autoMatchResults, setAutoMatchResults] = useState<any[] | null>(null);
   const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
+  const [showManualEntry, setShowManualEntry] = useState(false);
 
   const highlightTxRef = React.useRef<string | null>(null);
   const { highlight: highlightId, highlightTx } = useHighlightTarget();
@@ -409,7 +573,28 @@ export default function BankStatements() {
       <div>
         <h2 className="text-2xl font-bold">{t('bank.title')}</h2>
         <p className="text-muted-foreground mt-1">{t('bank.desc')}</p>
+        <button onClick={() => setShowManualEntry(!showManualEntry)}
+          className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90">
+          <FilePlus className="h-4 w-4" />
+          {tr('Manual Entry', '手動輸入', '手动输入')}
+        </button>
       </div>
+
+      {showManualEntry && (
+        <ManualBankStatementEditor
+          onSave={async (data) => {
+            try {
+              const res = await api('/bank-statements/manual', { method: 'POST', body: data }) as any;
+              toast.success(tr('Manual statement created — review to post', '手動報表已建立——請審核後入帳', '手动报表已建立——请审核后入账'));
+              setShowManualEntry(false);
+              navigate(`/bank-statements/review/${res.id}`);
+            } catch (e: any) {
+              toast.error(e?.message || 'Failed to create manual statement');
+            }
+          }}
+          onCancel={() => setShowManualEntry(false)}
+        />
+      )}
 
       {activeFilter === 'unmatched' && (
         <div className="flex items-center justify-between bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-4 py-2.5">
@@ -1412,7 +1597,7 @@ function LinkedDocModal({ txId, onClose, onLinkInvoice, onLinkCard }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="bg-card border rounded-xl p-6 w-full max-w-5xl mx-4 max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-card border rounded-xl p-6 w-full max-w-5xl mx-4 h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <h3 className="font-semibold flex items-center gap-2 mb-3"><Link2 className="h-4 w-4" /> {tr('Link Document', '連結文件', '连结文件')}</h3>
 
         {/* Transaction context */}
