@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
-import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, X, ExternalLink } from 'lucide-react';
+import { Plus, Download, Save, RefreshCw, ChevronRight, ChevronDown, AlertTriangle, X, ExternalLink, Paperclip, RotateCcw, Pencil } from 'lucide-react';
 import { useHighlightTarget } from '../hooks/useHighlightTarget';
 import { useAuth } from '../contexts/AuthContext';
 import { tr } from '../lib/i18nHelpers';
@@ -13,6 +13,7 @@ import DropdownSelect from '../components/DropdownSelect';
 import SlideOpen from '../components/SlideOpen';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import PnlFormulaBanner from '../components/PnlFormulaBanner';
+import DocumentPickerModal, { type PickedFile } from '../components/DocumentPickerModal';
 
 export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'entries' | 'accounts' | 'trial' | 'pl' | 'bs' | 'ledger' | 'export'; hideTabs?: boolean }) {
   const { i18n } = useTranslation();
@@ -42,6 +43,9 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [searchParams, setSearchParams] = useSearchParams();
   const entryRowRef = useRef<HTMLTableRowElement | null>(null);
   const navigate = useNavigate();
+  const [showPicker, setShowPicker] = useState(false);
+  const [confirmNoDocs, setConfirmNoDocs] = useState(false);
+  const [similarEntries, setSimilarEntries] = useState<any[] | null>(null);
 
   // Deep-link a bank transaction into its statement card on the Bank Statements page
   const handlePostClick = (bankStatementId: string, transactionId: string) => {
@@ -58,7 +62,9 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [entryForm, setEntryForm] = useState({
     entry_number: '', entry_date: new Date().toISOString().split('T')[0], description: '',
     lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0, project: '' }],
+    files: [] as PickedFile[],
   });
+  const [overrideVoucher, setOverrideVoucher] = useState(false);
 
   const { data: entries } = useQuery({
     queryKey: ['entries', startDate, endDate],
@@ -162,10 +168,51 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
     refetchOnMount: 'always',
   });
 
+  const { data: closedPeriods } = useQuery({
+    queryKey: ['closed-periods'],
+    queryFn: () => api('/bookkeeping/closed-periods'),
+    enabled: showEntryForm,
+  });
+  const closedHit = (closedPeriods?.data || []).find(
+    (p: any) => entryForm.entry_date >= p.period_start && entryForm.entry_date <= p.period_end,
+  );
+
+  const { data: nextNumber } = useQuery({
+    queryKey: ['next-number', entryForm.entry_date],
+    queryFn: () => api(`/bookkeeping/entries/next-number?date=${entryForm.entry_date}`),
+    enabled: showEntryForm,
+  });
+
+  const linkQueries = useQueries({
+    queries: entryForm.files.map(f => ({
+      queryKey: ['file-links', f.id],
+      queryFn: () => api(`/file-storage/${f.id}/linked-records`),
+    })),
+  });
+  const fileWarnings = entryForm.files
+    .map((f, i) => ({ file: f, links: (linkQueries[i]?.data?.links || []) as any[] }))
+    .filter(w => w.links.length > 0);
+
 
   const createEntry = useMutation({
     mutationFn: (body: any) => api('/bookkeeping/entries', { method: 'POST', body }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['entries'] }); setShowEntryForm(false); },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['entries'] }); setShowEntryForm(false); setConfirmNoDocs(false); },
+    onError: (err: any) => {
+      if (err?.body?.error_code === 'similar_entry_exists') {
+        setSimilarEntries(err.body.similar_entries || []);
+        return;
+      }
+      toast.error(err?.message || tr('Failed to post', '記錄失敗', '记录失败'));
+    },
+  });
+
+  const reverseEntry = useMutation({
+    mutationFn: (id: string) => api(`/bookkeeping/entries/${id}/reverse`, { method: 'POST' }),
+    onSuccess: (data: any) => {
+      toast.success(tr(`Reversal posted: ${data.entry_number}`, `已記錄沖銷分錄 ${data.entry_number}`, `已记录冲销分录 ${data.entry_number}`));
+      queryClient.invalidateQueries({ queryKey: ['entries'] });
+    },
+    onError: (err: any) => toast.error(err?.message || tr('Reversal failed', '沖銷失敗', '冲销失败')),
   });
 
   const autoGenerateMut = useMutation({
@@ -227,7 +274,19 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   }, [entryForm.lines]);
   const canSubmit = totals.balanced && entryForm.lines.length >= 2 && !createEntry.isPending;
 
-  function suggestVoucherNumber(entryRows: any[] | undefined, date: string, prefix = 'GJ'): string {
+  function handlePost() {
+    if (!canSubmit || createEntry.isPending) return;
+    if (entryForm.files.length === 0 && !confirmNoDocs) { setConfirmNoDocs(true); return; }
+    const payload = {
+      ...entryForm,
+      entry_number: overrideVoucher ? entryForm.entry_number : undefined,
+      file_ids: entryForm.files.map(f => f.id),
+      duplicate_acknowledged: false,
+    };
+    createEntry.mutate(payload);
+  }
+
+  function suggestVoucherNumber(entryRows: any[] | undefined, date: string, prefix = 'MJ'): string {
     const ym = date.slice(0, 7).replace(/-/g, '');
     const pattern = `${prefix}-${ym}-`;
     let maxSeq = 0;
@@ -243,12 +302,14 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   // Reset form with fresh voucher suggestion when modal opens
   useEffect(() => {
     if (!showEntryForm) return;
+    setOverrideVoucher(false);
     const today = new Date().toISOString().split('T')[0];
     setEntryForm({
-      entry_number: suggestVoucherNumber(entries?.data, today),
+      entry_number: '',
       entry_date: today,
       description: '',
       lines: [{ account_code: '', account_name: '', description: '', debit: 0, credit: 0, project: '' }],
+      files: [],
     });
   }, [showEntryForm]);
 
@@ -417,7 +478,8 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                 <th className="text-right p-3">{tr('Debit ($Dr$)', '借方 ($Dr$)', '借方 ($Dr$)')}</th>
                 <th className="text-right p-3">{tr('Credit ($Cr$)', '貸方 ($Cr$)', '贷方 ($Cr$)')}</th>
                 <th className="text-left p-3">{tr('Status', '狀態', '状态')}</th>
-                <th className="text-center p-3 w-[80px]">{tr('Actions', '操作', '操作')}</th>
+                <th className="text-left p-3">{tr('Created by', '建立者', '建立者')}</th>
+                <th className="text-center p-3 w-[100px]">{tr('Actions', '操作', '操作')}</th>
               </tr>
             </thead>
             <tbody>
@@ -429,25 +491,42 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                       {expandedId === e.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                     </span>
                   </td>
-                  <td className="p-3 font-medium font-mono text-xs">{e.entry_number}</td>
+                  <td className="p-3 font-medium font-mono text-xs">
+                    {e.entry_number}
+                    {e.reversed && (
+                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-950/40">
+                        ↩ {tr('reversed', '已沖銷', '已冲销')}
+                      </span>
+                    )}
+                  </td>
                   <td className="p-3">{e.entry_date}</td>
                   <td className="p-3 max-w-[200px] truncate" title={e.description}>{e.description}</td>
                   <td className="p-3 text-right font-mono">{e.total_debit > 0 ? '$' + fmtMoney(e.total_debit) : ''}</td>
                   <td className="p-3 text-right font-mono">{e.total_credit > 0 ? '$' + fmtMoney(e.total_credit) : ''}</td>
                   <td className="p-3">{statusBadge(e.status)}</td>
+                  <td className="p-3 text-xs text-muted-foreground">
+                    {e.created_by?.name || e.created_by?.email || '—'}
+                  </td>
                   <td className="p-3 text-center">
                     <div className="flex items-center justify-center gap-2">
                       <button onClick={(ev) => { ev.stopPropagation(); toggleEntryDetail(e.id); }} className="text-primary text-xs hover:underline" title={tr('View details & audit trail', '查看詳情及審計軌跡', '查看详情及审计轨迹')}>
                         {expandedId === e.id ? tr('Hide', '隱藏', '隐藏') : tr('View', '查看', '查看')}
                       </button>
                       {!isStaff && (
-                        <button onClick={(ev) => { ev.stopPropagation(); if (!confirm(tr('Confirm delete? This action cannot be undone.', '確定要刪除此分錄嗎？此操作不可撤銷。', '确定要删除此分录吗？此操作不可撤销。'))) return; api(`/bookkeeping/entries/${e.id}`, { method: 'DELETE' }).then(() => { queryClient.invalidateQueries({ queryKey: ['entries'] }); }).catch(err => toast.info(tr('Delete failed: ', '刪除失敗：', '删除失败：') + (err.message || ''))); }} className="text-destructive text-xs hover:underline">{tr('Delete', '刪除', '删除')}</button>
+                        <>
+                          <button onClick={(ev) => { ev.stopPropagation(); if (window.confirm(tr(`Post a reversal of ${e.entry_number}?`, `記錄 ${e.entry_number} 的沖銷分錄？`, `记录 ${e.entry_number} 的冲销分录？`))) reverseEntry.mutate(e.id); }}
+                            className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+                            title={tr('Reverse entry', '沖銷分錄', '冲销分录')}>
+                            <RotateCcw className="h-4 w-4" />
+                          </button>
+                          <button onClick={(ev) => { ev.stopPropagation(); if (!confirm(tr('Confirm delete? This action cannot be undone.', '確定要刪除此分錄嗎？此操作不可撤銷。', '确定要删除此分录吗？此操作不可撤销。'))) return; api(`/bookkeeping/entries/${e.id}`, { method: 'DELETE' }).then(() => { queryClient.invalidateQueries({ queryKey: ['entries'] }); }).catch(err => toast.info(tr('Delete failed: ', '刪除失敗：', '删除失败：') + (err.message || ''))); }} className="text-destructive text-xs hover:underline">{tr('Delete', '刪除', '删除')}</button>
+                        </>
                       )}
                     </div>
                   </td>
                 </tr>
                 <tr className="border-b">
-                  <td colSpan={8} className="p-0">
+                  <td colSpan={9} className="p-0">
                     <SlideOpen open={expandedId === e.id}>
                       <div className="px-8 py-3 bg-muted/20">
                         {loadingDetail === e.id ? (
@@ -1104,19 +1183,37 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto" onClick={() => setShowEntryForm(false)}>
           <div className="bg-card border rounded-xl p-6 w-full max-w-4xl mx-4 my-8 space-y-4" onClick={(e) => e.stopPropagation()}>
             <h3 className="font-bold text-lg">{tr('Create / Edit Journal Entry', '輸入日誌帳', '输入日志帐')}</h3>
-            <form onSubmit={(e) => { e.preventDefault(); createEntry.mutate(entryForm); }} className="space-y-3">
+            <form className="space-y-3">
               {/* Header fields: Voucher No., Date, Narration */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">{tr('Voucher No.', '總帳 #', '总帐 #')}</label>
                   <div className="flex items-center gap-2">
-                    <input required value={entryForm.entry_number}
-                      onChange={(e) => setEntryForm({ ...entryForm, entry_number: e.target.value })}
-                      placeholder="GJ000001" className="flex-1 px-3 py-2 border rounded-md bg-background text-sm font-mono" />
-                    <button type="button" title={tr('Auto-Generate', '自動產生', '自动产生')}
-                      onClick={() => setEntryForm({ ...entryForm, entry_number: suggestVoucherNumber(entries?.data, entryForm.entry_date) })}
+                    {overrideVoucher ? (
+                      <input value={entryForm.entry_number}
+                        onChange={(e) => setEntryForm({ ...entryForm, entry_number: e.target.value })}
+                        placeholder="MJ-202608-001" className="flex-1 px-3 py-2 border rounded-md bg-background text-sm font-mono" />
+                    ) : (
+                      <div className="flex-1 px-3 py-2 border rounded-md bg-muted text-sm font-mono text-muted-foreground">
+                        {nextNumber?.entry_number || suggestVoucherNumber(entries?.data, entryForm.entry_date)}
+                      </div>
+                    )}
+                    <button type="button" 
+                      onClick={() => {
+                        if (!overrideVoucher) {
+                          setOverrideVoucher(true);
+                          setEntryForm({ ...entryForm, entry_number: nextNumber?.entry_number || suggestVoucherNumber(entries?.data, entryForm.entry_date) });
+                        } else {
+                          setOverrideVoucher(false);
+                          setEntryForm({ ...entryForm, entry_number: '' });
+                        }
+                      }}
                       className="px-2.5 py-2 border rounded-md text-xs hover:bg-muted flex items-center gap-1 shrink-0">
-                      <RefreshCw className="h-3 w-3" /> {tr('Auto', '🔄', '🔄')}
+                      {overrideVoucher ? (
+                        <><RefreshCw className="h-3 w-3" /> {tr('Auto', '🔄', '🔄')}</>
+                      ) : (
+                        <><Pencil className="h-3 w-3" /> {tr('Override', '覆寫', '覆写')}</>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -1230,6 +1327,51 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                 </div>
               </div>
 
+              {/* Closed period hint */}
+              {closedHit && (
+                <p className="text-xs text-red-600">
+                  {tr('This date falls in a closed period — posting is locked.', '此日期屬於已關帳期間 — 記帳已鎖定。', '此日期属于已关账期间 — 记账已锁定。')}
+                </p>
+              )}
+
+              {/* Attachments section */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-medium text-muted-foreground">{tr('Supporting documents', '證明文件', '证明文件')}</span>
+                  {entryForm.files.map(f => (
+                    <span key={f.id} className="inline-flex items-center gap-1 text-xs border rounded-md px-2 py-1">
+                      <Paperclip className="h-3 w-3" />{f.filename}
+                      <button onClick={() => setEntryForm({ ...entryForm, files: entryForm.files.filter(x => x.id !== f.id) })}
+                        className="text-muted-foreground hover:text-destructive"><X className="h-3 w-3" /></button>
+                    </span>
+                  ))}
+                  <button onClick={() => setShowPicker(true)} disabled={entryForm.files.length >= 10}
+                    className="text-xs text-primary hover:underline disabled:opacity-50">
+                    {tr('+ attach documents', '+ 附加文件', '+ 附加文件')}
+                  </button>
+                </div>
+                {fileWarnings.map(w => (
+                  <div key={w.file.id} className="flex items-start gap-2 text-xs bg-amber-100 dark:bg-amber-950/40 text-amber-800 rounded-md px-3 py-2">
+                    <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>
+                      <b>{w.file.filename}</b>{' '}
+                      {tr('is already linked to:', '已連結至：', '已链接至：')}{' '}
+                      {w.links.map(l => l.label).join('; ')}
+                    </span>
+                  </div>
+                ))}
+                {confirmNoDocs && entryForm.files.length === 0 && (
+                  <div className="flex items-start gap-2 text-xs bg-amber-100 dark:bg-amber-950/40 text-amber-800 rounded-md px-3 py-2">
+                    <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>{tr(
+                      'No supporting document attached. HK companies should keep records supporting each entry — post anyway?',
+                      '未附加證明文件。香港公司應保留每筆記帳的證明文件 — 仍要記錄？',
+                      '未附加证明文件。香港公司应保留每笔记账的证明文件 — 仍要记录？',
+                    )}</span>
+                  </div>
+                )}
+              </div>
+
               {/* Balance check footer */}
               <div className="border rounded-md p-4 space-y-2 bg-muted/20">
                 <div className="flex justify-end gap-8 text-sm">
@@ -1258,13 +1400,19 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
               </div>
 
               <div className="flex gap-3 justify-end pt-2">
-                <button type="button" onClick={() => setShowEntryForm(false)} className="px-4 py-2 border rounded-md text-sm">
+                <button type="button" onClick={() => { setShowEntryForm(false); setConfirmNoDocs(false); }} className="px-4 py-2 border rounded-md text-sm">
                   {tr('Cancel', '取消', '取消')}
                 </button>
-                <button type="submit" disabled={!canSubmit}
+                <button type="button" onClick={handlePost} disabled={!canSubmit || createEntry.isPending}
                   title={!totals.balanced ? tr('Debits must equal credits', '借貸不平衡', '借贷不平衡') : entryForm.lines.length < 2 ? tr('At least 2 lines required', '至少需要兩行', '至少需要两行') : ''}
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">
-                  {tr('Post Entry', '記錄', '记录')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+                    confirmNoDocs && entryForm.files.length === 0
+                      ? 'bg-amber-500 text-white hover:bg-amber-600'
+                      : 'bg-primary text-primary-foreground'
+                  }`}>
+                  {confirmNoDocs && entryForm.files.length === 0
+                    ? tr('Post without documents', '不附文件記錄', '不附文件记录')
+                    : tr('Post Entry', '記錄', '记录')}
                 </button>
               </div>
             </form>
@@ -1273,6 +1421,51 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
                 <option key={a.id} value={a.account_code}>{a.account_code} – {a.account_name}</option>
               ))}
             </datalist>
+          </div>
+        </div>
+      )}
+
+      {showPicker && (
+        <DocumentPickerModal
+          alreadyPicked={entryForm.files.map(f => f.id)}
+          onPick={(picked) => setEntryForm({ ...entryForm, files: [...entryForm.files, ...picked.filter(p => !entryForm.files.some(x => x.id === p.id))].slice(0, 10) })}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
+
+      {similarEntries !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setSimilarEntries(null)}>
+          <div className="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              {tr('Similar entry already exists', '已存在類似分錄', '已存在类似分录')}
+            </h3>
+            <ul className="text-sm space-y-1">
+              {similarEntries.map((s: any) => (
+                <li key={s.id} className="font-mono text-xs border rounded px-2 py-1">
+                  {s.entry_number} · {s.description} · HK$ {fmtMoney(s.total_debit)}
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-muted-foreground">
+              {tr('Same date, amount and account as an existing live entry. Book again anyway?', '與現有分錄的日期、金額和科目相同。仍要再次記錄？', '与现有分录的日期、金额和科目相同。仍要再次记录？')}
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setSimilarEntries(null)} className="px-4 py-2 border rounded-md text-sm">{tr('Cancel', '取消', '取消')}</button>
+              <button onClick={() => {
+                setSimilarEntries(null);
+                const payload = {
+                  ...entryForm,
+                  entry_number: overrideVoucher ? entryForm.entry_number : undefined,
+                  file_ids: entryForm.files.map(f => f.id),
+                  duplicate_acknowledged: true,
+                };
+                createEntry.mutate(payload);
+              }}
+                className="px-4 py-2 bg-amber-500 text-white rounded-md text-sm hover:bg-amber-600">
+                {tr('Post anyway', '仍要記錄', '仍要记录')}
+              </button>
+            </div>
           </div>
         </div>
       )}
