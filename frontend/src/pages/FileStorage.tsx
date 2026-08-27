@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import EncryptedPdfModal from '../components/EncryptedPdfModal';
 import { useToast } from '../components/Toast';
-import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye, CornerUpRight } from 'lucide-react';
+import { Upload, Download, Trash2, Search, Pencil, X, Check, File, FileText, FileSpreadsheet, Image, FolderOpen, Folder, ChevronRight, ChevronDown, Zap, Sparkles, CheckCircle2, Eye, CornerUpRight, Loader2 } from 'lucide-react';
 import Tooltip from '../components/Tooltip';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import { useAuth } from '../contexts/AuthContext';
@@ -51,6 +51,9 @@ function summaryStatus(f: FileItem): { label: string; labelZh: string; labelCn: 
   if (f.ocr_status === 'failed' || f.ocr_status === 'unclear') {
     return { label: 'Could not read', labelZh: '無法讀取', labelCn: '无法读取', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300', tip: 'The document could not be read (unclear scan or unsupported format). Upload a clearer copy.', tipZh: '無法讀取此文件（掃描不清或格式不支援）。請上傳較清晰的版本。', tipCn: '无法读取此文件（扫描不清或格式不支持）。请上传较清晰的版本。' };
   }
+  if (f.ocr_status === 'skipped') {
+    return { label: 'Stored (no AI)', labelZh: '已儲存（無 AI）', labelCn: '已储存（无 AI）', cls: 'bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400', tip: 'Saved without AI analysis. Click Analyze to extract data.', tipZh: '未經 AI 分析儲存。點擊「分析」以提取資料。', tipCn: '未经 AI 分析储存。点击「分析」以提取资料。' };
+  }
   const needsReview =
     (f.invoice_id && (f.invoice_needs_review || f.invoice_status === 'pending_review')) ||
     (f.statement_id && (f.stmt_status === 'draft' || f.stmt_status === 'pending_review')) ||
@@ -59,6 +62,10 @@ function summaryStatus(f: FileItem): { label: string; labelZh: string; labelCn: 
     return { label: 'Manually Processed', labelZh: '需人工處理', labelCn: '需人工处理', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300', tip: 'A record was created, but some fields need confirmation before it is posted.', tipZh: '已建立記錄，但部分欄位需確認後才會入帳。', tipCn: '已建立记录，但部分字段需确认后才会入账。' };
   }
   if (f.invoice_id || f.statement_id || f.card_statement_id) {
+    const isManual = f.stmt_source === 'manual' || f.card_source === 'manual' || f.inv_source === 'manual';
+    if (isManual) {
+      return { label: 'Manually Linked', labelZh: '手動連結', labelCn: '手动连结', cls: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300', tip: 'Linked to a manually entered record.', tipZh: '已連結至手動輸入的記錄。', tipCn: '已连结至手动输入的记录。' };
+    }
     return { label: 'AI-OCR Processed', labelZh: 'AI-OCR 已處理', labelCn: 'AI-OCR 已处理', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300', tip: 'Auto-saved and linked to a record.', tipZh: '已自動儲存並連結至記錄。', tipCn: '已自动储存并连结至记录。' };
   }
   return { label: 'Stored', labelZh: '已儲存', labelCn: '已储存', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-300', tip: 'Saved to File Storage only — not linked to a record yet.', tipZh: '僅儲存於文件庫，尚未連結任何記錄。', tipCn: '仅储存于文件库，尚未连结任何记录。' };
@@ -123,12 +130,15 @@ interface FileItem {
   vendor_name?: string;
   customer_name?: string;
   invoice_direction?: string;
+  inv_source?: 'ocr' | 'manual';
   statement_id?: string;
   stmt_bank_name?: string;
   stmt_status?: string;
+  stmt_source?: 'ocr' | 'manual';
   card_statement_id?: string;
   card_issuer?: string;
   card_status?: string;
+  card_source?: 'ocr' | 'manual';
   ocr_status?: string;
 }
 
@@ -181,12 +191,14 @@ function FileTimeLabel({ createdAt }: { createdAt: string }) {
   return <span title={full}>{text}</span>;
 }
 
-function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirection, onDelete, onUnlockEncrypted }: {
+function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirection, onDelete, onUnlockEncrypted, onAnalyze, analyzingId }: {
   node: TreeNode; depth: number; expanded: Set<string>; toggle: (p: string) => void;
   onFileAction: (action: string, f: FileItem) => void;
   onSetDirection: (id: string, direction: string) => void;
   onDelete: (f: FileItem) => void;
   onUnlockEncrypted: (f: FileItem) => void;
+  onAnalyze: (fileId: string) => void;
+  analyzingId: string | null;
 }) {
   const { t } = useTranslation();
   const { user: authUser } = useAuth();
@@ -208,7 +220,7 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
       {isExpanded && (
         <>
           {node.children.map(child => (
-            <FolderTree key={child.path} node={child} depth={depth + 1} expanded={expanded} toggle={toggle} onFileAction={onFileAction} onSetDirection={onSetDirection} onDelete={onDelete} onUnlockEncrypted={onUnlockEncrypted} />
+            <FolderTree key={child.path} node={child} depth={depth + 1} expanded={expanded} toggle={toggle} onFileAction={onFileAction} onSetDirection={onSetDirection} onDelete={onDelete} onUnlockEncrypted={onUnlockEncrypted} onAnalyze={onAnalyze} analyzingId={analyzingId} />
           ))}
           {node.files.map(f => (
             <div key={f.id} id={`file-row-${f.id}`} className="flex items-center justify-between hover:bg-muted/30 rounded-md px-2 py-1.5"
@@ -351,6 +363,12 @@ function FolderTree({ node, depth, expanded, toggle, onFileAction, onSetDirectio
                     {!f.direction ? '?' : f.direction === 'outgoing' ? tr('S', '銷', '销') : tr('P', '採', '采')}
                   </button>
                 )}
+                {f.ocr_status === 'skipped' && (
+                  <button onClick={() => onAnalyze(f.id)} disabled={analyzingId === f.id}
+                    className="p-1 hover:bg-muted rounded" title={tr('Analyze', '分析', '分析')}>
+                    {analyzingId === f.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  </button>
+                )}
                 <button onClick={() => downloadFile(f.id, f.filename || 'file')} className="p-1 hover:bg-muted rounded"><Download className="h-3.5 w-3.5" /></button>
                 <button onClick={() => onFileAction('edit', f)} className="p-1 hover:bg-muted rounded"><Pencil className="h-3.5 w-3.5" /></button>
                 <button onClick={() => onDelete(f)} className="p-1 hover:bg-muted rounded text-destructive"><Trash2 className="h-3.5 w-3.5" /></button>
@@ -390,6 +408,7 @@ export default function FileStorage() {
   const [editDesc, setEditDesc] = useState('');
   const [supModal, setSupModal] = useState<{ show: boolean; onConfirm: () => void } | null>(null);
   const [encryptedPdf, setEncryptedPdf] = useState<{ fileId: string; fileName: string } | null>(null);
+  const [analyzingId, setAnalyzingId] = useState<string | null>(null);
   // Issue 17: type-choice modal shown when AI can't confidently decide document type
   const [typeChoice, setTypeChoice] = useState<{
     show: boolean;
@@ -604,6 +623,30 @@ export default function FileStorage() {
       queryClient.invalidateQueries({ queryKey: ['file-storage-folders'] });
     },
   });
+
+  const handleAnalyze = async (fileId: string) => {
+    setAnalyzingId(fileId);
+    try {
+      const token = localStorage.getItem('token') || '';
+      const activeClient = localStorage.getItem('activeClient');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
+      if (activeClient) { try { const c = JSON.parse(activeClient); if (c?.id) headers['X-Active-Client'] = c.id; } catch {} }
+      const resp = await fetch(`${WORKER_API_BASE}/file-storage/${fileId}/import-document`, { method: 'POST', headers });
+      const result = await resp.json().catch(() => ({}));
+      if (result?.status === 'password_required' || result?.type === 'encrypted_pdf') {
+        setEncryptedPdf({ fileId, fileName: '' });
+      } else if (result?.error) {
+        toast.error(result.error);
+      } else {
+        toast.success(tr('Analysis complete', '分析完成', '分析完成'));
+      }
+      queryClient.invalidateQueries({ queryKey: ['file-storage'] });
+    } catch {
+      toast.error(tr('Analysis failed', '分析失敗', '分析失败'));
+    } finally {
+      setAnalyzingId(null);
+    }
+  };
 
   const updateMut = useMutation({
     mutationFn: ({ id, body }: { id: string; body: unknown }) => api(`/file-storage/${id}`, { method: 'PATCH', body }),
@@ -1235,7 +1278,7 @@ export default function FileStorage() {
         ) : fileList.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-8">{t('fileStorage.noData')}</p>
         ) : (
-          <FolderTree node={tree} depth={0} expanded={expanded} toggle={toggleFolder} onFileAction={handleFileAction} onSetDirection={handleSetDirection} onUnlockEncrypted={(f) => setEncryptedPdf({ fileId: f.id, fileName: f.original_name || f.filename || '' })} onDelete={(f) => {
+          <FolderTree node={tree} depth={0} expanded={expanded} toggle={toggleFolder} onFileAction={handleFileAction} onSetDirection={handleSetDirection} onUnlockEncrypted={(f) => setEncryptedPdf({ fileId: f.id, fileName: f.original_name || f.filename || '' })} onAnalyze={handleAnalyze} analyzingId={analyzingId} onDelete={(f) => {
             if (isStaff) {
               setSupModal({ show: true, onConfirm: () => handleFileAction('delete', f) });
             } else {
