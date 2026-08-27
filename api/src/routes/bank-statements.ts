@@ -14,6 +14,7 @@ import { findParentAccountError, isNumericCoaCode } from '../lib/account-guard';
 import { generateStatementJournalEntries } from '../lib/bank-journal';
 import { getStatementPostings, replaceTransactionPosting, resetTransactionToAuto, validatePostingLines } from '../lib/bank-journal';
 import { restoreInvoiceJournal, purgeInvoiceJournal } from '../lib/invoice-journal';
+import { normalizeBankNameForStorage } from '../lib/company-matcher';
 import { buildStatementReview } from '../lib/statement-review';
 
 const bank = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -261,6 +262,38 @@ bank.post('/:id/confirm', async (c) => {
   })());
 
   return c.json({ success: true, id, status: 'active', journal_skipped: journalSkipped, journal_entries_created: journalCreated });
+});
+
+// ── Link file to bank statement ──
+bank.put('/:id/link-file', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const { file_id } = body as { file_id: string };
+
+  const existing = await db.prepare(
+    'SELECT id, source_file_id FROM bank_statements WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+  ).bind(id, tenantId).first<{ id: string; source_file_id: string | null }>();
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  if (file_id) {
+    const fileRow = await db.prepare(
+      'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(file_id, tenantId).first();
+    if (!fileRow) return c.json({ error: `file_records id ${file_id} not found or not yours` }, 400);
+  }
+
+  const replacedFileId = existing.source_file_id;
+  await db.prepare(
+    "UPDATE bank_statements SET source_file_id = ?, updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
+  ).bind(file_id || null, id).run();
+
+  await auditLog(db, tenantId, 'update', 'bank_statement', id, {
+    linked_file_id: file_id || null, replaced_file_id: replacedFileId,
+  });
+  return c.json({ success: true, id });
 });
 
 // ── Edit statement header fields (used during review) ──
@@ -930,22 +963,30 @@ bank.patch('/transactions/:id/match', async (c) => {
       `UPDATE bank_transactions SET invoice_id = NULL, match_confidence = NULL, match_status = 'unmatched' WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
     ).bind(txId, tenantId).run();
 
+    // Pre-confirm status is not stored, so reconstruct it: flagged invoices go
+    // back to 'pending_review', imported ones to 'active' (the import default),
+    // everything else to 'sent' — instead of the old blanket 'sent' which
+    // silently rewrote 'active'/'draft'/'overdue' history (2026-08-26 fix).
+    const restoredStatus = (inv: { needs_review?: string | null; file_id?: string | null } | null | undefined) =>
+      inv?.needs_review ? 'pending_review' : inv?.file_id ? 'active' : 'sent';
+
     // Group members (junction rows) — revert ALL of them atomically-ish with
     // the tx reset; there is no per-member unlink by design this round.
     const linkRows = await db.prepare(
-      `SELECT l.invoice_id, i.file_id FROM bank_transaction_invoice_links l
+      `SELECT l.invoice_id, i.file_id, i.needs_review FROM bank_transaction_invoice_links l
        JOIN invoices i ON i.id = l.invoice_id
        WHERE l.transaction_id = ? AND l.user_id = ?`
-    ).bind(txId, tenantId).all<{ invoice_id: string; file_id: string | null }>();
+    ).bind(txId, tenantId).all<{ invoice_id: string; file_id: string | null; needs_review: string | null }>();
     const groupInvoiceIds = (linkRows.results || []).map(r => r.invoice_id);
 
     if (groupInvoiceIds.length > 0) {
-      const ph = groupInvoiceIds.map(() => '?').join(',');
       await db.prepare(`DELETE FROM bank_transaction_invoice_links WHERE transaction_id = ? AND user_id = ?`).bind(txId, tenantId).run();
-      await db.prepare(
-        `UPDATE invoices SET status = 'sent', paid_date = NULL, updated_at = datetime('now')
-         WHERE id IN (${ph}) AND user_id = ? AND status = 'paid'`
-      ).bind(...groupInvoiceIds, tenantId).run();
+      for (const row of (linkRows.results || [])) {
+        await db.prepare(
+          `UPDATE invoices SET status = ?, paid_date = NULL, updated_at = datetime('now')
+           WHERE id = ? AND user_id = ? AND status = 'paid'`
+        ).bind(restoredStatus(row), row.invoice_id, tenantId).run();
+      }
       const fileIds = (linkRows.results || []).map(r => r.file_id).filter((f): f is string => !!f);
       if (fileIds.length > 0) {
         const phF = fileIds.map(() => '?').join(',');
@@ -956,18 +997,18 @@ bank.patch('/transactions/:id/match', async (c) => {
       }
     } else if (linkedInvoiceId) {
       // Un-pay the invoice (it was paid by this confirm)
+      const invMeta = await db.prepare(
+        'SELECT file_id, needs_review FROM invoices WHERE id = ? AND user_id = ?'
+      ).bind(linkedInvoiceId, tenantId).first<{ file_id: string | null; needs_review: string | null }>();
       await db.prepare(
-        `UPDATE invoices SET status = 'sent', paid_date = NULL, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND status = 'paid'`
-      ).bind(linkedInvoiceId, tenantId).run();
+        `UPDATE invoices SET status = ?, paid_date = NULL, updated_at = datetime('now') WHERE id = ? AND user_id = ? AND status = 'paid'`
+      ).bind(restoredStatus(invMeta), linkedInvoiceId, tenantId).run();
 
       // Reset the file's payment status
-      const invFile = await db.prepare(
-        'SELECT file_id FROM invoices WHERE id = ? AND user_id = ?'
-      ).bind(linkedInvoiceId, tenantId).first<{ file_id: string | null }>();
-      if (invFile?.file_id) {
+      if (invMeta?.file_id) {
         await db.prepare(
           "UPDATE file_records SET payment_status = 'unmatched', updated_at = datetime('now') WHERE id = ? AND user_id = ? AND deleted_at IS NULL"
-        ).bind(invFile.file_id, tenantId).run();
+        ).bind(invMeta.file_id, tenantId).run();
       }
     }
 
@@ -1285,6 +1326,85 @@ bank.put('/transactions/:id/posting', async (c) => {
   }
 });
 
+// ── Manual statement entry (no OCR) ──
+bank.post('/manual', async (c) => {
+  const user = c.get('user');
+  const tenantId = c.get('client_user_id') || user.id;
+  const db = c.env.DB;
+  const body = await c.req.json();
+  const {
+    bank_name, account_number, branch, currency, account_type,
+    statement_year, statement_month, period_start, period_end,
+    opening_balance, closing_balance, source_file_id,
+    transactions,
+  } = body as any;
+
+  if (!bank_name?.trim()) return c.json({ error: 'bank_name is required' }, 400);
+  if (!Array.isArray(transactions) || transactions.length === 0 || transactions.length > 500) {
+    return c.json({ error: 'transactions must be 1–500 rows' }, 400);
+  }
+
+  if (source_file_id) {
+    const fileRow = await db.prepare(
+      'SELECT id FROM file_records WHERE id = ? AND user_id = ? AND deleted_at IS NULL'
+    ).bind(source_file_id, tenantId).first();
+    if (!fileRow) return c.json({ error: `file_records id ${source_file_id} not found or not yours` }, 400);
+  }
+
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+    if (!tx.transaction_date || !/^\d{4}-\d{2}-\d{2}$/.test(tx.transaction_date)) {
+      return c.json({ error: `Row ${i + 1}: transaction_date must be YYYY-MM-DD` }, 400);
+    }
+    if (!tx.description?.trim()) {
+      return c.json({ error: `Row ${i + 1}: description is required` }, 400);
+    }
+    const hasDeposit = (tx.deposit_amount || 0) > 0;
+    const hasWithdrawal = (tx.withdrawal_amount || 0) > 0;
+    if (hasDeposit === hasWithdrawal) {
+      return c.json({ error: `Row ${i + 1}: must have exactly one of deposit_amount or withdrawal_amount > 0` }, 400);
+    }
+  }
+
+  const id = `bs-${uuidv4().slice(0, 8)}`;
+  const fileName = `Manual — ${bank_name.trim()} ${statement_year || ''}-${String(statement_month || '').padStart(2, '0')}`.trim();
+
+  await db.prepare(
+    `INSERT INTO bank_statements (id, user_id, file_name, file_type, file_data, r2_key,
+     bank_name, account_number, branch, currency, account_type,
+     statement_year, statement_month, period_start, period_end,
+     opening_balance, closing_balance, page_count, ocr_text, source, source_file_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    id, tenantId, fileName, 'application/pdf', '', null,
+    normalizeBankNameForStorage(bank_name), account_number || null, branch || null,
+    currency || 'HKD', account_type || null,
+    statement_year || null, statement_month || null,
+    period_start || null, period_end || null,
+    opening_balance ?? null, closing_balance ?? null,
+    null, '', 'manual', source_file_id || null
+  ).run();
+
+  for (let i = 0; i < transactions.length; i++) {
+    const tx = transactions[i];
+    await db.prepare(
+      `INSERT INTO bank_transactions (id, bank_statement_id, user_id, transaction_date, description,
+       deposit_amount, withdrawal_amount, balance, account_type, reference, sort_order)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      `bt-${uuidv4().slice(0, 8)}`, id, tenantId,
+      tx.transaction_date, tx.description.trim(),
+      tx.deposit_amount || 0, tx.withdrawal_amount || 0, tx.balance ?? 0,
+      tx.account_type || account_type || null, tx.reference || null, i
+    ).run();
+  }
+
+  await auditLog(db, tenantId, 'create', 'bank_statement', id, {
+    source: 'manual', transactions: transactions.length, source_file_id: source_file_id || null,
+  });
+  return c.json({ id, transaction_count: transactions.length }, 201);
+});
+
 // ── Import (parsed data + transactions) ──
 bank.post('/import', async (c) => {
   const user = c.get('user');
@@ -1318,15 +1438,15 @@ bank.post('/import', async (c) => {
     `INSERT INTO bank_statements (id, user_id, file_name, file_type, file_data, r2_key,
      bank_name, account_number, branch, currency, account_type,
      statement_year, statement_month, period_start, period_end,
-     opening_balance, closing_balance, page_count, ocr_text)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     opening_balance, closing_balance, page_count, ocr_text, source)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(id, tenantId, fileName, 'application/pdf', '', r2_key,
-    bank_name || null, account_number || null, branch || null,
+    normalizeBankNameForStorage(bank_name), account_number || null, branch || null,
     currency || 'HKD', account_type || null,
     statement_year || null, statement_month || null,
     period_start || null, period_end || null,
     opening_balance ?? null, closing_balance ?? null,
-    page_count || null, ocr_text || ''
+    page_count || null, ocr_text || '', 'ocr'
   ).run();
 
   let txCount = 0;
@@ -1387,14 +1507,14 @@ bank.post('/upload', async (c) => {
   await db.prepare(
     `INSERT INTO bank_statements (id, user_id, file_name, file_type, file_data, r2_key,
      bank_name, account_number, branch, currency,
-     statement_year, statement_month, opening_balance, closing_balance, ocr_text)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     statement_year, statement_month, opening_balance, closing_balance, ocr_text, source)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(id, tenantId, file_name || null, file_type || 'application/pdf',
     file_data || '', r2_key || null,
-    bank_name || null, account_number || null, branch || null,
+    normalizeBankNameForStorage(bank_name), account_number || null, branch || null,
     currency || 'HKD',
     statement_year || null, statement_month || null,
-    openingBalance, closingBalance, ocrText).run();
+    openingBalance, closingBalance, ocrText, 'ocr').run();
 
   const row = await db.prepare(
     `SELECT id, file_name, bank_name, account_number, branch, currency,
