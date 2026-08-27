@@ -411,6 +411,7 @@ const createSchema = z.object({
   attn: z.string().optional(), customer_phone: z.string().optional(),
   customer_email: z.string().optional(), customer_address: z.string().optional(),
   expense_category: z.enum(['cash', 'reimburse', 'director']).optional(),
+  file_id: z.string().optional(),
   items: z.array(itemSchema).min(1),
 });
 
@@ -441,8 +442,8 @@ invoices.post('/', zValidator('json', createSchema), async (c) => {
   const brNumber = company?.br_number || null;
 
   await db.prepare(
-    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, tax_rate, tax_amount, discount_amount, total, currency, notes, terms, receipt_number, paid_date, direction, expense_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, tenantId, invoice_number, data.customer_id, data.supplier_id || null, data.status || 'draft', data.issue_date, data.due_date, subtotal, taxRate, taxAmount, discount, total, data.currency || 'HKD', data.notes || null, data.terms || null, data.receipt_number || null, data.paid_date || null, data.direction || 'outgoing', data.expense_category || null).run();
+    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, tax_rate, tax_amount, discount_amount, total, currency, notes, terms, receipt_number, paid_date, direction, expense_category, file_id, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, tenantId, invoice_number, data.customer_id, data.supplier_id || null, data.status || 'draft', data.issue_date, data.due_date, subtotal, taxRate, taxAmount, discount, total, data.currency || 'HKD', data.notes || null, data.terms || null, data.receipt_number || null, data.paid_date || null, data.direction || 'outgoing', data.expense_category || null, data.file_id || null, data.file_id ? 'manual' : null).run();
 
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i];

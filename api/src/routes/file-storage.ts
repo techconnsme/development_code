@@ -1240,8 +1240,8 @@ async function importInvoiceFromFile(
     const emptyInvId = `i-${uuidv4().slice(0, 8)}`;
     const emptyInvNumber = `DRAFT-${Date.now().toString(36).toUpperCase()}`;
     await db.prepare(
-      `INSERT INTO invoices (id, user_id, invoice_number, customer_id, status, issue_date, due_date, subtotal, total, currency, file_id)
-       VALUES (?, ?, ?, ?, 'pending_review', date('now'), date('now', '+30 days'), 0, 0, 'HKD', ?)`
+      `INSERT INTO invoices (id, user_id, invoice_number, customer_id, status, issue_date, due_date, subtotal, total, currency, file_id, source)
+       VALUES (?, ?, ?, ?, 'pending_review', date('now'), date('now', '+30 days'), 0, 0, 'HKD', ?, 'ocr')`
     ).bind(emptyInvId, userId, emptyInvNumber, placeholderCustomerId, fileId).run();
     await db.prepare("UPDATE file_records SET category = 'invoice', ocr_status = 'failed', updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").bind(fileId).run();
     return { success: true, invoice_id: emptyInvId, items_count: 0, ocr_failed: true };
@@ -1791,8 +1791,8 @@ ${ocrText.slice(0, 8000)}`;
   // Clean imports → 'active' (auto-confirmed). Needs-review imports → 'pending_review'.
   const invStatus = needsReview ? 'pending_review' : 'active';
   await db.prepare(
-    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref, discount_amount, tax_rate, tax_amount, ocr_source, payer_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO invoices (id, user_id, invoice_number, customer_id, supplier_id, status, issue_date, due_date, subtotal, total, currency, notes, file_id, vendor_name, receipt_number, direction, needs_review, counterparty_ref, discount_amount, tax_rate, tax_amount, ocr_source, payer_name, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ocr')`
   ).bind(invId, userId, invNumber, customerId, supplierId || null, invStatus, issueDate, dueDate, subtotal, total, parsed?.currency || 'HKD', parsed?.notes || null, fileId, customerName || null, receiptNum, direction, needsReview, counterpartyRef, llmDiscount || 0, parsed?.tax_rate || 0, (parsed?.tax_amount || parsed?.tax) || 0, ocrSource, isReceipt ? (parsed?.payer_name || null) : null).run();
   console.log('[INVOICE-CREATED] id:', invId, '| direction:', direction, '| status:', invStatus, '| needsReview:', needsReview, '| vendor:', customerName, '| total:', total, '| currency:', parsed?.currency || 'HKD', '| ocrSource:', ocrSource);
 
