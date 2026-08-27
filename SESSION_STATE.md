@@ -1,3 +1,43 @@
+# Session State — 2026-08-27 (ledger consolidation + upload channel merge)
+
+## Upload channels merged — completed this session
+
+**Spec:** `docs/superpowers/specs/2026-08-27-fileupload-cash-payment-to-others-design.md`
+**Plan:** `docs/superpowers/plans/2026-08-27-fileupload-cash-payment-to-others.md`
+Commits `8f330e0` (feature) + `1c21ac1` (tree snapshot), pushed to `origin/main`.
+
+- Cash Payment tab removed from File Upload; others renamed to
+  `Others (Receipts, Cash Payments etc.)` · 繁「其他（收據、現金付款等）」· 简「其他（收据、现金付款等）」
+- Petty Cash tab unchanged (instant JE kept). Invoice path survives via OCR mismatch dialog → Switch.
+- TDD gate TC-UC-09 added to `tests/upload-channels.spec.ts` (now tracked in git despite tests/ ignore);
+  stale `/^Others$/` selectors fixed in upload-channels + cancel-upload specs. All suites green.
+
+## Where state lives across the Pastel workspace (pointer map)
+
+| Doc | Location | Status | Value |
+|---|---|---|---|
+| **SESSION_STATE.md** | `latest_code/` | ✅ canonical ledger | current facts — read first |
+| **DEPLOYMENT_CONTEXT.md** | `latest_code/` | ⚠️ tracked+pushed | URLs, deploy commands, Pages projects, LLM key handling, handover accounts |
+| **AP-AR-GL-FIX-HANDOFF.md** | `latest_code/` | ❗ local-only, 2026-08-20 | closed workstream + env Gotchas (imported below) |
+| **TeCS_DEVELOPMENT_ROADMAP.md** | `latest_code/` | ❗ local-only, 2026-07-27 | forward plan P1–P4 phases |
+| READ-ME-FIRST.md / plan.md | `latest_code/` | tracked, stale | July-era snapshots, superseded by this ledger |
+| ai-caseylai-wuzapi | `Pastel/ai-caseylai-whatsapp-wuzapi/SESSION_CONTEXT.md` | separate product | whatsapp bot state |
+| ai-caseylai-bailey | `Pastel/ai-caseylai-whatsapp-bailey/DEBUG-CONTEXT.md` | separate product | debugging notes |
+
+> Recommendation pending owner decision: `git add -f` the two ❗ files; rotate passwords exposed via DEPLOYMENT_CONTEXT.md history.
+
+## Environment Gotchas (imported from AP-AR-GL-FIX-HANDOFF.md, 2026-08-20)
+
+- Playwright WebKit cannot run here — Windows Smart App Control blocks unsigned binaries (false `libcurl.dll missing`, then `0xC0000142`). Do NOT disable SAC (cannot re-enable without Windows reinstall). Use GitHub Actions macOS or Docker image.
+- Browser automation cannot test `accept` greying-out (Playwright intercepts filechooser; greying happens in macOS NSOpenPanel) — needs human on Mac.
+- `journal_lines` has NO `project` column in live D1 (`migration-journal-lines-project.sql` was never applied — check `PRAGMA table_info` before trusting any migration file).
+- No `--` comments inside SQL strings passed to `query()` (single-line collapse swallows them).
+- `wrangler d1 execute --file` returns script stats, not rows — use `--command`.
+- DB name is `opcc-crm-db`; no migrations runner exists — `.sql` applied manually, duplicate-column errors accepted.
+- `tests/upload-channels.spec.ts` uses `setInputFiles()` — structurally blind to `accept`-attribute bugs; see known follow-ups list in the handoff (upload-batch endpoint unvalidated, magic-byte sniffing, vitest gaps).
+
+---
+
 # Session State — 2026-08-27 (custom depreciation scheduling)
 
 ## Custom Depreciation Schedule — completed and deployed
