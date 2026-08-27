@@ -11,6 +11,7 @@ import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import AuditTrailModal from '../components/AuditTrailModal';
 import InvoiceDetailPanel from '../components/InvoiceDetailPanel';
 import SlideOpen from '../components/SlideOpen';
+import Tooltip from '../components/Tooltip';
 import { ReceiptMatchReviewModal } from './AP';
 import { useHighlightTarget } from '../hooks/useHighlightTarget';
 
@@ -300,11 +301,13 @@ export default function AR() {
                   </td>
                   <td className="p-3 hidden md:table-cell">{inv.customer_name || '-'}</td>
                   <td className="p-3">
-                    <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-blue-100 text-blue-700" title={tr('Accounts Receivable — outgoing invoice to a customer', '應收帳款 — 你開給客戶的發票', '应收账款 — 你开给客户的发票')}>
-                      {tr('AR', '應收', '应收')}
-                    </span>
+                    <Tooltip content={tr('Accounts Receivable — outgoing invoice to a customer', '應收帳款 — 你開給客戶的發票', '应收账款 — 你开给客户的发票')}>
+                      <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-blue-100 text-blue-700">
+                        {tr('AR', '應收', '应收')}
+                      </span>
+                    </Tooltip>
                   </td>
-                  <td className="p-3"><span className={statusBadge(inv.status)} title={statusTooltip(inv.status)}>{statusLabel(inv.status)}</span></td>
+                  <td className="p-3"><Tooltip content={statusTooltip(inv.status)}><span className={statusBadge(inv.status)}>{statusLabel(inv.status)}</span></Tooltip></td>
                   <td className="p-3 text-right hidden lg:table-cell">{inv.currency} {inv.total?.toLocaleString()}</td>
                   <td className="p-3 hidden lg:table-cell">{inv.issue_date}</td>
                   <td className="p-3 text-right">

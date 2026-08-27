@@ -8,6 +8,7 @@ import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
 import AuditTrailModal from '../components/AuditTrailModal';
 import InvoiceDetailPanel from '../components/InvoiceDetailPanel';
 import SlideOpen from '../components/SlideOpen';
+import Tooltip from '../components/Tooltip';
 import { tr } from '../lib/i18nHelpers';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
@@ -339,11 +340,13 @@ export default function AP() {
                   </td>
                   <td className="p-3 hidden md:table-cell">{inv.vendor_name || inv.supplier_name || inv.customer_name || '-'}</td>
                   <td className="p-3">
-                    <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-orange-100 text-orange-700" title={tr('Accounts Payable — incoming invoice from a supplier', '應付帳款 — 供應商開給你的發票', '应付账款 — 供应商开给你的发票')}>
-                      {tr('AP', '應付', '应付')}
-                    </span>
+                    <Tooltip content={tr('Accounts Payable — incoming invoice from a supplier', '應付帳款 — 供應商開給你的發票', '应付账款 — 供应商开给你的发票')}>
+                      <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-orange-100 text-orange-700">
+                        {tr('AP', '應付', '应付')}
+                      </span>
+                    </Tooltip>
                   </td>
-                  <td className="p-3"><span className={statusBadge(inv.status)} title={statusTooltip(inv.status)}>{statusLabel(inv.status)}</span></td>
+                  <td className="p-3"><Tooltip content={statusTooltip(inv.status)}><span className={statusBadge(inv.status)}>{statusLabel(inv.status)}</span></Tooltip></td>
                   <td className="p-3 text-right hidden lg:table-cell">{inv.currency} {inv.total?.toLocaleString()}</td>
                   <td className="p-3 hidden lg:table-cell">{inv.issue_date}</td>
                   <td className="p-3 text-right">
