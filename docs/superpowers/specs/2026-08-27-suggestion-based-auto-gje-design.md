@@ -86,7 +86,7 @@ When `dry_run=false` (or omitted): existing behavior — creates entries immedia
 1. Re-fetch the transaction (verify it exists, is unposted, not deleted)
 2. Re-categorize using existing `categorizeTransaction()` logic
 3. Resolve bank account code
-4. Build journal lines (use user's `contra_account_code` if provided, else re-categorized code)
+4. Build journal lines (use user's `contra_account_code` if provided and valid in COA, else re-categorized code)
 5. Generate or validate voucher number
 6. Insert `journal_entries` + `journal_lines`
 7. Return created entry ID + voucher number
