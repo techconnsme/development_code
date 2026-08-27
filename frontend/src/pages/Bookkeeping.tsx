@@ -14,6 +14,7 @@ import SlideOpen from '../components/SlideOpen';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import PnlFormulaBanner from '../components/PnlFormulaBanner';
 import DocumentPickerModal, { type PickedFile } from '../components/DocumentPickerModal';
+import AutoGenerateSuggestionPanel from '../components/AutoGenerateSuggestionPanel';
 
 export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'entries' | 'accounts' | 'trial' | 'pl' | 'bs' | 'ledger' | 'export'; hideTabs?: boolean }) {
   const { i18n } = useTranslation();
@@ -46,6 +47,7 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
   const [showPicker, setShowPicker] = useState(false);
   const [confirmNoDocs, setConfirmNoDocs] = useState(false);
   const [similarEntries, setSimilarEntries] = useState<any[] | null>(null);
+  const [showAutoGenPanel, setShowAutoGenPanel] = useState(false);
 
   // Deep-link a bank transaction into its statement card on the Bank Statements page
   const handlePostClick = (bankStatementId: string, transactionId: string) => {
@@ -213,25 +215,6 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
       queryClient.invalidateQueries({ queryKey: ['entries'] });
     },
     onError: (err: any) => toast.error(err?.message || tr('Reversal failed', '沖銷失敗', '冲销失败')),
-  });
-
-  const autoGenerateMut = useMutation({
-    mutationFn: () => api('/bookkeeping/auto-generate-entries', { method: 'POST' }),
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ['entries'] });
-      if (data.created > 0) {
-        toast.info(tr(
-          `${data.created} journal entries generated, ${data.skipped || 0} skipped, ${data.stale_deleted || 0} stale cleaned up.`,
-          `已產生 ${data.created} 筆日誌分錄，跳過 ${data.skipped || 0} 筆，清理 ${data.stale_deleted || 0} 筆過時記錄。`,
-          `已产生 ${data.created} 笔日志分录，跳过 ${data.skipped || 0} 笔，清理 ${data.stale_deleted || 0} 笔过时记录。`,
-        ));
-      } else {
-        toast.info(tr('All transactions already have journal entries.', '所有交易已有日誌分錄。', '所有交易已有日志分录。'));
-      }
-    },
-    onError: (err: any) => {
-      toast.info(tr('Auto-generate failed: ', '自動產生失敗：', '自动产生失败：') + (err?.message || err?.error || 'Unknown'));
-    },
   });
 
   const exportCSV = async () => {
@@ -428,11 +411,10 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             </button>
           )}
           {!isStaff && (
-            <button onClick={() => autoGenerateMut.mutate()}
-              disabled={autoGenerateMut.isPending}
-              className="flex items-center gap-2 border px-4 py-2 rounded-md text-sm font-medium hover:bg-muted disabled:opacity-50">
-              <RefreshCw className={`h-4 w-4 ${autoGenerateMut.isPending ? 'animate-spin' : ''}`} />
-              {autoGenerateMut.isPending ? tr('Generating...', '產生中...', '产生中...') : tr('+ Auto-Generate Journal Entries', '+ 自動產生日誌分錄', '+ 自动产生日志分录')}
+            <button onClick={() => setShowAutoGenPanel(true)}
+              className="flex items-center gap-2 border px-4 py-2 rounded-md text-sm font-medium hover:bg-muted">
+              <RefreshCw className="h-4 w-4" />
+              {tr('+ Auto-Generate Journal Entries', '+ 自動產生日誌分錄', '+ 自动产生日志分录')}
             </button>
           )}
           {!isStaff && (
@@ -1176,6 +1158,10 @@ export default function Bookkeeping({ initialTab, hideTabs }: { initialTab?: 'en
             )}
           </div>
         </div>
+      )}
+
+      {showAutoGenPanel && (
+        <AutoGenerateSuggestionPanel onDone={() => setShowAutoGenPanel(false)} />
       )}
 
       {/* Entry Form Modal — GJE 輸入日誌帳 */}
