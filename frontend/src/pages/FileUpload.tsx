@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE } from '../lib/api';
 import { useToast } from '../components/Toast';
 import EncryptedPdfModal from '../components/EncryptedPdfModal';
+import AutoGenerateSuggestionPanel from '../components/AutoGenerateSuggestionPanel';
 import { Upload, FileText, Image, File, Loader2, AlertCircle, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
 import { tr } from '../lib/i18nHelpers';
 import { writeTokenUsage, clearTokenUsage } from '../components/TokenPopup';
@@ -174,6 +175,7 @@ export default function FileUpload() {
   const [fileErrors, setFileErrors] = useState<Record<number, string>>({});
   const [fileStatuses, setFileStatuses] = useState<Record<number, 'pending' | 'processing' | 'success' | 'error'>>({});
   const [rejected, setRejected] = useState<RejectedFile[]>([]);
+  const [showAutoGenPanel, setShowAutoGenPanel] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Channel selection
@@ -569,7 +571,7 @@ export default function FileUpload() {
       queryClient.invalidateQueries({ queryKey: ['bookkeeping'] });
 
       if (batchRef.current.bank > 0 || batchRef.current.card > 0) {
-        try { await api('/bookkeeping/auto-generate-entries', { method: 'POST' }); } catch {}
+        setShowAutoGenPanel(true);
       }
 
       // Always land on File Storage. Files that need review stay queued in
@@ -736,7 +738,7 @@ export default function FileUpload() {
               {batchProgress.total > 1 && batchProgress.currentFile && (
                 <p className="text-xs text-muted-foreground truncate">{batchProgress.currentFile}</p>
               )}
-              <p className="text-xs text-muted-foreground">{tr('DeepSeek AI is extracting transactions…', 'DeepSeek AI 正在提取交易記錄…', 'DeepSeek AI 正在提取交易记录…')}</p>
+              <p className="text-xs text-muted-foreground">{tr('AI is extracting transactions…', 'AI 正在提取交易記錄…', 'AI 正在提取交易记录…')}</p>
             </div>
           </div>
           {batchProgress.total > 1 && (
@@ -780,6 +782,11 @@ export default function FileUpload() {
             ));
           }}
         />
+      )}
+
+      {/* ── Auto-generate suggestion panel ── */}
+      {showAutoGenPanel && (
+        <AutoGenerateSuggestionPanel onDone={() => setShowAutoGenPanel(false)} />
       )}
     </div>
   );
