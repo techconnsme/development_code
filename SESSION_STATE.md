@@ -1,5 +1,62 @@
 # Session State — 2026-08-27 (expanded GJE modal feature)
 
+## Expenses page rework (Receipts | Petty Cash | Others) — completed and deployed
+
+**Tests:** `tests/expenses-tabs.spec.ts` (e2e, 5/5 green), `tests/list-filters.test.ts` (unit, 19/19)
+**Frontend:** https://8e1ea462.opcc-crm-testing.pages.dev · **API:** opcc-crm-api worker v6087f6d6
+
+### What changed
+
+1. **Expenses page (`/invoices`, `Invoices.tsx`)** — the Invoices doc-type tab is gone
+   (invoices display in AP/AR). Page is now three tabs: **Receipts (default) | Petty Cash | Others**,
+   deep-linkable via `?tab=`. Invoice-only machinery removed (category pills, invoice create-form
+   branch, Post-to-GL button). ChartOfAccounts invoice drill-down now routes to `/ap`.
+
+2. **Petty Cash as a tab (`PettyCash.tsx`)** — JE posting already existed (form posts
+   Dr expense / Cr 11101 with `reference_type:'petty_cash'`). **Bug fixed while embedding:**
+   categories were hardcoded COA codes (62401, 64202, …) that 400 with
+   `Account code(s) not found` on tenants whose COA lacks them (PNR included) — the category
+   dropdown now lists the tenant's own expense leaf accounts. Sidebar entry removed;
+   `/petty-cash` redirects to `/invoices?tab=petty-cash`.
+
+3. **New Others tab (`ExpensesOthers.tsx`)** — simplified single-expense form: date,
+   description, amount, Expense Account (Dr), Paid From (Cr), documents, Post Journal →
+   `POST /bookkeeping/entries` with `reference_type:'other_expense'` + `file_ids`.
+   Recent list with expandable lines + attached docs + delete.
+
+4. **API additions** (both additive query params, builders in `api/src/lib/list-filters.ts`):
+   - `GET /file-storage?unlinked=1` — files with no invoice / bank / card / journal link
+     (DocumentPickerModal gained `unlinkedOnly` prop — strict mode per requirement)
+   - `GET /bookkeeping/entries?reference_type=` — Others tab list (absent param = old behavior)
+   - `GET /bookkeeping/entries/:id` now returns `files` (journal_entry_files join)
+
+### Notes
+
+- `tests/` is **gitignored** in this repo — specs are local-only.
+- The app renders a parallel mobile layout (`div.lg:hidden`) — every control exists twice;
+  e2e locators must scope with `:visible`.
+- `veii-direction-check.spec.ts` listing assertion moved from `/invoices` to `/ar` (design change).
+- Concurrent session hazard: shared-file edits got absorbed into the other session's commit
+  `fc81f9d` (bookkeeping.ts hunks). `file-storage.ts` diff + new files still uncommitted.
+
+## Direct (non-OCR) attachment upload in Petty Cash & Others — completed and deployed
+
+**Tests:** `tests/expenses-tabs.spec.ts` TC-EXP-03/05 extended (5/5 green) · `tests/reconciliation-audit.spec.ts` TC-AD-03 flipped (endpoint-disable check, green)
+**Frontend:** https://b675c4a7.opcc-crm-testing.pages.dev · **API:** worker v6d403622
+
+- **`POST /file-storage/upload` gains `skip_ocr: true`** → `ocr_status='skipped'` (implemented
+  exactly per the manual-statements plan Task 6 Step 1 — that plan doc is annotated ✅ so the
+  other session skips straight to Step 2's `source='ocr'` stamps).
+- **`POST /file-storage/reprocess` DISABLED (commented out)** — it bulk-OCR'd every
+  pending/skipped/failed file and overwrote category/folder, which would destroy skip_ocr
+  attachments. Verified UI-orphaned (no frontend/backend/cron caller; only dist hit was
+  micromark's unrelated preprocess.js). Tombstone comment in the source explains revival rules.
+  NB: the endpoint was live and functional (a probe returned 200 and processed files).
+- **New `ExpenseAttachments` component** (chips + unlinked-only picker + "⬆ upload file")
+  shared by both forms; uploads via `lib/attachment-upload.ts` (`skip_ocr: true`,
+  folder 'Petty Cash'/'Others', ≤10MB, PDF/images/CSV/Excel, ≤10 files/entry).
+  Petty Cash gained the whole attachments section (it had none) + `file_ids` on its GJE post.
+
 ## Expanded GJE modal — completed and deployed
 
 **Spec:** `docs/superpowers/specs/2026-08-27-gje-expanded-modal-design.md`  

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +8,8 @@ import { tr } from '../lib/i18nHelpers';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
 import { ReceiptMatchReviewModal } from './AP';
+import PettyCash from './PettyCash';
+import ExpensesOthers from './ExpensesOthers';
 
 // Authenticated PDF download: fetches with Bearer token, opens as blob URL
 async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
@@ -33,6 +35,11 @@ async function downloadInvoicePDF(invoiceId: string, invoiceNumber: string) {
   }
 }
 
+// Expenses page (sidebar: Bookkeeping → Expenses). The old Invoices doc-type
+// tab was removed 2026-08-27 — invoices live in AP/AR; this page now hosts:
+//   Receipts (default) | Petty Cash | Others
+type ExpenseTab = 'receipts' | 'petty-cash' | 'others';
+
 export default function Invoices() {
   const { i18n } = useTranslation();
   const toast = useToast();
@@ -41,9 +48,10 @@ export default function Invoices() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
-  const [docType, setDocType] = useState<'invoice' | 'receipt'>('invoice');
-  const [invoiceCategory, setInvoiceCategory] = useState<'all' | 'sales' | 'purchase'>('all');
-  const [linkFilter, setLinkFilter] = useState<'all' | 'linked' | 'unlinked'>('all');
+  const [tab, setTab] = useState<ExpenseTab>(normalizeTab(searchParams.get('tab')));
+  const [linkFilter, setLinkFilter] = useState<'all' | 'linked' | 'unlinked'>(
+    (searchParams.get('linkFilter') as 'all' | 'linked' | 'unlinked') || 'all'
+  );
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const { startDate, endDate } = useDateFilter();
@@ -54,27 +62,35 @@ export default function Invoices() {
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
   const [addProductForm, setAddProductForm] = useState({ name: '', unit_price: 0 });
 
+  function switchTab(t: ExpenseTab) {
+    setTab(t);
+    // Keep the tab shareable / redirect-targetable (/petty-cash → ?tab=petty-cash)
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', t);
+    setSearchParams(next, { replace: true });
+  }
+
   const { data, isLoading } = useQuery({
-    queryKey: ['invoices', search, status, page, invoiceCategory, docType, startDate, endDate],
+    queryKey: ['invoices', search, status, page, startDate, endDate],
     queryFn: () => {
-      const params = new URLSearchParams({ q: search, status, page: String(page), limit: '20', doc_type: docType });
-      if (docType === 'invoice' && invoiceCategory !== 'all') {
-        params.set('direction', invoiceCategory === 'sales' ? 'outgoing' : 'incoming');
-      }
+      const params = new URLSearchParams({ q: search, status, page: String(page), limit: '20', doc_type: 'receipt' });
       if (startDate) params.set('start_date', startDate);
       if (endDate) params.set('end_date', endDate);
       return api(`/invoices?${params.toString()}`);
     },
+    enabled: tab === 'receipts',
   });
 
   const { data: customers } = useQuery({
     queryKey: ['customers-list'],
     queryFn: () => api('/customers?limit=200'),
+    enabled: tab === 'receipts',
   });
 
   const { data: products } = useQuery({
     queryKey: ['products-list'],
     queryFn: () => api('/products?limit=500'),
+    enabled: tab === 'receipts',
   });
 
   const createProductMut = useMutation({
@@ -113,18 +129,6 @@ export default function Invoices() {
     onError: (err: any) => toast.error(err?.error || err?.message || tr('Receipt match failed', '收據配對失敗', '收据配对失败')),
   });
 
-  // Manual recovery path for invoices that have no GL entry. Invoices now post
-  // automatically on confirm and on clean OCR import, so this only appears for
-  // ones that predate that or whose automatic posting failed.
-  const postGlMut = useMutation({
-    mutationFn: (id: string) => api(`/bookkeeping/post-invoice/${id}`, { method: 'POST' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invoices'] }),
-  });
-
-  // Mirrors POSTABLE_STATUSES in api/src/lib/post-invoice.ts — a draft or
-  // pending_review invoice must not reach the books.
-  const POSTABLE = ['active', 'sent', 'paid', 'overdue'];
-
   function addItem() {
     setForm({ ...form, items: [...form.items, { description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   }
@@ -143,29 +147,24 @@ export default function Invoices() {
     const sub = form.items.reduce((s: number, i: any) => s + i.amount, 0);
     const tax = sub * ((form.tax_rate || 0) / 100);
     const disc = (form.discount_type === 'percent' ? sub * ((form.discount_value || 0) / 100) : (form.discount_value || 0));
-    if (docType === 'receipt') {
-      createMut.mutate({
-        ...form,
-        receipt_number: form.receipt_number || form.invoice_number || null,
-        invoice_number: form.receipt_number || undefined,
-        direction: 'incoming',
-        status: 'draft',
-        total: sub + tax - disc,
-        subtotal: sub,
-        tax_amount: tax,
-        discount_amount: disc,
-        items: form.items.length > 0 ? form.items : [{ description: form.attn || 'Receipt item', quantity: 1, unit_price: 0, amount: 0 }],
-      });
-    } else {
-      createMut.mutate({ ...form, total: sub + tax - disc, subtotal: sub, tax_amount: tax, discount_amount: disc });
-    }
+    createMut.mutate({
+      ...form,
+      receipt_number: form.receipt_number || form.invoice_number || null,
+      invoice_number: form.receipt_number || undefined,
+      direction: 'incoming',
+      status: 'draft',
+      total: sub + tax - disc,
+      subtotal: sub,
+      tax_amount: tax,
+      discount_amount: disc,
+      items: form.items.length > 0 ? form.items : [{ description: form.attn || 'Receipt item', quantity: 1, unit_price: 0, amount: 0 }],
+    });
   }
 
   const invoicesRaw = data?.data || [];
-  const invoices = docType === 'receipt'
-    ? linkFilter === 'linked' ? invoicesRaw.filter((r: any) => r.linked_invoice_id)
+  const invoices = linkFilter === 'linked'
+    ? invoicesRaw.filter((r: any) => r.linked_invoice_id)
     : linkFilter === 'unlinked' ? invoicesRaw.filter((r: any) => !r.linked_invoice_id)
-    : invoicesRaw
     : invoicesRaw;
 
   // Deep link from account drill-down (/invoices?highlight=<id>): scroll to the targeted row
@@ -190,7 +189,7 @@ export default function Invoices() {
   }, [searchParams, isLoading, invoices, setSearchParams]);
 
   const statusLabel = (s: string) => {
-    const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '已發送', '已发送'), paid: tr('Paid', '已付', '已付'), overdue: tr('Overdue', '逾期', '逾期'), cancelled: tr('Cancelled', '已取消', '已取消'), pending_review: tr('⏳ Pending', '⏳ 待審', '⏳ 待审') };
+    const labels: Record<string, string> = { draft: tr('Draft', '草稿', '草稿'), sent: tr('Sent', '已發送', '已发送'), paid: tr('Confirmed', '已確認', '已确认'), overdue: tr('Overdue', '逾期', '逾期'), cancelled: tr('Cancelled', '已取消', '已取消'), pending_review: tr('⏳ Pending', '⏳ 待審', '⏳ 待审') };
     return labels[s] || s;
   };
   const statusBadge = (s: string) => {
@@ -202,53 +201,47 @@ export default function Invoices() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold">
-            {docType === 'invoice'
-              ? tr('Expenses', '支出 Expenses', '支出 Expenses')
-              : tr('Receipts', '收據 Receipts', '收据 Receipts')}
-          </h2>
+          <h2 className="text-2xl font-bold">{tr('Expenses', '支出 Expenses', '支出 Expenses')}</h2>
           <p className="text-muted-foreground mt-1">
-            {docType === 'invoice'
-              ? tr('Manage invoices, expenses and reimbursements', '管理發票、支出與報銷', '管理发票、支出与报销')
-              : tr('Manage payment receipts and link them to invoices', '管理付款收據，連結至發票', '管理付款收据，连结至发票')}
+            {tr('Receipts, petty cash and other expenses', '收據、零用金及其他支出', '收据、零用金及其他支出')}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={async () => {
-            try {
-              const dir = docType === 'receipt' ? '' : '';
-              const result = await api(`/invoices/auto-match-receipts?direction=${docType === 'receipt' ? 'outgoing' : ''}`, { method: 'POST' });
-              if (result.matched?.length > 0) {
-                setReceiptMatchResults(result.matched);
-              } else {
-                toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
-              }
-            } catch (e: any) { toast.error(e?.message || 'Match failed'); }
-          }}
-            className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
-            <Link2 className="h-4 w-4" /> {tr('Match Receipts', '配對收據', '配对收据')}
-          </button>
-          <button onClick={() => setShowForm(true)}
-            className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
-            <Plus className="h-4 w-4" />
-            {docType === 'invoice'
-              ? tr('Create Invoice', '建立發票', '建立发票')
-              : tr('Create Receipt', '建立收據', '建立收据')}
-          </button>
-        </div>
+        {tab === 'receipts' && (
+          <div className="flex items-center gap-2">
+            <button onClick={async () => {
+              try {
+                const result = await api(`/invoices/auto-match-receipts?direction=outgoing`, { method: 'POST' });
+                if (result.matched?.length > 0) {
+                  setReceiptMatchResults(result.matched);
+                } else {
+                  toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
+                }
+              } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+            }}
+              className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
+              <Link2 className="h-4 w-4" /> {tr('Match Receipts', '配對收據', '配对收据')}
+            </button>
+            <button onClick={() => setShowForm(true)}
+              className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md text-sm font-medium hover:opacity-90">
+              <Plus className="h-4 w-4" />
+              {tr('Create Receipt', '建立收據', '建立收据')}
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Invoice / Receipt tabs */}
+      {/* Main tabs: Receipts | Petty Cash | Others */}
       <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit">
         {([
-          { key: 'invoice' as const, label: tr('Invoices', '發票', '发票') },
-          { key: 'receipt' as const, label: tr('Receipts', '收據', '收据') },
+          { key: 'receipts' as const, label: tr('Receipts', '收據 Receipts', '收据 Receipts') },
+          { key: 'petty-cash' as const, label: tr('Petty Cash', '零用金 Petty Cash', '零用金 Petty Cash') },
+          { key: 'others' as const, label: tr('Others', '其他 Others', '其他 Others') },
         ]).map(t => (
           <button
             key={t.key}
-            onClick={() => { setDocType(t.key); setPage(1); }}
+            onClick={() => switchTab(t.key)}
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              docType === t.key
+              tab === t.key
                 ? 'bg-background shadow-sm text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
             }`}
@@ -258,93 +251,57 @@ export default function Invoices() {
         ))}
       </div>
 
-      {/* Invoice category tabs — invoice mode only */}
-      {docType === 'invoice' && (
-        <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit flex-wrap">
-          {([
-            { key: 'all', label: tr('All', '全部', '全部') },
-            { key: 'sales', label: tr('Sales Invoices', '銷售發票', '销售发票') },
-            { key: 'purchase', label: tr('Purchase Invoices', '採購發票', '采购发票') },
-          ] as const).map(t => (
-            <button
-              key={t.key}
-              onClick={() => { setInvoiceCategory(t.key); setPage(1); }}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                invoiceCategory === t.key
-                  ? 'bg-background shadow-sm text-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {tab === 'petty-cash' && <PettyCash />}
+      {tab === 'others' && <ExpensesOthers />}
 
-      {/* Link filter tabs — receipt mode only */}
-      {docType === 'receipt' && (
-        <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit">
-          {([
-            { key: 'all', label: tr('All Receipts', '全部收據', '全部收据'), count: invoicesRaw.length },
-            { key: 'linked', label: tr('Linked to Invoice', '已連結發票', '已连结发票'), count: invoicesRaw.filter((r: any) => r.linked_invoice_id).length },
-            { key: 'unlinked', label: tr('Unlinked', '未連結', '未连结'), count: invoicesRaw.filter((r: any) => !r.linked_invoice_id).length },
-          ] as const).map(t => (
-            <button
-              key={t.key}
-              onClick={() => { setLinkFilter(t.key); }}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                linkFilter === t.key
-                  ? 'bg-background shadow-sm text-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {t.label}
-              <span className="ml-1.5 text-xs text-muted-foreground">({t.count})</span>
-            </button>
-          ))}
-        </div>
-      )}
+      {tab === 'receipts' && (<>
+      {/* Link filter tabs */}
+      <div className="flex gap-1 bg-muted/50 rounded-lg p-1 w-fit">
+        {([
+            { key: 'all' as const, label: tr('All Receipts', '全部收據', '全部收据'), count: invoicesRaw.length },
+            { key: 'linked' as const, label: tr('Linked to Invoice', '已連結發票', '已连结发票'), count: invoicesRaw.filter((r: any) => r.linked_invoice_id).length },
+            { key: 'unlinked' as const, label: tr('Unlinked', '未連結', '未连结'), count: invoicesRaw.filter((r: any) => !r.linked_invoice_id).length },
+          ]).map(t => (
+          <button
+            key={t.key}
+            onClick={() => { setLinkFilter(t.key); }}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              linkFilter === t.key
+                ? 'bg-background shadow-sm text-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {t.label}
+            <span className="ml-1.5 text-xs text-muted-foreground">({t.count})</span>
+          </button>
+        ))}
+      </div>
 
       <div className="flex gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
           <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            placeholder={docType === 'invoice'
-              ? tr('Search invoices...', '搜尋發票...', '搜索发票...')
-              : tr('Search receipts...', '搜尋收據...', '搜索收据...')} className="w-full pl-10 pr-4 py-2 border rounded-md bg-background text-sm" />
+            placeholder={tr('Search receipts...', '搜尋收據...', '搜索收据...')} className="w-full pl-10 pr-4 py-2 border rounded-md bg-background text-sm" />
         </div>
         <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}
           className="px-3 py-2 border rounded-md bg-background text-sm">
           <option value="">{tr('All Status', '全部狀態', '全部状态')}</option>
           <option value="draft">{tr('Draft', '草稿', '草稿')}</option>
-          <option value="sent">{tr('Sent', '已發送', '已发送')}</option>
-          <option value="paid">{tr('Paid', '已付', '已付')}</option>
-          <option value="pending_review">{tr('⏳ Pending Review', '⏳ 待審核', '⏳ 待审核')}</option>
-          <option value="overdue">{tr('Overdue', '逾期', '逾期')}</option>
+          <option value="paid">{tr('Confirmed', '已確認', '已确认')}</option>
         </select>
       </div>
 
       {isLoading ? <div className="text-center py-12 text-muted-foreground">{tr('Loading...', '載入中...', '载入中...')}</div> :
        invoices.length === 0 ? <div className="text-center py-12 text-muted-foreground">
-        {docType === 'invoice'
-          ? tr('No invoice records', '未有發票記錄', '未有发票记录')
-          : tr('No receipt records', '未有收據記錄', '未有收据记录')}
+        {tr('No receipt records', '未有收據記錄', '未有收据记录')}
       </div> : (
         <div className="bg-card border rounded-xl overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="text-left p-3">
-                  {docType === 'invoice'
-                    ? tr('Invoice No.', '發票號碼', '发票号码')
-                    : tr('Receipt No.', '收據號碼', '收据号码')}
-                </th>
-                <th className="text-left p-3 hidden md:table-cell">
-                  {docType === 'invoice'
-                    ? tr('Customer / Supplier', '客戶/供應商', '客户/供应商')
-                    : tr('Payer / Supplier', '付款方 / 供應商', '付款方 / 供应商')}
-                </th>
-                {docType === 'receipt' && <th className="text-left p-3 w-20">{tr('Link', '連結', '连结')}</th>}
+                <th className="text-left p-3">{tr('Receipt No.', '收據號碼', '收据号码')}</th>
+                <th className="text-left p-3 hidden md:table-cell">{tr('Payer / Supplier', '付款方 / 供應商', '付款方 / 供应商')}</th>
+                <th className="text-left p-3 w-20">{tr('Link', '連結', '连结')}</th>
                 <th className="text-left p-3 w-16">{tr('Type', '類型', '类型')}</th>
                 <th className="text-left p-3">{tr('Status', '狀態', '状态')}</th>
                 <th className="text-right p-3 hidden lg:table-cell">{tr('Amount', '金額', '金额')}</th>
@@ -357,13 +314,13 @@ export default function Invoices() {
                 <tr key={inv.id} id={`inv-${inv.id}`} className="border-b hover:bg-muted/30">
                   <td className="p-3 font-medium">
                     <span className="inline-flex items-center gap-1.5">
-                      {docType === 'receipt' ? (inv.receipt_number || inv.invoice_number?.replace(/^REC-\w+$/, '') || inv.invoice_number) : inv.invoice_number}
+                      {inv.receipt_number || inv.invoice_number?.replace(/^REC-\w+$/, '') || inv.invoice_number}
                       {inv.needs_review?.includes('duplicate') && (
                         <span title={tr('Duplicate detected', '檢測到重複', '检测到重复')}>
                           <Copy className="h-3.5 w-3.5 text-orange-500" />
                         </span>
                       )}
-                      {docType === 'receipt' && inv.status !== 'paid' && !inv.linked_invoice_id && (
+                      {inv.status !== 'paid' && !inv.linked_invoice_id && (
                         <span title={tr('Unlinked — no invoice matched yet', '未連結 — 尚未配對發票', '未连结 — 尚未配对发票')}>
                           <Link2Off className="h-3.5 w-3.5 text-red-400" />
                         </span>
@@ -371,64 +328,28 @@ export default function Invoices() {
                     </span>
                   </td>
                   <td className="p-3 hidden md:table-cell">
-                    {docType === 'receipt'
-                      ? (inv.vendor_name || inv.customer_name || '-')
-                      : (inv.direction === 'incoming'
-                          ? (inv.vendor_name || inv.supplier_name || inv.customer_name || '-')
-                          : (inv.customer_name || '-'))}
+                    {inv.vendor_name || inv.customer_name || '-'}
                   </td>
-                  {docType === 'receipt' && (
-                    <td className="p-3">
-                      {inv.linked_invoice_id ? (
-                        <span className="inline-flex items-center gap-1 text-xs text-green-600"><Link className="h-3 w-3" /> {tr('Yes', '是', '是')}</span>
-                      ) : <span className="text-xs text-muted-foreground">—</span>}
-                    </td>
-                  )}
                   <td className="p-3">
-                    {docType === 'receipt' ? (
-                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${inv.direction === 'outgoing' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
-                        {tr('Receipt', '收據', '收据')}
-                      </span>
-                    ) : (
-                      (() => {
-                        const cat = inv.expense_category;
-                        if (cat === 'cash') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-700">{tr('Cash', '現金', '现金')}</span>;
-                        if (cat === 'reimburse') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-700">{tr('Reimb.', '報銷', '报销')}</span>;
-                        if (cat === 'director') return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-teal-100 text-teal-700">{tr('Director', '董事', '董事')}</span>;
-                        return (
-                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                            inv.direction === 'incoming'
-                              ? 'bg-orange-100 text-orange-700'
-                              : 'bg-blue-100 text-blue-700'
-                          }`}>
-                            {inv.direction === 'incoming' ? (tr('AP', '應付', '应付')) : (tr('AR', '應收', '应收'))}
-                          </span>
-                        );
-                      })()
-                    )}
+                    {inv.linked_invoice_id ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-green-600"><Link className="h-3 w-3" /> {tr('Yes', '是', '是')}</span>
+                    ) : <span className="text-xs text-muted-foreground">—</span>}
+                  </td>
+                  <td className="p-3">
+                    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${inv.direction === 'outgoing' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
+                      {tr('Receipt', '收據', '收据')}
+                    </span>
                   </td>
                   <td className="p-3"><span className={statusBadge(inv.status)}>{statusLabel(inv.status)}</span></td>
                   <td className="p-3 text-right hidden lg:table-cell">{inv.currency} {inv.total?.toLocaleString()}</td>
-                  <td className="p-3 hidden lg:table-cell">{inv.issue_date}</td>
+                  <td className="p-3 hidden lg:table-cell text-muted-foreground">{inv.issue_date}</td>
                   <td className="p-3 text-right">
                     <button onClick={() => setViewId(inv.id)} className="p-1 hover:bg-muted rounded mr-1" title={tr('View', '查看', '查看')}><Eye className="h-4 w-4" /></button>
                     <button onClick={() => navigate(`/invoices/review/${inv.id}`)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Edit', '編輯', '编辑')}><Pencil className="h-4 w-4" /></button>
                     <button onClick={() => downloadInvoicePDF(inv.id, inv.receipt_number || inv.invoice_number)} className="p-1 hover:bg-muted rounded mr-1" title={tr('Download PDF', '下載 PDF', '下载 PDF')}><Download className="h-4 w-4" /></button>
                     {inv.status === 'draft' && (
-                      <button onClick={() => updateStatus.mutate({ id: inv.id, status: 'sent' })} className="text-xs text-blue-600 hover:underline mr-2">
-                        {tr('Send', '發送', '发送')}
-                      </button>
-                    )}
-                    {inv.status === 'sent' && (
                       <button onClick={() => updateStatus.mutate({ id: inv.id, status: 'paid' })} className="text-xs text-green-600 hover:underline mr-2">
-                        {tr('Mark Paid', '標記已付', '标记已付')}
-                      </button>
-                    )}
-                    {!inv.posted_to_gl && POSTABLE.includes(inv.status) && (
-                      <button onClick={() => postGlMut.mutate(inv.id)} disabled={postGlMut.isPending}
-                        className="text-xs text-emerald-700 dark:text-emerald-400 hover:underline mr-2 disabled:opacity-50"
-                        title={tr('This invoice is not in the General Ledger yet', '此發票尚未過賬至總賬', '此发票尚未过账至总账')}>
-                        {tr('Post to GL', '過賬', '过账')}
+                        {tr('Confirm', '確認', '确认')}
                       </button>
                     )}
                     <button onClick={() => { if (confirm(tr('Delete this item?', '確定刪除?', '确定删除?'))) deleteMut.mutate(inv.id); }} className="p-1 hover:bg-muted rounded text-destructive"><Trash2 className="h-4 w-4" /></button>
@@ -440,20 +361,16 @@ export default function Invoices() {
         </div>
       )}
 
-      {/* Create Invoice Modal */}
+      {/* Create Receipt Modal */}
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 overflow-y-auto" onClick={() => setShowForm(false)}>
           <div className="bg-card border rounded-xl p-6 w-full max-w-2xl mx-4 my-8 space-y-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-bold text-lg">
-              {docType === 'invoice'
-                ? tr('Create Invoice', '建立發票', '建立发票')
-                : tr('Create Receipt', '建立收據', '建立收据')}
-            </h3>
+            <h3 className="font-bold text-lg">{tr('Create Receipt', '建立收據', '建立收据')}</h3>
             <form onSubmit={handleSubmit} className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <input value={form.invoice_number} onChange={(e) => setForm({ ...form, invoice_number: e.target.value })}
-                    placeholder={tr("Invoice No. (auto if blank)", "發票號碼（留空自動產生）", "发票号码（留空自动产生）")} className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
+                    placeholder={tr("Receipt No. (auto if blank)", "收據號碼（留空自動產生）", "收据号码（留空自动产生）")} className="w-full px-3 py-2 border rounded-md bg-background text-sm" />
                   {!form.invoice_number && <p className="text-[10px] text-muted-foreground mt-0.5">{tr('Leave blank to auto-generate', '留空則根據設定格式自動產生號碼', '留空则根据设定格式自动产生号码')}</p>}
                 </div>
                 <select required value={form.customer_id} onChange={(e) => {
@@ -473,7 +390,7 @@ export default function Invoices() {
               <div className="grid grid-cols-3 gap-3">
                 <input type="date" value={form.issue_date} onChange={(e) => setForm({ ...form, issue_date: e.target.value })}
                   className="px-3 py-2 border rounded-md bg-background text-sm" />
-                <input type="date" required value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })}
+                <input type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })}
                   className="px-3 py-2 border rounded-md bg-background text-sm" placeholder={tr("Due date", "到期日", "到期日")} />
                 <select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}
                   className="px-3 py-2 border rounded-md bg-background text-sm">
@@ -484,7 +401,7 @@ export default function Invoices() {
                 <input value={form.receipt_number} onChange={(e) => setForm({ ...form, receipt_number: e.target.value })}
                   placeholder={tr("Receipt No.", "收據號碼", "收据号码")} className="px-3 py-2 border rounded-md bg-background text-sm" />
                 <input type="date" value={form.paid_date} onChange={(e) => setForm({ ...form, paid_date: e.target.value })}
-                  className="px-3 py-2 border rounded-md bg-background text-sm" placeholder={tr("Payment date", "付款日期", "付款日期")} />
+                  placeholder={tr("Payment date", "付款日期", "付款日期")} className="px-3 py-2 border rounded-md bg-background text-sm" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <input value={form.attn} onChange={(e) => setForm({ ...form, attn: e.target.value })}
@@ -564,11 +481,11 @@ export default function Invoices() {
                   <span>{tr('Tax %', '稅%', '税%')}</span>
                   <input type="number" min="0" max="100" step="0.5" value={form.tax_rate || 0}
                     onChange={(e) => setForm({ ...form, tax_rate: parseFloat(e.target.value) || 0 })}
-                    className="w-14 px-1 py-0.5 border rounded text-xs text-center bg-background" />
+                    className="w-14 px-1 py-0.5 border rounded text-xs center bg-background" />
                   <span className="mr-2">{tr('Discount', '折扣', '折扣')}</span>
                   <input type="number" min="0" step="0.01" value={form.discount_value || ''}
                     onChange={(e) => setForm({ ...form, discount_value: parseFloat(e.target.value) || 0 })}
-                    placeholder="0" className="w-18 px-1 py-0.5 border rounded text-xs text-center bg-background" />
+                    placeholder="0" className="w-18 px-1 py-0.5 border rounded text-xs center bg-background" />
                   <select value={form.discount_type}
                     onChange={(e) => setForm({ ...form, discount_type: e.target.value })}
                     className="text-xs border rounded px-1 py-0.5 bg-background">
@@ -598,7 +515,7 @@ export default function Invoices() {
         </div>
       )}
 
-      {/* View Invoice Modal */}
+      {/* View Receipt Modal */}
       {viewId && invoiceDetail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setViewId(null)}>
           <div className="bg-card border rounded-xl p-6 w-[90vw] max-w-[90vw] h-[85vh] mx-4 flex gap-6" onClick={(e) => e.stopPropagation()}>
@@ -606,23 +523,12 @@ export default function Invoices() {
             <div className="w-[45%] flex flex-col min-h-0 overflow-y-auto pr-2 space-y-4">
               <div className="flex justify-between items-center">
                 <h3 className="font-bold text-lg">
-                  {invoiceDetail.receipt_number || docType === 'receipt'
-                    ? (tr('Receipt', '收據', '收据') + ' #' + (invoiceDetail.receipt_number || invoiceDetail.invoice_number))
-                    : (tr('Invoice', '發票', '发票') + ' #' + invoiceDetail.invoice_number)}
+                  {tr('Receipt', '收據', '收据') + ' #' + (invoiceDetail.receipt_number || invoiceDetail.invoice_number)}
                 </h3>
                 <button onClick={() => setViewId(null)} className="text-muted-foreground">✕</button>
               </div>
               <div className="grid grid-cols-2 gap-3 text-sm">
-                <div><span className="text-muted-foreground">
-                  {invoiceDetail.receipt_number
-                    ? tr('Payer / Supplier', '付款方 / 供應商', '付款方 / 供应商')
-                    : invoiceDetail.direction === 'incoming' ? tr('Supplier', '供應商', '供应商') : tr('Customer', '客戶', '客户')}
-                  :</span> {invoiceDetail.receipt_number
-                    ? (invoiceDetail.vendor_name || invoiceDetail.customer_name || '-')
-                    : invoiceDetail.direction === 'incoming'
-                      ? (invoiceDetail.vendor_name || invoiceDetail.supplier_name || invoiceDetail.customer_name)
-                      : invoiceDetail.customer_name}
-                </div>
+                <div><span className="text-muted-foreground">{tr('Payer / Supplier', '付款方 / 供應商', '付款方 / 供应商')}:</span> {invoiceDetail.vendor_name || invoiceDetail.customer_name || '-'}</div>
                 <div><span className="text-muted-foreground">{tr('Status', '狀態', '状态')}:</span> <span className={statusBadge(invoiceDetail.status)}>{statusLabel(invoiceDetail.status)}</span></div>
                 <div><span className="text-muted-foreground">{tr('Date', '日期', '日期')}:</span> {invoiceDetail.issue_date}</div>
                 <div><span className="text-muted-foreground">{tr('Due', '到期', '到期')}:</span> {invoiceDetail.due_date || '-'}</div>
@@ -664,7 +570,7 @@ export default function Invoices() {
                 <div className="text-center text-muted-foreground p-8">
                   <FileText className="h-12 w-12 mx-auto mb-3 opacity-30" />
                   <p className="text-sm">{tr('No uploaded document', '沒有上傳的文件', '没有上传的文件')}</p>
-                  <p className="text-xs mt-1">{tr('This invoice was created manually.', '此發票為手動建立。', '此发票为手动建立。')}</p>
+                  <p className="text-xs mt-1">{tr('This receipt was created manually.', '此收據為手動建立。', '此收据为手动建立。')}</p>
                 </div>
               )}
             </div>
@@ -685,6 +591,11 @@ export default function Invoices() {
           }}
         />
       )}
+      </>)}
     </div>
   );
+}
+
+function normalizeTab(raw: string | null): ExpenseTab {
+  return raw === 'petty-cash' || raw === 'others' ? raw : 'receipts';
 }

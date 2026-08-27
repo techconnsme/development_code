@@ -1,29 +1,28 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../lib/api';
 import { useToast } from '../components/Toast';
 import { tr } from '../lib/i18nHelpers';
+import { filterLeafAccounts } from '../lib/coa-hierarchy';
+import ExpenseAttachments from '../components/ExpenseAttachments';
+import type { PickedFile } from '../components/DocumentPickerModal';
 import { Plus, Wallet, Trash2 } from 'lucide-react';
 
-const CATEGORIES: { key: string; code: string; label: string; labelZh: string; labelCn: string }[] = [
-  { key: 'office', code: '62401', label: 'Office Supplies', labelZh: '辦公室用品', labelCn: '办公室用品' },
-  { key: 'meals', code: '64202', label: 'Meals & Entertainment', labelZh: '餐飲及交際', labelCn: '餐饮及交际' },
-  { key: 'travel', code: '64301', label: 'Local Transport', labelZh: '本地交通', labelCn: '本地交通' },
-  { key: 'overseas', code: '64302', label: 'Overseas Travel', labelZh: '海外差旅', labelCn: '海外差旅' },
-  { key: 'software', code: '62303', label: 'Software / Subscriptions', labelZh: '軟件及訂閱', labelCn: '软件及订阅' },
-  { key: 'utilities', code: '62201', label: 'Utilities', labelZh: '水電雜費', labelCn: '水电杂费' },
-  { key: 'misc', code: '66203', label: 'Miscellaneous', labelZh: '雜項', labelCn: '杂项' },
-];
-
+// Petty Cash tab inside the Expenses page (/invoices?tab=petty-cash).
+// Embeddable component — no page-level padding; the Expenses shell provides it.
+// Journal posting already existed pre-2026-08-27 rework: the form posts a
+// balanced GJE (Dr expense category / Cr 11101 Cash on Hand) via
+// POST /bookkeeping/entries with reference_type 'petty_cash'.
 export default function PettyCash() {
   const { i18n } = useTranslation();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
-    amount: '', description: '', category: 'office',
+    amount: '', description: '', category: '',
     entry_date: new Date().toISOString().split('T')[0],
+    files: [] as PickedFile[],
   });
 
   // Fetch petty cash journal entries
@@ -32,13 +31,24 @@ export default function PettyCash() {
     queryFn: () => api('/bookkeeping/ledger?account_code=11101&limit=100'),
   });
 
-  // Fetch COA accounts for category labels
+  // Fetch COA accounts — categories are the tenant's own expense accounts.
+  // Hardcoded category codes (62401, 64202, …) 400'd on tenants whose COA
+  // doesn't carry them ("Account code(s) not found"), so the picker now
+  // reflects the real chart of accounts.
   const { data: accountsData } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => api('/bookkeeping/accounts'),
   });
 
   const accounts = accountsData?.data || [];
+  const CATEGORIES = useMemo(
+    () => filterLeafAccounts(accounts).filter((a: any) => a.account_type === 'expense' || a.account_type === 'cost'),
+    [accounts],
+  );
+  // Default to the first expense account once the COA loads
+  useEffect(() => {
+    if (!form.category && CATEGORIES.length > 0) setForm(f => ({ ...f, category: CATEGORIES[0].account_code }));
+  }, [CATEGORIES]);
   const accountMap = useMemo(() => {
     const m = new Map<string, string>();
     for (const a of accounts) m.set(a.account_code, a.account_name);
@@ -63,7 +73,10 @@ export default function PettyCash() {
       queryClient.invalidateQueries({ queryKey: ['petty-cash-entries'] });
       queryClient.invalidateQueries({ queryKey: ['entries'] });
       setShowForm(false);
-      setForm({ amount: '', description: '', category: 'office', entry_date: new Date().toISOString().split('T')[0] });
+      setForm({
+        amount: '', description: '', category: CATEGORIES[0]?.account_code || '',
+        entry_date: new Date().toISOString().split('T')[0], files: [],
+      });
       toast.success(tr('Petty cash expense recorded!', '零用金支出已記錄！', '零用金支出已记录！'));
     },
     onError: (err: any) => {
@@ -84,8 +97,10 @@ export default function PettyCash() {
     e.preventDefault();
     const amt = parseFloat(form.amount);
     if (!amt || amt <= 0) return;
-    const cat = CATEGORIES.find(c => c.key === form.category)!;
-    const desc = `[PC] ${form.description || cat.label}`;
+    const cat = CATEGORIES.find((c: any) => c.account_code === form.category);
+    if (!cat) return;
+    const label = cat.account_name;
+    const desc = `[PC] ${form.description || label}`;
     const entryNum = `PC-${Date.now().toString(36).toUpperCase()}`;
     createMut.mutate({
       entry_number: entryNum,
@@ -93,20 +108,21 @@ export default function PettyCash() {
       description: desc,
       reference_type: 'petty_cash',
       reference_id: `pc-${Date.now().toString(36)}`,
+      file_ids: form.files.map(f => f.id),
       lines: [
-        { account_code: cat.code, account_name: cat.label, description: form.description || cat.label, debit: amt, credit: 0 },
-        { account_code: '11101', account_name: 'Cash on Hand', description: form.description || cat.label, debit: 0, credit: amt },
+        { account_code: cat.account_code, account_name: label, description: form.description || label, debit: amt, credit: 0 },
+        { account_code: '11101', account_name: accountMap.get('11101') || 'Cash on Hand', description: form.description || label, debit: 0, credit: amt },
       ],
     });
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-6">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold flex items-center gap-2">
-            <Wallet className="h-6 w-6 text-amber-600" /> {tr('Petty Cash', '零用金', '零用金')}
-          </h2>
+          <h3 className="text-lg font-bold flex items-center gap-2">
+            <Wallet className="h-5 w-5 text-amber-600" /> {tr('Petty Cash', '零用金', '零用金')}
+          </h3>
           <p className="text-sm text-muted-foreground mt-1">
             {tr('Track small cash expenses — office supplies, meals, transport, etc.', '記錄小額現金支出 — 辦公室用品、餐飲、交通等。', '记录小额现金支出 — 办公室用品、餐饮、交通等。')}
           </p>
@@ -147,9 +163,9 @@ export default function PettyCash() {
             <div>
               <label className="text-xs text-muted-foreground block mb-0.5">{tr('Category', '類別', '类别')}</label>
               <select value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}
-                className="w-full px-3 py-2 border rounded-md bg-background text-sm">
-                {CATEGORIES.map(c => (
-                  <option key={c.key} value={c.key}>{tr(c.label, c.labelZh, c.labelCn)} ({c.code})</option>
+                className="pc-category w-full px-3 py-2 border rounded-md bg-background text-sm">
+                {CATEGORIES.map((c: any) => (
+                  <option key={c.id} value={c.account_code}>{c.account_code} – {c.account_name}</option>
                 ))}
               </select>
             </div>
@@ -159,6 +175,14 @@ export default function PettyCash() {
                 className="w-full px-3 py-2 border rounded-md bg-background text-sm" placeholder={tr('e.g. taxi, stationery', '例：的士、文具', '例：的士、文具')} />
             </div>
           </div>
+
+          {/* Attachments: pick unlinked documents or upload directly (non-OCR) */}
+          <ExpenseAttachments
+            files={form.files}
+            onChange={(files) => setForm({ ...form, files })}
+            uploadFolder="Petty Cash"
+          />
+
           <div className="flex gap-2 justify-end">
             <button type="button" onClick={() => setShowForm(false)}
               className="px-4 py-2 border rounded-md text-sm hover:bg-muted">{tr('Cancel', '取消', '取消')}</button>

@@ -44,7 +44,6 @@ const navGroups = [
     { key: 'ap', label: 'Accounts Payable (AP)', to: '/ap' },
     { key: 'ar', label: 'Accounts Receivable (AR)', to: '/ar' },
     { key: 'payroll', label: 'Payroll', to: '/payroll' },
-    { key: 'pettyCash', label: 'Petty Cash', to: '/petty-cash' },
     { key: 'gje', label: 'General Journal Entries (GJE)', to: '/GJE' },
     { key: 'reviewQueue', label: 'Pending Review', to: '/review-queue' },
   ]},

@@ -8,10 +8,13 @@ export interface PickedFile { id: string; filename: string }
 
 const MAX_ATTACHMENTS = 10;
 
-export default function DocumentPickerModal({ alreadyPicked, onPick, onClose }: {
+export default function DocumentPickerModal({ alreadyPicked, onPick, onClose, unlinkedOnly }: {
   alreadyPicked: string[];
   onPick: (picked: PickedFile[]) => void;
   onClose: () => void;
+  /** Expenses → Others tab: strict mode — server filters to files with no
+   *  invoice / bank / card / journal-entry link (GET /file-storage?unlinked=1). */
+  unlinkedOnly?: boolean;
 }) {
   const [q, setQ] = useState('');
   const [cat, setCat] = useState('');
@@ -21,8 +24,9 @@ export default function DocumentPickerModal({ alreadyPicked, onPick, onClose }: 
   const qs = new URLSearchParams();
   if (q) qs.set('q', q);
   qs.set('limit', '200');
+  if (unlinkedOnly) qs.set('unlinked', '1');
   const { data } = useQuery({
-    queryKey: ['file-storage-list', q],
+    queryKey: ['file-storage-list', q, unlinkedOnly ? 'unlinked' : 'all'],
     queryFn: () => api(`/file-storage?${qs.toString()}`),
   });
   const files: any[] = data?.data || [];
@@ -50,7 +54,14 @@ export default function DocumentPickerModal({ alreadyPicked, onPick, onClose }: 
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="bg-card border rounded-xl w-full max-w-5xl h-[80vh] flex flex-col mx-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="font-bold">{tr('Attach Documents', '附加文件', '附加文件')}</h3>
+          <div>
+            <h3 className="font-bold">{tr('Attach Documents', '附加文件', '附加文件')}</h3>
+            {unlinkedOnly && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {tr('Showing only documents not linked to any record', '只顯示未連結任何記錄的文件', '只显示未连结任何记录的文件')}
+              </p>
+            )}
+          </div>
           <button onClick={onClose} className="p-1 rounded hover:bg-muted"><X className="h-4 w-4" /></button>
         </div>
 

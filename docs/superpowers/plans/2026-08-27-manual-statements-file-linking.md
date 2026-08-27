@@ -610,13 +610,18 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: `POST /file-storage/upload` accepts optional boolean `skip_ocr` → initial `ocr_status='skipped'`. All statements/invoices created by import in this file carry `source='ocr'`.
 
-- [ ] **Step 1: Add the flag**
+- [x] **Step 1: Add the flag** — ✅ DONE 2026-08-27 by the Expenses-session (exact spec above, deployed with API v4c8cf9b6; verified by `tests/expenses-tabs.spec.ts` asserting `ocr_status='skipped'`). Skip to Step 2.
 
 In `files.post('/upload')`:
 1. Destructure `skip_ocr` alongside `description`.
 2. Replace `const ocrResult = { text: '', status: 'pending' };` with `const ocrResult = { text: '', status: skip_ocr ? 'skipped' : 'pending' };`
 
 Nothing else changes. (The `wsBroadcast` 'ocr_request' notification fires as before — informational only.)
+
+> NOTE (Expenses-session): `POST /file-storage/reprocess` — which would have
+> bulk-OCRs `'skipped'` files and overwritten their category/folder — was
+> commented out (UI-orphaned, dangerous). Do not revive it without excluding
+> `ocr_status='skipped'` from its WHERE clause.
 
 - [ ] **Step 2: Stamp `source='ocr'` on import-created records**
 

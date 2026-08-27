@@ -23,6 +23,7 @@ import { reconcileDirections } from '../lib/balance-reconcile';
 import { generateStatementJournalEntries } from '../lib/bank-journal';
 import { llmCompleteJson, llmKeysFromEnv, hasLlmKey, type LlmKeys } from '../lib/llm-parse';
 import { buildFileLinks } from '../lib/manual-booking';
+import { buildFileListSql } from '../lib/list-filters';
 
 // Audit logging helper
 async function auditLog(db: any, userId: string, action: string, entityType: string, entityId: string | null, changes?: object) {
@@ -2027,40 +2028,24 @@ async function runGlmOcr(fileData: string, fileType: string, glmApiKey?: string)
   }
 }
 
-// List files with optional folder filter and search
+// List files with optional folder filter and search.
+// ?unlinked=1 → only files with no invoice / bank / card / journal-entry link
+// (used by the Expenses → Others tab document picker).
 files.get('/', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const folder = c.req.query('folder') || '';
   const q = c.req.query('q') || '';
   const limit = parseInt(c.req.query('limit') || '0', 10);
+  const unlinked = c.req.query('unlinked') === '1';
 
-  let sql = `SELECT fr.id, fr.folder, fr.filename, fr.original_name, fr.file_type, fr.file_size,
-    fr.description, fr.ocr_status, fr.category, fr.direction, fr.payment_status, fr.amount,
-    fr.created_at, fr.updated_at,
-    i.id as invoice_id, i.invoice_number, i.status as invoice_status, i.needs_review as invoice_needs_review,
-    i.vendor_name, i.direction as invoice_direction,
-    c.name as customer_name,
-    bs.id as statement_id, bs.bank_name as stmt_bank_name, bs.status as stmt_status,
-    cs.id as card_statement_id, cs.card_issuer, cs.status as card_status
-    FROM file_records fr
-    LEFT JOIN invoices i ON i.file_id = fr.id AND i.user_id = fr.user_id AND i.deleted_at IS NULL
-    LEFT JOIN customers c ON i.customer_id = c.id
-    LEFT JOIN bank_statements bs ON bs.r2_key = fr.r2_key AND bs.user_id = fr.user_id AND bs.deleted_at IS NULL
-    LEFT JOIN card_statements cs ON cs.r2_key = fr.r2_key AND cs.user_id = fr.user_id AND cs.deleted_at IS NULL
-    WHERE fr.user_id = ? AND fr.deleted_at IS NULL`;
-  const params: unknown[] = [tenantId];
-
-  if (folder) {
-    sql += ' AND fr.folder = ?';
-    params.push(folder);
-  }
-  if (q) {
-    sql += ' AND (fr.filename LIKE ? OR fr.description LIKE ? OR fr.ocr_text LIKE ?)';
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`);
-  }
-  sql += ' ORDER BY fr.created_at DESC';
-  if (limit > 0) { sql += ' LIMIT ?'; params.push(limit); }
+  const { sql, params } = buildFileListSql({
+    tenantId,
+    folder: folder || undefined,
+    q: q || undefined,
+    limit: limit > 0 ? limit : undefined,
+    unlinked,
+  });
 
   const rows = await c.env.DB.prepare(sql).bind(...params).all();
   return c.json({ data: rows.results });
@@ -2139,7 +2124,7 @@ files.post('/upload', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
   const body = await c.req.json();
-  const { filename, original_name, file_type, file_size, file_data, folder: reqFolder, description } = body;
+  const { filename, original_name, file_type, file_size, file_data, folder: reqFolder, description, skip_ocr } = body;
 
   if (!file_data) return c.json({ error: 'file_data required (base64)' }, 400);
 
@@ -2185,7 +2170,10 @@ files.post('/upload', async (c) => {
 
   // Skip GLM-OCR during upload — it blocks for 20-40s and times out frequently.
   // OCR runs in import-document using Cloudflare AI toMarkdown (fast, built-in).
-  const ocrResult = { text: '', status: 'pending' };
+  // skip_ocr (per 2026-08-27 manual-statements design §5.1): store without ever
+  // queueing analysis — consumed by the Petty Cash / Others form attachments
+  // and the FileUpload "Save without AI Analysis" path.
+  const ocrResult = { text: '', status: skip_ocr ? 'skipped' : 'pending' };
   const ocrDirection = classification.direction;
   const ocrAmount = null;
 
@@ -2765,7 +2753,17 @@ async function runDeepseekOcr(base64: string, mimeType: string, apiKey: string):
   }
 }
 
-// Reprocess files with pending/missing OCR or classification
+// DISABLED 2026-08-27: bulk reprocess was dangerous and UI-orphaned.
+// It swept every file with ocr_status IN ('pending','skipped','failed') (up to
+// 50 per call), ran GLM-OCR on each, and OVERWROTE category + folder — which
+// would silently destroy files saved via `skip_ocr` (form attachments that the
+// user explicitly wants left un-analyzed). No frontend page or component, no
+// backend route, and no cron ever called it (verified by grep; the only
+// dist hit was micromark's unrelated preprocess.js module).
+// Per-file analysis goes through the explicit "Analyze" action
+// (POST /file-storage/:id/import-document) instead.
+// If ever revived: exclude ocr_status='skipped' from the WHERE clause.
+/*
 files.post('/reprocess', async (c) => {
   const user = c.get('user');
   const tenantId = c.get('client_user_id') || user.id;
@@ -2833,6 +2831,7 @@ files.post('/reprocess', async (c) => {
 
   return c.json({ processed, failed, total: (rows.results || []).length });
 });
+*/
 
 // Docker OCR worker updates OCR results for a file
 files.post('/:id/ocr-result', async (c) => {

@@ -84,7 +84,9 @@ function getDepthBgClass(code: string, allCodes: string[]): string {
 function getReferenceRoute(type: string | null): string {
   switch (type) {
     case 'bank_transaction': return '/bank-statements';
-    case 'invoice': return '/invoices';
+    // Invoice references are AP bills — the Expenses page dropped its invoice
+    // tab (they display in AP/AR) on 2026-08-27.
+    case 'invoice': return '/ap';
     case 'payment': return '/bank-statements';
     default: return '';
   }
