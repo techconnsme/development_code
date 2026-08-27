@@ -8,6 +8,7 @@ import { tr } from '../lib/i18nHelpers';
 import { useDateFilter } from '../contexts/DateFilterContext';
 import { useToast } from '../components/Toast';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
+import LLMMatchModal from '../components/LLMMatchModal';
 import AuditTrailModal from '../components/AuditTrailModal';
 import InvoiceDetailPanel from '../components/InvoiceDetailPanel';
 import SlideOpen from '../components/SlideOpen';
@@ -57,6 +58,9 @@ export default function AR() {
   };
   const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
   const [bankMatchResults, setBankMatchResults] = useState<any[] | null>(null);
+  const [showLLMModal, setShowLLMModal] = useState(false);
+  const [llmModalType, setLlmModalType] = useState<'bank-invoice' | 'receipt-invoice'>('receipt-invoice');
+  const [useAI, setUseAI] = useState(true);
   const [form, setForm] = useState({ invoice_number: '', customer_id: '', issue_date: new Date().toISOString().split('T')[0], due_date: '', receipt_number: '', paid_date: '', currency: 'HKD', tax_rate: 0, discount_amount: 0, discount_type: 'flat' as string, discount_value: 0, notes: '', terms: '', attn: '', customer_phone: '', customer_email: '', customer_address: '', items: [{ description: '', quantity: 1, unit_price: 0, amount: 0 }] });
   const [productSearch, setProductSearch] = useState<Record<number, string>>({});
   const [productDropdown, setProductDropdown] = useState<number | null>(null);
@@ -207,27 +211,37 @@ export default function AR() {
         </div>
         <div className="flex items-center gap-2">
           <button onClick={async () => {
-            try {
-              const result = await api('/invoices/auto-match-receipts?direction=outgoing', { method: 'POST' });
-              if (result.matched?.length > 0) {
-                setReceiptMatchResults(result.matched);
-              } else {
-                toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
-              }
-            } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+            if (useAI) {
+              setLlmModalType('receipt-invoice');
+              setShowLLMModal(true);
+            } else {
+              try {
+                const result = await api('/invoices/auto-match-receipts?direction=outgoing', { method: 'POST' });
+                if (result.matched?.length > 0) {
+                  setReceiptMatchResults(result.matched);
+                } else {
+                  toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
+                }
+              } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+            }
           }}
             className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
             <Link2 className="h-4 w-4" /> {tr('Match Receipts', '配對收據', '配对收据')}
           </button>
           <button onClick={async () => {
-            try {
-              const result = await api('/bank-statements/auto-match?direction=outgoing', { method: 'POST' });
-              if (result.matched?.length > 0) {
-                setBankMatchResults(result.matched);
-              } else {
-                toast.info(tr('No bank matches found', '沒有找到銀行配對', '没有找到银行配对'));
-              }
-            } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+            if (useAI) {
+              setLlmModalType('bank-invoice');
+              setShowLLMModal(true);
+            } else {
+              try {
+                const result = await api('/bank-statements/auto-match?direction=outgoing', { method: 'POST' });
+                if (result.matched?.length > 0) {
+                  setBankMatchResults(result.matched);
+                } else {
+                  toast.info(tr('No bank matches found', '沒有找到銀行配對', '没有找到银行配对'));
+                }
+              } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+            }
           }}
             className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
             <Zap className="h-4 w-4" /> {tr('Match Bank Deposits', '配對銀行存款', '配对银行存款')}
@@ -639,6 +653,27 @@ export default function AR() {
           }}
           onClose={() => {
             setReceiptMatchResults(null);
+            queryClient.invalidateQueries({ queryKey: ['invoices-ar'] });
+          }}
+        />
+      )}
+
+      {/* LLM Match Modal */}
+      {showLLMModal && (
+        <LLMMatchModal
+          type={llmModalType}
+          direction={llmModalType === 'receipt-invoice' ? 'outgoing' : undefined}
+          onConfirm={(txId, invoiceId, invoiceIds) => {
+            if (llmModalType === 'bank-invoice' && txId) {
+              return matchConfirmMut.mutateAsync({ txId, invoiceId: invoiceId || '', invoiceIds });
+            } else if (llmModalType === 'receipt-invoice' && invoiceId) {
+              return confirmReceiptMatchMut.mutateAsync({ receipt_id: txId || '', invoice_ids: invoiceIds || [invoiceId] });
+            }
+            return Promise.resolve();
+          }}
+          onReject={() => Promise.resolve()}
+          onClose={() => {
+            setShowLLMModal(false);
             queryClient.invalidateQueries({ queryKey: ['invoices-ar'] });
           }}
         />

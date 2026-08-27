@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { api, WORKER_API_BASE, iframeClientParam } from '../lib/api';
 import { Plus, Search, Eye, Trash2, Download, Pencil, AlertTriangle, Info, Copy, CornerUpRight, Link2, Link2Off, FileText, Zap, History } from 'lucide-react';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
+import LLMMatchModal from '../components/LLMMatchModal';
 import AuditTrailModal from '../components/AuditTrailModal';
 import InvoiceDetailPanel from '../components/InvoiceDetailPanel';
 import SlideOpen from '../components/SlideOpen';
@@ -60,6 +61,9 @@ export default function AP() {
   };
   const [receiptMatchResults, setReceiptMatchResults] = useState<any[] | null>(null);
   const [bankMatchResults, setBankMatchResults] = useState<any[] | null>(null);
+  const [showLLMModal, setShowLLMModal] = useState(false);
+  const [llmModalType, setLlmModalType] = useState<'bank-invoice' | 'receipt-invoice'>('receipt-invoice');
+  const [useAI, setUseAI] = useState(true);
   const { startDate, endDate } = useDateFilter();
   const { highlight: highlightId } = useHighlightTarget();
   // Deep-link highlight bypasses the fiscal-year date filter so the invoice is always found.
@@ -224,27 +228,37 @@ export default function AP() {
         </div>
         <div className="flex items-center gap-2">
           <button onClick={async () => {
-            try {
-              const result = await api('/invoices/auto-match-receipts?direction=incoming', { method: 'POST' });
-              if (result.matched?.length > 0) {
-                setReceiptMatchResults(result.matched);
-              } else {
-                toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
-              }
-            } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+            if (useAI) {
+              setLlmModalType('receipt-invoice');
+              setShowLLMModal(true);
+            } else {
+              try {
+                const result = await api('/invoices/auto-match-receipts?direction=incoming', { method: 'POST' });
+                if (result.matched?.length > 0) {
+                  setReceiptMatchResults(result.matched);
+                } else {
+                  toast.info(tr('No receipt matches found', '沒有找到收據配對', '没有找到收据配对'));
+                }
+              } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+            }
           }}
             className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
             <Link2 className="h-4 w-4" /> {tr('Match Receipts', '配對收據', '配对收据')}
           </button>
           <button onClick={async () => {
-            try {
-              const result = await api('/bank-statements/auto-match?direction=incoming', { method: 'POST' });
-              if (result.matched?.length > 0) {
-                setBankMatchResults(result.matched);
-              } else {
-                toast.info(tr('No bank matches found', '沒有找到銀行配對', '没有找到银行配对'));
-              }
-            } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+            if (useAI) {
+              setLlmModalType('bank-invoice');
+              setShowLLMModal(true);
+            } else {
+              try {
+                const result = await api('/bank-statements/auto-match?direction=incoming', { method: 'POST' });
+                if (result.matched?.length > 0) {
+                  setBankMatchResults(result.matched);
+                } else {
+                  toast.info(tr('No bank matches found', '沒有找到銀行配對', '没有找到银行配对'));
+                }
+              } catch (e: any) { toast.error(e?.message || 'Match failed'); }
+            }
           }}
             className="flex items-center gap-1 px-3 py-2 border rounded-md text-sm hover:bg-muted">
             <Zap className="h-4 w-4" /> {tr('Match Bank Payments', '配對銀行付款', '配对银行付款')}
@@ -618,6 +632,27 @@ export default function AP() {
           }}
           onClose={() => {
             setReceiptMatchResults(null);
+            queryClient.invalidateQueries({ queryKey: ['invoices-ap'] });
+          }}
+        />
+      )}
+
+      {/* LLM Match Modal */}
+      {showLLMModal && (
+        <LLMMatchModal
+          type={llmModalType}
+          direction={llmModalType === 'receipt-invoice' ? 'incoming' : undefined}
+          onConfirm={(txId, invoiceId, invoiceIds) => {
+            if (llmModalType === 'bank-invoice' && txId) {
+              return matchConfirmMut.mutateAsync({ txId, invoiceId: invoiceId || '', invoiceIds });
+            } else if (llmModalType === 'receipt-invoice' && invoiceId) {
+              return confirmReceiptMatchMut.mutateAsync({ receipt_id: txId || '', invoice_ids: invoiceIds || [invoiceId] });
+            }
+            return Promise.resolve();
+          }}
+          onReject={() => Promise.resolve()}
+          onClose={() => {
+            setShowLLMModal(false);
             queryClient.invalidateQueries({ queryKey: ['invoices-ap'] });
           }}
         />

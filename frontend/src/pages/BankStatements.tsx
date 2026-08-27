@@ -11,6 +11,7 @@ import { useDateFilter } from '../contexts/DateFilterContext';
 import { useAuth } from '../contexts/AuthContext';
 import SupervisorPasswordModal from '../components/SupervisorPasswordModal';
 import AutoMatchReviewModal from '../components/AutoMatchReviewModal';
+import LLMMatchModal from '../components/LLMMatchModal';
 import AuditTrailModal from '../components/AuditTrailModal';
 import { tr } from '../lib/i18nHelpers';
 import { buildCoaTree, CoaNode } from '../lib/coa-hierarchy';
@@ -257,6 +258,8 @@ export default function BankStatements() {
   // default blocked account assignment on every auto-verified statement (2026-08-17).
   const [hideReconciledCoa, setHideReconciledCoa] = useState(false);
   const [autoMatchResults, setAutoMatchResults] = useState<any[] | null>(null);
+  const [showLLMModal, setShowLLMModal] = useState(false);
+  const [useAI, setUseAI] = useState(true);
   const [cardMatchResults, setCardMatchResults] = useState<any[] | null>(null);
   const [showManualEntry, setShowManualEntry] = useState(false);
 
@@ -793,7 +796,13 @@ export default function BankStatements() {
                                 className="px-2 py-1 text-xs rounded border hover:bg-green-100">
                                 {tr('🔍 Review vs Ledger', '🔍 對帳審查', '🔍 对账审查')}
                               </button>
-                              <button onClick={() => autoMatchMut.mutate()}
+                              <button onClick={() => {
+                                if (useAI) {
+                                  setShowLLMModal(true);
+                                } else {
+                                  autoMatchMut.mutate();
+                                }
+                              }}
                                 disabled={autoMatchMut.isPending}
                                 className="px-2 py-1 text-xs rounded border hover:bg-blue-100 flex items-center gap-1">
                                 <Sparkles className="h-3 w-3" />
@@ -1272,6 +1281,25 @@ Return ONLY a JSON object with corrected fields. If nothing needs fixing, return
           }
           onClose={() => {
             setAutoMatchResults(null);
+            queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
+          }}
+          useAI={useAI}
+          onToggleAI={setUseAI}
+        />
+      )}
+
+      {/* LLM Match Modal */}
+      {showLLMModal && (
+        <LLMMatchModal
+          type="bank-invoice"
+          onConfirm={(txId, invoiceId, invoiceIds) =>
+            confirmMatchMut.mutateAsync({ txId: txId || '', invoiceId: invoiceId || '', invoiceIds })
+          }
+          onReject={(txId) =>
+            txId ? unlinkMut.mutateAsync(txId) : Promise.resolve()
+          }
+          onClose={() => {
+            setShowLLMModal(false);
             queryClient.invalidateQueries({ queryKey: ['bank-statement', expandedId] });
           }}
         />
