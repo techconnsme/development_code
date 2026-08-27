@@ -948,19 +948,24 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Consumes: All previous tasks
 - Produces: Deployed feature, verified on live system
 
-- [ ] **Step 1: Run migration (no-op, no schema changes)**
+- [x] **Step 1: Run migration (no-op, no schema changes)**
 
 No migration needed — this feature uses existing tables.
 
-- [ ] **Step 2: Deploy API**
+- [x] **Step 2: Deploy API**
 
 Run: `cd api && npx wrangler deploy`
 Record the new version hash.
 
-- [ ] **Step 3: Deploy frontend**
+**Deployed:** Version ID `d39076cc-6a6f-41af-82c3-da914cc86ac8` (2026-08-27)
+URL: https://opcc-crm-api.ruhan-farhan.workers.dev
+
+- [x] **Step 3: Deploy frontend**
 
 Run: `cd frontend && npx wrangler pages deploy dist --project-name=opcc-crm-testing`
 Record the preview URL.
+
+**Deployed:** https://a1869723.opcc-crm-testing.pages.dev (2026-08-27)
 
 - [ ] **Step 4: Live round-trip test**
 
