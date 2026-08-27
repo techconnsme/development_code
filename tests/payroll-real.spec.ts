@@ -1,9 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 
 const BASE = process.env.TEST_BASE_URL || 'https://opcc-crm-testing.pages.dev';
-// Credentials proven in tests/payroll-demo.spec.ts
-const EMAIL = 'muhammadruhan.farhan25@gmail.com';
-const PASSWORD = 'Ruhan123';
+const EMAIL = process.env.TEST_EMAIL || 'muhammadruhan.farhan25@gmail.com';
+const PASSWORD = process.env.TEST_PASSWORD || 'Ruhan123';
 
 async function login(page: Page) {
   await page.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
